@@ -1,10 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/heinrich-tip-id",
     "crates/heinrich-scheme",
     "crates/heinrich-core",
     "crates/heinrich-gen",
     "crates/heinrich-cli",
+    "crates/heinrich-win",
+    "crates/heinrich-setup",
 ]
 
 [workspace.package]
@@ -14,10 +17,19 @@ rust-version = "1.83"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
+heinrich-tip-id = { path = "crates/heinrich-tip-id", version = "0.1.0" }
 heinrich-scheme = { path = "crates/heinrich-scheme", version = "0.1.0" }
 heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# ⚠️ 这里**不能**设 `panic = "abort"`。
+#
+# `heinrich-win` 是注入型 TSF DLL，它跑在别人的进程里（chrome 的每个 tab、
+# explorer、任意编辑器）。abort 的语义是「直接终止进程」——DLL 里一次数组越界
+# 就会让用户正在写文档的记事本凭空消失，工作内容全丢。
+#
+# 必须保持 unwind，并在每个 COM 方法里 `catch_unwind` 兜住：
+# 代价是二进制大一点、每次跨 FFI 多一层栈帧，换来的是「输入法出错只影响输入法」。
+# 参见 crates/heinrich-win/src/text_service.rs 的 `guarded()`。

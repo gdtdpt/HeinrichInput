@@ -1,0 +1,33 @@
+[package]
+name = "heinrich-win"
+description = "亨利输入法：TSF 前端 DLL（薄壳，只做注册、按键与 IPC 搬运）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib = 最终的 DLL；rlib 是为了让 `cargo test` 能编译出测试目标。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+heinrich-tip-id = { path = "../heinrich-tip-id", version = "0.1.0" }
+
+# D8 依赖纪律：注入型 DLL 只允许 windows。加任何别的库之前先想清楚
+# 「每个宿主进程都要多背一份」这件事。
+# `#[implement]` 生成的代码按 `windows_core::` 绝对路径引用，所以必须直接依赖它。
+[dependencies.windows-core]
+version = "0.62"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_TextServices",
+]

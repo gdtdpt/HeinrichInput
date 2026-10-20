@@ -22,10 +22,17 @@ Set-Location $root
 
 function Invoke-Step([string]$Name, [scriptblock]$Action) {
     Write-Host "== $Name" -ForegroundColor Cyan
-    & $Action
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "失败：$Name（退出码 $LASTEXITCODE）" -ForegroundColor Red
-        exit $LASTEXITCODE
+    # Windows PowerShell 5.1 会把原生程序写到 stderr 的**每一行**包成
+    # NativeCommandError（cargo 的进度、编译警告、clippy 提示全走 stderr），
+    # 配合 $ErrorActionPreference='Stop' 会直接终止脚本——于是「检查其实通过了
+    # 但脚本崩了」。这里临时放开 Stop，成败只看 $LASTEXITCODE。
+    $ErrorActionPreference = 'Continue'
+    & $Action 2>&1 | ForEach-Object { Write-Host $_ }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($code -ne 0) {
+        Write-Host "失败：$Name（退出码 $code）" -ForegroundColor Red
+        exit $code
     }
 }
 

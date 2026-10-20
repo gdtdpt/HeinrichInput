@@ -1,0 +1,9 @@
+[package]
+name = "heinrich-tip-id"
+description = "亨利输入法：TSF 身份常量（CLSID / Profile GUID / 显示名）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]

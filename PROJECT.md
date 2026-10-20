@@ -1,7 +1,7 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v0.9
-> **状态**：M0a（数据装配）+ M0b（引擎）已完成并验收；M1 前置的 TSF 落地预研已完成（`docs/design/tsf-preflight.md`），可开工 M1.0
+> **版本**：v1.0
+> **状态**：M0a（数据装配）+ M0b（引擎）已验收；**M1.0（TSF 壳：注册 / 激活 / 观测按键）代码完成并已打包，等待真机注册验收**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
 > **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
@@ -88,7 +88,9 @@
 | D19 | **注册走独立安装器 `heinrich-setup.exe`，且必须提权** | COM 键 + `ITfInputProcessorProfileMgr::RegisterProfile` + `ITfCategoryMgr::RegisterCategory` 三件事由安装器完成，不提供 `regsvr32` 手工路径；`hkl` 参数传 `NULL`，不做 HKL 探测 | ① 写 `HKLM\SOFTWARE\Microsoft\CTF\TIP\...` 与 `HKLM\SOFTWARE\Classes\CLSID\...` 绕不过管理员，而 **HKCU 版本是否可用待实测**（T1）② Weasel（`WeaselSetup`）、chewing（`tsfreg`）、WindInput（`wind-installer`）三家都单独做了注册器，没有一家让用户手敲 `regsvr32` ③ 安装期提权与「运行期 asInvoker」不冲突——那是两个阶段 |
 | D20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」；品牌短名「亨利」，语言栏与安装器显示「亨利五笔」 | 全量替换原工作代号（4 个 crate、4 个 exe、目录名、25 个文件的文档与脚本） | 原代号「析字 / Xizi」有三重歧义：① 口述「析字输入法」被听成「写字输入法」；② 拼音打 `xizi` 首屏是「写字」；③ **「析字」不在五笔词库里**，连它自己都得逐字敲。新名「亨利」实测在库里成词、**YBTJ 一词直出**，全名 `YBTJ GGTT` 两词两码。改名必须在 M1 之前——CLSID、`HKLM` 注册表、安装器、`%LOCALAPPDATA%\Heinrich` 此时都还没生成，零清理成本 |
 
----
+| D21 | **release profile 必须 `panic = "unwind"`，不得 `abort`** | 移除 workspace 里原有的 `panic = "abort"`；每个 COM 方法额外用 `guarded()` 包 `catch_unwind` | `heinrich-win` 跑在**别人的进程**里（chrome 每个 tab、explorer、任意编辑器）。`abort` 的语义是「终止整个进程」——DLL 里一次越界就让用户没保存的文档凭空消失。代价是二进制大一点、每次跨 FFI 多一层栈帧；收益是「输入法出错只影响输入法」。注意：即使 unwind，panic 跨出 `extern "system"` 也是 UB，所以 `catch_unwind` 不可省 |
+| D22 | **TSF 身份常量集中在 `heinrich-tip-id`（零依赖），值由 `uuid5` 生成、发布后不可改** | CLSID `0EB96F60-…`、Profile GUID `06CF8277-…`、LANGID 0x0804、显示名、`InstallLayoutOrTip` 描述串全部由该 crate 提供，DLL 与注册器共引 | ① 两边各写一份 GUID 是典型的静默故障源：注册器写 A、DLL 认 B，表现为「列表里有名字、一切换就废」② 值一旦注册过就进了用户注册表，改动等于留下永久死条目 ③ 描述串格式在单测里钉死——`InstallLayoutOrTip` **返回值是 void**，写错完全静默 |
+| D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |---
 
 ## 4. 架构
 
@@ -485,6 +487,11 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | 25 | 参考实现分级（§4.1.2）：A 级 WindInput / Weasel，B 级 chewing-tsf / ime-rs，C 级青简 / 官方样例；**青简降为逻辑参照** |
 | 26 | M1 拆成 **M1.0 键进得来 / M1.1 字上得去 / M1.2 组合串 / M1.3 接 server** 四步验收 |
 | 27 | **定名「亨利输入法 / HeinrichInput」**（D20），品牌短名「亨利」，语言栏显示「亨利五笔」，ASCII 前缀 `heinrich`；原「析字 / Xizi」全部废弃 |
+| 28 | `heinrich-win` 的 release 构建改为 `panic = "unwind"` + 每个 COM 方法 `catch_unwind`（D21） |
+| 29 | 新增 `heinrich-tip-id`（零依赖）统一 TSF 身份常量，值 `uuid5` 生成、发布后不可改（D22） |
+| 30 | DLL 日志：`%LOCALAPPDATA%\Heinrich\logs\tsf.log`，每次写入独立 open→append→close（D23） |
+| 31 | **注册器主动提权**（`ShellExecuteW("runas")` 重启自身），不用 `requireAdministrator` 清单——否则连 `status` 都弹 UAC |
+| 32 | `register_profile` 的 `fEnabledByDefault` 传 **true**；`hklSubstitute` 传 `NULL`（与 Weasel 一致） |
 
 ### 11.2 仍待确认
 
@@ -510,3 +517,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v0.7 | 2026-10-20 | **M0a + M0b 实施完成**（26 单测、clippy/fmt 干净）。新增 D15（TSV 格式、零依赖装载）、D16（精确码长匹配 + 空码前缀回退）、D17（单字全码 3/4 码的认知修正）；§5.1 公式改为 `total = w + g·learning`、`g` 定为 0.35 并写明校准依据；§5.6 新增查询语义；§6.1 长度前提按实测重写；M0a/M0b 标记完成并写入实测数字；新增 R11（17 处简码与全码不同源）、R12（重码量大）；§4.2 布局更新为实际结构 |
 | v0.8 | 2026-10-20 | **TSF 落地预研完成**（新文档 `docs/design/tsf-preflight.md`）。§4.1.1 增列 WindInput（同品类、同架构、已发布），青简降为逻辑参照；新增 §4.1.2 参考实现分级与固定采信顺序；新增 D18（按键路径零阻塞：OnKeyDown 不等 IPC、候选走本地缓存、无应答则不接管）与 D19（独立安装器 + 安装期提权 + `hkl` 传 NULL）；M1 拆为 M1.0–M1.3 四步验收；新增 R13（32 位宿主）/R14（提权与沙箱未验证）/R15（安装需提权）；§11.2 恢复两项待实测 |
 | v0.9 | 2026-10-20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」，品牌短名「亨利」，语言栏显示「亨利五笔」（D20 / §11.1 #27）。原代号「析字 / Xizi」因三重歧义废弃；全量替换 4 crate、4 exe、目录名与 25 个文件的文档脚本（177 处引用），数据重新生成 |
+| v1.0 | 2026-10-20 | **M1.0 代码落地**：新增 `heinrich-tip-id`（TSF 身份常量）、`heinrich-win`（TSF DLL：`DllGetClassObject` / `IClassFactory` / `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink`，按键只记录不消费、全方法 `catch_unwind`）、`heinrich-setup`（注册 / 反注册 / 状态检查，主动提权）。新增 D21（`panic=unwind` 强制）、D22（身份常量集中且不可变）、D23（DLL 日志策略）；§11.1 #28–#32；`build.ps1` 纳入 `heinrich-setup.exe` 与 `heinrich_win.dll` |
