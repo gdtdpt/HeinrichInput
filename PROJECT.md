@@ -1,7 +1,7 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.3
-> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳：注册 / 激活 / 观测按键）**已验收**；**M1.1（缓冲 + 上屏 + 中英切换）代码完成并已打包，等待真机验收**
+> **版本**：v1.4
+> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳：注册 / 激活 / 观测按键）+ **M1.1（缓冲 + 上屏 + 中英切换）均已验收**；下一步 M1.2（组合串）
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
 > **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
@@ -432,7 +432,7 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | **M0a** 数据装配 ✅ **已完成** | `heinrich-gen`：解析 `wubi86.dict.yaml` → 生成 `data/wubi86/{scheme.toml,lexicon.tsv}`；校验报告见 `out/m0a-report.md` | ① 常用字覆盖 **100%（3498/3498，表内 2 个 `_` 占位已剔除）** ② 报告可复现（两次运行同哈希 `1b5c432c…`）③ 2–3 级简码非全码前缀 **17/4203 = 0.40% ≤ 1%** ④ 一级简码 **25 键、每键 1 条** |
 | **M0b** 引擎 ✅ **已完成** | `heinrich-scheme`（编码打包 + TSV 装配 + 索引）+ `heinrich-core`（精确查询、§5 排序、组合期锁）+ `heinrich-cli`（REPL / check） | ① 26 个单测覆盖排序三档、阈值边界、衰减、精确/回退查询 ② REPL 连打可观测：单次使用升一位、首位受 1.5 倍保护、持续使用可夺位 ③ `heinrich-cli check` 全部通过 ④ `clippy -D warnings` + `fmt --check` 干净 |
 | **M1.0** 键进得来 ✅ **已验收** | `heinrich-win` 只实现 `DllGetClassObject`+`IClassFactory`+`ITfTextInputProcessorEx`+`ITfKeyEventSink`；`OnKeyDown` 只写日志、**不消费按键**；`heinrich-setup --install/--uninstall` 完成三件注册 | ① 语言列表出现「亨利五笔」② 切过去后记事本打字**照常出英文**（正确的中间态）③ 日志见每个 vkey ④ 卸载后列表条目消失、无残留键 |
-| **M1.1** 字上得去 🟡 **代码完成，待真机验收** | 缓冲 a–y + 20 条硬编码小码表（`tinydict.rs`，M1.3 删）；空格/回车把命中字经 `ITfEditSession` 上屏；单击 Shift 切中英、Shift+字母临时英文（D26–D28） | ① 记事本 / Notepad++ / Chromium 类宿主各敲 `vbg` 出「好」（**三处都要过**，两族宿主的回调路径不同，见 D26）② Esc 取消无残留 ③ 切窗口再回来不出乱码 ④ 无命中码原样上屏、不吞键 ⑤ 单击 Shift 能切回英文正常输入 |
+| **M1.1** 字上得去 ✅ **2026-10-20 验收通过** | 缓冲 a–y + 20 条硬编码小码表（`tinydict.rs`，M1.3 删）；空格/回车把命中字经 `ITfEditSession` 上屏；单击 Shift 切中英、Shift+字母临时英文（D26–D29） | ① `vbg`→好、`q`→我、`vbgf`→好玩 ② Esc 取消无残留 ③ 无命中码原样上屏、不吞键（`abc`、`zzz`）④ 单击 Shift 切中英、Shift+字母出大写且不切模式 ⑤ 切窗口时半截编码被丢弃 |
 | **M1.2** 组合串 | composition + `ITfDisplayAttributeProvider` 虚线 + 光标跟随（坐标由 `ITfContextView::GetTextExt` 算） | ① 组合串有虚线 ② 候选窗跟光标 ③ 宿主右键改变选择后组合自动终止 |
 | **M1.3** 接 server | 命名管道查真码表 + 本地候选缓存 + 断连重连 + **`--debug-sleep` 零阻塞验证** | ① 13.6 万条下打字无延迟感 ② server 被杀 5 秒内自动重连 ③ server 故意睡 5 秒时**宿主完全不卡**（D18 不过则 D1 不成立） |
 | **M2** 候选窗 | `heinrich-ui` 自绘候选窗（DirectWrite）+ 完整 §5 排序 + 设置里的学习数据查看 | ① 真机连打三天，词序符合预期且不抢位 ② 高分屏/多屏/DPI 切换不错位 ③ 候选窗不遮挡、不抢焦点 |
@@ -552,3 +552,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v1.1 | 2026-10-20 | **工程分层重构**：Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`，`crates/` 收敛为平台中立件（D24）；新增 D25（不做平台抽象层，最多一个极窄 trait 注入面）；§4.1.2 补四家仓库结构实测对照（WindInput / 青简 / Weasel / chewing-tsf）；D8 依赖清单更正为 `windows-rs + heinrich-tip-id`；§11.1 #33–#34；dev-guide 补第 12 条踩坑「壳的吃键集必须 ⊆ 引擎的出字集」 |
 | v1.2 | 2026-10-20 | **M1.0 真机验收通过**（语言列表出现「亨利五笔」、`vbgd` 逐键入日志、打字照常出英文）；同批修掉三处诊断缺陷：按键日志 `REPEAT` 误标、`describe_vk` 缺方向键与 OEM 标点、`tsf.ps1` 读日志未指定 UTF-8。**M1.1 代码落地**：新增 `keys`（纯逻辑判定）、`tinydict`（20 条临时码表）、`commit`（`ITfEditSession` 上屏），`text_service` 改为「`OnTestKey*` 只回答、`OnKey*` 才执行」；新增 D26（唯一纯判定函数供两条回调路径共用）、D27（吃键必须变成输出：没命中原样上屏）、D28（单击 Shift 切中英 / Shift+字母临时英文）；§11.1 #35–#38；`HeinrichTsfAbiVersion` → 2；`tools/` 五个脚本修掉 `param` 默认值引用 `$PSScriptRoot` 导致 `-File` 调用全失败的问题 |
 | v1.3 | 2026-10-20 | **修 M1.1 真机验收发现的中英切换失效**：`shift_armed` 原先只在 `OnKeyDown` 里置位，而 Notepad++（Scintilla）只回调 `OnTestKeyDown`/`OnTestKeyUp`，置位那一半从不执行，单击 Shift 完全不切模式。改为 `keys::ShiftTap` —— 采样 `GetKeyState` 与上次比对、四条回调都调、松开事件缺失时在下一个按键上补判，新增 D29；D26 补「Shift 采样为唯一例外」；`log.rs` 支持 `%LOCALAPPDATA%\Heinrich\debug.on` 标志文件把级别提到 debug，`tools\tsf.ps1` 增 `debug on|off` 子命令（并显式声明位置参数）；§11.1 #35–#40；dev-guide 补踩坑 #15「状态更新不能只挂 OnKeyDown」与 #16「位置参数按声明顺序分配」；45 单测 |
+| v1.4 | 2026-10-20 | **M1.1 真机验收通过**：`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消无残留、`abc`/`zzz` 无命中原样上屏、单击 Shift 双向切中英（日志两处「切换为×模式」）、Shift+字母出大写且不切模式。dev-guide §8 进度同步 |

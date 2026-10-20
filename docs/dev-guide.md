@@ -270,8 +270,8 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M0a 数据装配 | ✅ 完成（覆盖 100%，2–3 级简码例外 0.40%，可复现） |
 | M0b 引擎 | ✅ 完成（26 单测，clippy/fmt 干净） |
 | M1 TSF 壳 | 预研完成（`docs/design/tsf-preflight.md`），按 M1.0–M1.3 四步推进 |
-| M1.0 键进得来 | ✅ 代码完成（注册 / 激活 / 按键只记录不消费 / 状态检查），**待真机注册验收** |
-| M1.1 字上得去 | 缓冲 + 小码表 + `ITfEditSession` 上屏 |
+| M1.0 键进得来 | ✅ 已验收（注册 / 激活 / 按键只记录不消费 / 状态检查；`Get-WinUserLanguageList` 里已出现该 TIP） |
+| M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | composition + 显示属性虚线 + 光标跟随 |
 | M1.3 接 server | 命名管道 + 本地候选缓存 + `--debug-sleep` 零阻塞验证 |
 
