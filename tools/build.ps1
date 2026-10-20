@@ -30,8 +30,11 @@ $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location $root
 
+# 显式按包名列出本平台的产物，不用 --workspace / --all。
+# M5 加入 apps/macos、apps/linux 之后，--workspace 会去编别的平台的壳、必然失败；
+# 现在就这么写，届时不用户回头改（PROJECT.md D24）。
 $ErrorActionPreference = 'Continue'
-& cargo build --release --all 2>&1 | ForEach-Object { Write-Host $_ }
+& cargo build --release -p heinrich-cli -p heinrich-gen -p heinrich-win -p heinrich-setup 2>&1 | ForEach-Object { Write-Host $_ }
 $buildExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($buildExit -ne 0) {

@@ -55,7 +55,7 @@
 
 | 钩子 | 位置 | 形态 |
 |---|---|---|
-| 平台适配 | `heinrich-proto` 协议 + `Shell` 边界 | 任何平台前端只要实现同一套 pipe 协议与帧格式即可接入；core 内**禁止** `#[cfg(windows)]` |
+| 平台适配 | `heinrich-proto` 协议 + `apps/<platform>/` 壳目录 | 任何平台前端只要实现同一套 pipe 协议与帧格式即可接入；core 内**禁止** `#[cfg(windows)]`；新平台 = 新增一个平级 `apps/macos/`，`crates/` 不动（D24） |
 | 输入方案适配 | `heinrich-scheme` + `scheme.toml` | 方案 = 数据（表 + 规则清单），core 不硬编码 86 的任何常量 |
 | 解码器适配 | `Decoder` trait | 拼音引擎、未来的郑码/二笔/双拼都按同一 trait 注册 |
 | 排序策略适配 | `Ranker` trait | 衰减参数、阈值、策略可替换 |
@@ -74,7 +74,7 @@
 | D5 | 候选窗 | v1 自绘（DirectWrite + 分层窗口） | 系统默认候选窗（`ITfCandidateListUIElement`）无法画 emoji 与拆字 chip；但 M1 先用系统默认窗跑通上屏，M2 换自绘 |
 | D6 | 排序 | 频次 × 时间衰减 + **晋升阈值** | 见 §5，直击「选一次就置顶」的痛点 |
 | D7 | 混输 | 双解码器并行 + DP 分段裁决 | 同一串按键可能是拼音也可能是五笔码，必须逐段判定，不能整串二选一 |
-| D8 | 依赖纪律 | TSF DLL crate 仅允许 `windows-rs` + `heinrich-proto` | 注入型 DLL 的依赖越少越好；core/server 可正常用第三方库 |
+| D8 | 依赖纪律 | TSF DLL crate 仅允许 `windows-rs` + `heinrich-tip-id`（M1.3 接 server 时再加 `heinrich-proto`） | 注入型 DLL 的依赖越少越好；core/server 可正常用第三方库 |
 | D9 | emoji 映射 | **内置表 + 用户覆盖表**两层，用户可按「词」或按「五笔码」改绑/停用 | 内置表随版本升级可被替换，用户改动不能被升级冲掉；按码改绑支持「一个 emoji 挂多条词」 |
 | D10 | 混输判定 | 长度约束（五笔段 ≤ 4 键）+ **>4 键快速通道**，仍以 DP 分段裁决为兜底 | 任一单条编码长度 ≤ 4（词组恒 4 码、单字全码 3 或 4 码），缓冲区超过 4 键必然是多段；整串能切拼音时直接判拼音可省掉一次 DP，且行为可预测 |
 | D11 | 显式拼音标记 | 组合串末尾 `'` 声明「本段按拼音处理」：只出拼音候选、**隐藏五笔候选**，但保留五笔码与拆字提示；键位可配置 | `'` 在五笔码里无意义，在拼音里本就是音节分隔符（`xi'an`），两种语义天然重合、不打架；同时是自动判定失手时的人工兜底，成本仅一个段级 flag |
@@ -90,7 +90,9 @@
 
 | D21 | **release profile 必须 `panic = "unwind"`，不得 `abort`** | 移除 workspace 里原有的 `panic = "abort"`；每个 COM 方法额外用 `guarded()` 包 `catch_unwind` | `heinrich-win` 跑在**别人的进程**里（chrome 每个 tab、explorer、任意编辑器）。`abort` 的语义是「终止整个进程」——DLL 里一次越界就让用户没保存的文档凭空消失。代价是二进制大一点、每次跨 FFI 多一层栈帧；收益是「输入法出错只影响输入法」。注意：即使 unwind，panic 跨出 `extern "system"` 也是 UB，所以 `catch_unwind` 不可省 |
 | D22 | **TSF 身份常量集中在 `heinrich-tip-id`（零依赖），值由 `uuid5` 生成、发布后不可改** | CLSID `0EB96F60-…`、Profile GUID `06CF8277-…`、LANGID 0x0804、显示名、`InstallLayoutOrTip` 描述串全部由该 crate 提供，DLL 与注册器共引 | ① 两边各写一份 GUID 是典型的静默故障源：注册器写 A、DLL 认 B，表现为「列表里有名字、一切换就废」② 值一旦注册过就进了用户注册表，改动等于留下永久死条目 ③ 描述串格式在单测里钉死——`InstallLayoutOrTip` **返回值是 void**，写错完全静默 |
-| D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |---
+| D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |
+| D24 | **工程分两层：`crates/` 放平台中立件，`apps/<platform>/` 放平台专属产物** | Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`；**包名与产物名不变**。`heinrich-server` 仍归 `crates/`。M5 加平台时只新增平级 `apps/macos/`、`apps/linux/`，`crates/` 不动 | ① **四家实证**：Weasel（C++）与 windows-chewing-tsf（纯 Rust）都只有 Windows，前者平铺组件目录 + 一个 sln、后者全塞 `crates/`——在单平台前提下都成立；青简与 WindInput 因为真的有第二、三个平台，才长出平台目录层。② **壳用什么语言写，决定壳放哪**：WindInput 的壳是 C++17 / Swift，物理上进不了 cargo workspace，只能放在仓库根；我们的壳是 Rust，要共享 `heinrich-core` 就必须同 workspace（跨 workspace 的 path 依赖要各写一份 `[patch]`），于是平台目录层是必然而非选择。③ **server 不按平台复制**：WindInput 一份 `apps/service`，用 `[target.'cfg(target_os = "linux")'.dependencies]` + `linux-host` feature 分形态，且它真在 Linux 发版；青简的 `apps/windows/server` + `apps/linux/server` 两份属未验证部分 |
+| D25 | **最多保留一个极窄的平台能力 trait 注入面，不做平台抽象层** | v1 不设；M5 若需要，按 WindInput 的判据收录：「协调器逻辑中途要**同步 pull** 的平台能力，且 `cfg` 兜底值是语义错误」才进 trait，其余用 `#[cfg]` + 合理兜底 | WindInput 的 `HostServices` 整份只装剪贴板三个方法，而它的 AGENTS.md 明确写着「`cfg` 兜底值在缺失平台**可接受**的探测函数 → **不进 trait**，同名函数三平台并列 `cfg` + 兜底」。TSF / IMKit / IBus 在注册方式、按键回传、组合串生命周期、候选窗归属四处几乎无共性，抽「全平台抽象 trait」只会得到一堆空实现 |
 
 ## 4. 架构
 
@@ -139,21 +141,36 @@
 | C | **青简 qingjian** | 异步竞态的处理、配置回归的意识 | Windows 壳未经装机验证 |
 | C | Microsoft TSF 官方样例 + learn.microsoft.com/tsf | **接口语义的唯一权威** | 停在 Win7 时代，profile 注册需另看 |
 
+**分层形态对照（2026-10-20 实测各家仓库结构）**：
+
+| 项目 | 引擎 / 服务在哪 | 壳在哪 | 壳的语言 | 为什么这么放 |
+|---|---|---|---|---|
+| WindInput | `wind_input/` 一个 workspace：29 crates + `apps/{service,rpc,repl,wind-tools}` | 仓库根 `wind_tsf/`、`wind_macos/`、`wind_linux/`，**workspace 外** | C++17 / Swift / C++ | 壳跨语言，物理上进不了 cargo workspace。`apps/service` 本身跨平台，靠 `cfg(target_os)` + `linux-host` feature 分形态，**server 只一份** |
+| 青简 | `crates/` 12 个 | `apps/{windows/{tsf,server,settings},linux/server,macos,cli,settings}`，同一 workspace | Rust | 壳同语言 ⇒ 必须在同一 workspace 才能共用 crate |
+| Weasel | 根目录平铺 `WeaselServer/` `WeaselIPCServer/` `WeaselUI/` 等，一个 `weasel.sln` 串起来 | 同左 | C++ | 只有 Windows，平台目录层无收益 |
+| chewing-tsf | 全在 `crates/`（含注册器 `tsfreg`） | 同左 | Rust | 同上，只有 Windows |
+
+规律：**平台目录层只在「多平台」且「壳与引擎同语言」时才有意义。** Weasel / chewing-tsf 只有 Windows，平铺就够；WindInput 多平台但壳跨语言，壳被挤到 workspace 外；青简与亨利两个条件都占（Rust 壳 + M5 多平台），平台目录层是必然而非选择 ⇒ D24。
+
 
 ### 4.2 Workspace 布局
 
 ```
 Heinrich/
   Cargo.toml                # workspace 根，统一 workspace.dependencies
-  crates/
+  crates/                   # 平台中立：库 + 跨平台可执行
     heinrich-core/              # 纯逻辑：分段、解码、排序、学习模型。零 OS 依赖、可纯单测
     heinrich-scheme/            # 方案加载与校验（表格式、scheme.toml、一致性检查）
+    heinrich-tip-id/            # TSF 身份常量（零依赖；DLL 与注册器共引，D22）   ← 已实现
     heinrich-proto/             # DLL ↔ server 协议：事件、帧、版本握手（平台中立）
-    heinrich-server/            # 常驻进程：core 宿主、SQLite、IPC 服务端、DLL 注册管理
-    heinrich-win/               # TSF DLL（仅 windows-rs + heinrich-proto）
+    heinrich-server/            # 常驻进程：core 宿主、SQLite、IPC 服务端
     heinrich-ui/                # 候选窗：DirectWrite 排版 + 分层窗口
     heinrich-cli/               # 引擎 REPL、码表校验（M0 验收用）           ← 已实现
     heinrich-gen/               # 数据装配：原始码表 → data/wubi86/ + 校验报告（M0a）  ← 已实现
+  apps/
+    windows/                    # Windows 专属产物；M5 时平级新增 macos/、linux/
+      tsf/                      # TSF DLL（仅 windows-rs + heinrich-tip-id，D8）   ← 已实现
+      setup/                    # 注册器 install / uninstall / status（D19）       ← 已实现
   data/
     raw/                    # 原始码表与常用字表（不进产物、不进仓库，见 .gitignore）
     wubi86/
@@ -174,6 +191,8 @@ Heinrich/
   PROJECT.md
   README.md                 # 仅面向使用者
 ```
+
+**`crates/` 与 `apps/` 是两层，不是两种写法**（D24）。判据两条：调某个平台的系统 API、或产物是 `.dll` / `.ime` 这类注入件与平台注册器 ⇒ 进 `apps/<platform>/`；其余一律进 `crates/`。注意 `heinrich-server` 属 `crates/`——WindInput 的实证是一份 `apps/service` 靠 `cfg(target_os)` + feature 分形态，不按平台复制 server。
 
 **文档读者线**：`README.md` 只面向使用者；构建/调试/协议细节一律进 `docs/dev-guide.md`，其他文档引用它而不是引用 README。
 
@@ -492,6 +511,8 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | 30 | DLL 日志：`%LOCALAPPDATA%\Heinrich\logs\tsf.log`，每次写入独立 open→append→close（D23） |
 | 31 | **注册器主动提权**（`ShellExecuteW("runas")` 重启自身），不用 `requireAdministrator` 清单——否则连 `status` 都弹 UAC |
 | 32 | `register_profile` 的 `fEnabledByDefault` 传 **true**；`hklSubstitute` 传 `NULL`（与 Weasel 一致） |
+| 33 | **工程分两层**：`crates/` 只放平台中立件，平台专属产物进 `apps/<platform>/`；Windows 壳迁至 `apps/windows/{tsf,setup}`，包名与产物名不变（D24） |
+| 34 | 平台能力**最多保留一个极窄 trait 注入面**（v1 为零），不做「平台抽象层」（D25） |
 
 ### 11.2 仍待确认
 
@@ -518,3 +539,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v0.8 | 2026-10-20 | **TSF 落地预研完成**（新文档 `docs/design/tsf-preflight.md`）。§4.1.1 增列 WindInput（同品类、同架构、已发布），青简降为逻辑参照；新增 §4.1.2 参考实现分级与固定采信顺序；新增 D18（按键路径零阻塞：OnKeyDown 不等 IPC、候选走本地缓存、无应答则不接管）与 D19（独立安装器 + 安装期提权 + `hkl` 传 NULL）；M1 拆为 M1.0–M1.3 四步验收；新增 R13（32 位宿主）/R14（提权与沙箱未验证）/R15（安装需提权）；§11.2 恢复两项待实测 |
 | v0.9 | 2026-10-20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」，品牌短名「亨利」，语言栏显示「亨利五笔」（D20 / §11.1 #27）。原代号「析字 / Xizi」因三重歧义废弃；全量替换 4 crate、4 exe、目录名与 25 个文件的文档脚本（177 处引用），数据重新生成 |
 | v1.0 | 2026-10-20 | **M1.0 代码落地**：新增 `heinrich-tip-id`（TSF 身份常量）、`heinrich-win`（TSF DLL：`DllGetClassObject` / `IClassFactory` / `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink`，按键只记录不消费、全方法 `catch_unwind`）、`heinrich-setup`（注册 / 反注册 / 状态检查，主动提权）。新增 D21（`panic=unwind` 强制）、D22（身份常量集中且不可变）、D23（DLL 日志策略）；§11.1 #28–#32；`build.ps1` 纳入 `heinrich-setup.exe` 与 `heinrich_win.dll` |
+| v1.1 | 2026-10-20 | **工程分层重构**：Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`，`crates/` 收敛为平台中立件（D24）；新增 D25（不做平台抽象层，最多一个极窄 trait 注入面）；§4.1.2 补四家仓库结构实测对照（WindInput / 青简 / Weasel / chewing-tsf）；D8 依赖清单更正为 `windows-rs + heinrich-tip-id`；§11.1 #33–#34；dev-guide 补第 12 条踩坑「壳的吃键集必须 ⊆ 引擎的出字集」 |

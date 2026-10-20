@@ -33,18 +33,26 @@ cargo run --release -p heinrich-cli -- check --data data/wubi86
 ## 3. crate 结构与依赖方向
 
 ```
-heinrich-tip-id   TSF 身份常量：CLSID / Profile GUID / LANGID / 显示名
-                  / InstallLayoutOrTip 描述串                     （零依赖）
-                     ↑                        ↑
-heinrich-win         TSF DLL                   heinrich-setup      注册器
-                     （只允许 windows 与 tip-id）  （windows 随意）
-heinrich-scheme   编码表示 + 词库装载 + 索引 + 清单解析     （零依赖，无平台分支）
-    ↑
-heinrich-core     查询语义 + 排序 + 学习模型               （纯逻辑：不读时钟、不做文件 I/O）
-    ↑
-heinrich-cli      REPL / check                            （仅 M0 验收用，不进产品）
-heinrich-gen      原始码表 → 方案数据 + 校验报告           （仅构建期用，不进产品）
+crates/              平台中立：换平台不该改这里，两个 target 都要编得过
+  heinrich-tip-id    TSF 身份常量：CLSID / Profile GUID / LANGID / 显示名
+                     / InstallLayoutOrTip 描述串                   （零依赖）
+  heinrich-scheme    编码表示 + 词库装载 + 索引 + 清单解析         （零依赖，无平台分支）
+      ↑
+  heinrich-core      查询语义 + 排序 + 学习模型                   （纯逻辑：不读时钟、不做文件 I/O）
+      ↑
+  heinrich-cli       REPL / check                                （仅 M0 验收用，不进产品）
+  heinrich-gen       原始码表 → 方案数据 + 校验报告               （仅构建期用，不进产品）
+
+apps/windows/        平台专属产物：调 Windows API，或产物是注入件 / 注册器
+  tsf/               TSF DLL，只依赖 windows + heinrich-tip-id     （D8）
+  setup/             注册器，依赖 windows + heinrich-tip-id
 ```
+
+**这个两层划分是硬约定，不是目录洁癖**。判据只有两条：调某个平台的系统 API，或产物是 `.dll` / `.ime` 这类注入件、平台注册器 ⇒ 进 `apps/<platform>/`；其余一律进 `crates/`。新增 crate 前先问「它在另一个平台上编得过吗」，答否就是走错了层。
+
+`heinrich-tip-id` 是 Windows 身份常量，但它零依赖、且 DLL 与注册器共引（D22），所以留在 `crates/`；将来 macOS 的身份常量按同一模式另立 crate，不与它合并。
+
+**M5 加平台时只新增平级的 `apps/macos/`、`apps/linux/`，`crates/` 不动**。届时构建脚本必须用 `-p` 显式指定产物——`cargo build --workspace` 会去编别的平台的壳、必然失败。
 
 后续（M1.3+）：`heinrich-proto`（DLL↔server 帧）、`heinrich-server`（常驻进程）、`heinrich-ui`（候选窗）。
 
@@ -54,16 +62,18 @@ heinrich-gen      原始码表 → 方案数据 + 校验报告           （仅�
 
 ## 4. TSF 壳（M1.0）
 
+「薄壳」指的是**不含引擎、词库、SQLite、UI 绘制**，不是行数少。TSF 管线本身是重活：WindInput 的 C++ 壳约 1 MB 源码（`TextService.cpp` 385 KB、`KeyEventSink.cpp` 184 KB、`IPCClient.cpp` 114 KB、`LangBarItemButton.cpp` 60 KB），这些代码全部在 D8 的依赖纪律下活着。`heinrich-win` 到 M2 长到几千行是正常的，别拿行数当验收标准。
+
 ### 4.1 三个组件
 
 | 文件 | 作用 |
 |---|---|
 | `crates/heinrich-tip-id/src/lib.rs` | CLSID / Profile GUID / 描述串。**发布后不可改**，值由 `uuid5` 生成 |
-| `crates/heinrich-win/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` |
-| `crates/heinrich-win/src/text_service.rs` | `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink` |
-| `crates/heinrich-win/src/log.rs` | 文件日志（多进程安全，见 D23） |
-| `crates/heinrich-setup/src/main.rs` | `install` / `uninstall` / `status`，主动提权 |
-| `crates/heinrich-setup/src/tsf.rs` | `RegisterProfile` / `RegisterCategory` / `InstallLayoutOrTip` / COM 探针 |
+| `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` |
+| `apps/windows/tsf/src/text_service.rs` | `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink` |
+| `apps/windows/tsf/src/log.rs` | 文件日志（多进程安全，见 D23） |
+| `apps/windows/setup/src/main.rs` | `install` / `uninstall` / `status`，主动提权 |
+| `apps/windows/setup/src/tsf.rs` | `RegisterProfile` / `RegisterCategory` / `InstallLayoutOrTip` / COM 探针 |
 
 ### 4.2 上手
 
@@ -162,12 +172,13 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 3. **一级简码与全码没有前缀关系。** 一级简码是键位映射（`Q=我`、`V=发`），`我 = TRNT`。校验「简码是否全码前缀」时必须跳过 1 级，否则误报 4 条。
 4. **Windows 上带中文的文本经常带 UTF-8 BOM。** 两个读取入口（`heinrich-scheme::read_text`、`heinrich-gen::read_text`）都会剥掉，且哈希只覆盖剥离后的内容——否则同一个文件会算出两个哈希。
 5. **生成物里不许写时间戳**，也不许依赖 `HashMap` 遍历顺序。两次 `tools\gen.ps1` 必须得到同一个 SHA-256（当前 `95b85711…`）。
-6. **`panic = "abort"` 对注入型 DLL 是致命的。** workspace 原来为省体积设了 `abort`，但 `heinrich-win` 跑在别的进程里——abort 等于「终止宿主」。已移除（D21）。注意：即使 `unwind`，panic 跨出 `extern "system"` 仍是 UB，每个 COM 方法必须自己 `catch_unwind`（见 `text_service.rs` 的 `guarded()`）。
+6. **`panic = "abort"` 对注入型 DLL 是致命的。** workspace 原来为省体积设了 `abort`，但 `heinrich-win` 跑在别的进程里——abort 等于「终止宿主」。已移除（D21）。注意：即使 `unwind`，panic 跨出 `extern "system"` 仍是 UB，每个 COM 方法必须自己 `catch_unwind`（见 `apps/windows/tsf/src/text_service.rs` 的 `guarded()`）。对照：WindInput 敢设 `abort`，是因为它的 Windows 壳是 C++、Rust 代码全在独立 service 进程里；我们的壳本身就是 Rust，跑在宿主进程内，所以这条约束是我们独有的。
 7. **`#[implement]` 要求 `windows-core` 作为直接依赖。** 宏展开的代码按 `windows_core::` 绝对路径引用它；只依赖 `windows` 会报 `could not find windows_core in the list of imported crates`。
 8. **`as_interface_ref()` 只在宏生成的 `_Impl` 上，不在你的原始结构体上。** 所以「挂 sink」这类需要把自己交给系统的代码，必须写在 `impl Xxx_Impl` 里（`_Impl` 对原结构体有 Deref，字段照样能访问）。
 9. **`RegisterProfile` 的签名与 MSDN 不一致。** windows-rs 0.62 是 `(rclsid, langid, guidprofile, pchdesc: &[u16], pchiconfile: &[u16], uiconindex, hklsubstitute, dwpreferredlayout, benabledbydefault, dwflags)`——描述串和图标是**切片**，长度由运行时补，不要自己传 `cchDesc`。
 10. **`InstallLayoutOrTip` 返回值是 `void`。** 写错描述串不会报错，只会静默不生效。所以描述串格式在 `heinrich-tip-id` 的单测里钉死了。
 11. **控制台输出中文要 `SetConsoleOutputCP(65001)`。** 中文 Windows 默认代码页 936，直接打 UTF-8 全是乱码。另外表格对齐不能用 `{:<44}`——它数字符不数显示宽度，CJK 占两列会歪。
+12. **DLL 吃掉的键，必须保证最终一定有字出去（M1.1 起生效）。** TSF 在 `OnTestKeyDown` 问你「这个键要不要」时**早于**任何 IPC 往返：说「要」之后，事后再想让 server 把键放回宿主已经来不及，在严格的宿主里那个键直接消失。WindInput 把这条写成硬约定——**壳的吃键集必须 ⊆ 引擎的出字集**。所以「吃不吃」的判据必须 DLL 本地就能算出（本地候选缓存 + 本地「哪些键归我管」的判定表），不能依赖 server 回话。历史症状是「有些应用打不出字、有些只出半角」，极难归因。这是 D18「按键路径零阻塞」更硬的一面：不只是不能等，是**判断依据必须已经在本进程里**。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 

@@ -1,13 +1,23 @@
 [workspace]
 resolver = "2"
+# 两层约定（判据见 PROJECT.md §4.2）：
+#   crates/            平台中立的库，以及跨平台可执行（cli / gen / 未来的 server）
+#   apps/<platform>/   平台专属产物（注入型 DLL、平台注册器）
+#
+# 判据只有两条：调某个平台的系统 API，或产物是 .dll / .ime 这类注入件/注册器
+# ⇒ 进 apps/<platform>/。其余一律进 crates/。
+# 新增 crate 前先问「它在另一个平台上编得过吗」，答否就是走错了层。
+#
+# M5 加入 macOS / Linux 时，只新增平级的 apps/macos/、apps/linux/，
+# crates/ 不动。届时构建脚本必须用 -p 显式指定（--workspace 会去编别的平台的壳）。
 members = [
     "crates/heinrich-tip-id",
     "crates/heinrich-scheme",
     "crates/heinrich-core",
     "crates/heinrich-gen",
     "crates/heinrich-cli",
-    "crates/heinrich-win",
-    "crates/heinrich-setup",
+    "apps/windows/tsf",
+    "apps/windows/setup",
 ]
 
 [workspace.package]
@@ -26,10 +36,14 @@ lto = "thin"
 codegen-units = 1
 # ⚠️ 这里**不能**设 `panic = "abort"`。
 #
-# `heinrich-win` 是注入型 TSF DLL，它跑在别人的进程里（chrome 的每个 tab、
+# `heinrich-win`（apps/windows/tsf）是注入型 TSF DLL，它跑在别人的进程里（chrome 的每个 tab、
 # explorer、任意编辑器）。abort 的语义是「直接终止进程」——DLL 里一次数组越界
 # 就会让用户正在写文档的记事本凭空消失，工作内容全丢。
 #
 # 必须保持 unwind，并在每个 COM 方法里 `catch_unwind` 兜住：
 # 代价是二进制大一点、每次跨 FFI 多一层栈帧，换来的是「输入法出错只影响输入法」。
-# 参见 crates/heinrich-win/src/text_service.rs 的 `guarded()`。
+# 参见 apps/windows/tsf/src/text_service.rs 的 `guarded()`。
+#
+# 对照：WindInput 的 workspace 敢设 abort，因为它的 Windows 壳是 C++，
+# Rust 代码全在独立的 service 进程里；我们的壳本身就是 Rust，跑在宿主进程内，
+# 所以这条约束是我们独有的。

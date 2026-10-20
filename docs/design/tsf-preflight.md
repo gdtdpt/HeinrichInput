@@ -274,7 +274,7 @@ OnKeyDown
 
 ## 11. 建议的 M1.0 动作顺序
 
-1. 建 `crates/heinrich-win`（`crate-type = ["cdylib"]`）+ `crates/heinrich-setup`（注册器）。
+1. 建 `apps/windows/tsf`（`crate-type = ["cdylib"]`）+ `apps/windows/setup`（注册器）。目录分层的判据见 PROJECT.md D24。
 2. 先抄 chewing 的骨架：`DllGetClassObject` + `IClassFactory` + `ITfTextInputProcessorEx::Activate/Deactivate`，`OnKeyDown` 只写日志。
 3. 写 `heinrich-setup --install`：COM 键 + `RegisterProfile` + 类别，然后打开「设置 → 时间和语言 → 语言」确认列表里有「亨利五笔」。
 4. **在记事本里切过去，确认打字照常出英文**（说明我们还没接管，这是正确的中间态）。
