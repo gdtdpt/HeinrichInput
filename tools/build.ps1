@@ -48,8 +48,45 @@ foreach ($name in @('heinrich-cli.exe', 'heinrich-gen.exe', 'heinrich-setup.exe'
         Write-Host "  缺少 $name" -ForegroundColor Red
         exit 1
     }
-    Copy-Item $src -Destination $DistDir -Force
-    Write-Host "  已复制 $name"
+    try {
+        Copy-Item $src -Destination $DistDir -Force -ErrorAction Stop
+        Write-Host "  已复制 $name"
+        continue
+    }
+    catch {
+        # 已注册的 DLL 会被宿主进程映射，Windows 锁住镜像文件：覆盖必然失败。
+        # 且 COM 的 DLL 要等**宿主进程退出**才卸载，切换输入法、切走窗口都不够。
+        # 开发期最容易踩的是宿主里包含自己的终端：在 WorkBuddy 内置终端里试过一次
+        # 输入法之后，WorkBuddy 就一直持有这个 DLL。
+        if ($name -ne 'heinrich_win.dll') {
+            Write-Host "  无法写入 $name" -ForegroundColor Red
+            Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkGray
+            exit 1
+        }
+    }
+
+    # 绕过办法：Windows 允许**重命名**正在映射的镜像文件（只是不允许删除或覆盖）。
+    # 把旧的挪进 dist\.stale\，新文件就能落位：运行中的宿主继续映射旧内容、不受影响，
+    # 之后新启动的宿主会加载新版。代价是 .stale 里会留旧文件，可以随时整个删掉。
+    $stale = Join-Path $DistDir '.stale'
+    New-Item -ItemType Directory -Force -Path $stale | Out-Null
+    $dst = Join-Path $DistDir $name
+    $bak = Join-Path $stale ('heinrich_win.' + (Get-Date -Format 'MMdd-HHmmss') + '.dll')
+    try {
+        Move-Item -Path $dst -Destination $bak -ErrorAction Stop
+        Copy-Item $src -Destination $dst -Force -ErrorAction Stop
+        Write-Host "  已复制 $name（旧文件被占用，已改名到 .stale\ 绕过）" -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "  无法写入 $name，改名绕过也失败" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '  这个 DLL 正被已加载它的程序占用。请关闭这些程序后再构建：' -ForegroundColor Yellow
+        Write-Host '    记事本 / Notepad++ / VS Code / Chrome / Electron 应用（含 WorkBuddy）/ 资源管理器'
+        Write-Host '  查哪个进程持有它（可选）：' -ForegroundColor DarkGray
+        Write-Host '    Get-Process | Where-Object { $_.Modules.FileName -like "*heinrich_win.dll" }' -ForegroundColor DarkGray
+        exit 1
+    }
 }
 
 # 方案数据是运行时依赖，与可执行同层放置，目录结构保持一致
@@ -59,6 +96,9 @@ Copy-Item (Join-Path $root 'data\wubi86\*') -Destination $dataOut -Force
 
 Write-Host ''
 Write-Host "产物：$DistDir" -ForegroundColor Green
-Get-ChildItem -Recurse $DistDir -File | ForEach-Object {
-    Write-Host ("  {0,-24} {1,10:N0} 字节" -f $_.Name, $_.Length)
-}
+# 不递归列出 .stale：那是绕过占用留下的旧文件，不属于产物。
+Get-ChildItem -Recurse $DistDir -File |
+    Where-Object { $_.FullName -notlike "*$([IO.Path]::DirectorySeparatorChar).stale*" } |
+    ForEach-Object {
+        Write-Host ("  {0,-24} {1,10:N0} 字节" -f $_.Name, $_.Length)
+    }

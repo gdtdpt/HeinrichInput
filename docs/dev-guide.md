@@ -77,7 +77,15 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 ### 4.2 上手
 
+> **先 `cd` 到仓库根目录再执行。** `powershell -File` 的路径参数是按**当前目录**解析的，
+> 在别处跑 `-File tools\tsf.ps1` 会直接报
+> `The argument 'tools\tsf.ps1' to the -File parameter does not exist.`
+> 不想 `cd` 就用绝对路径：`-File C:\Users\<你>\Develop\Heinrich\tools\tsf.ps1`。
+
 ```powershell
+# 0) 先进入仓库根目录
+cd C:\Users\richard\Develop\Heinrich
+
 # 1) 构建 + 打包（dist/ 里 setup 与 DLL 必须同目录）
 powershell -ExecutionPolicy Bypass -File tools\build.ps1
 
@@ -179,6 +187,10 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 10. **`InstallLayoutOrTip` 返回值是 `void`。** 写错描述串不会报错，只会静默不生效。所以描述串格式在 `heinrich-tip-id` 的单测里钉死了。
 11. **控制台输出中文要 `SetConsoleOutputCP(65001)`。** 中文 Windows 默认代码页 936，直接打 UTF-8 全是乱码。另外表格对齐不能用 `{:<44}`——它数字符不数显示宽度，CJK 占两列会歪。
 12. **DLL 吃掉的键，必须保证最终一定有字出去（M1.1 起生效）。** TSF 在 `OnTestKeyDown` 问你「这个键要不要」时**早于**任何 IPC 往返：说「要」之后，事后再想让 server 把键放回宿主已经来不及，在严格的宿主里那个键直接消失。WindInput 把这条写成硬约定——**壳的吃键集必须 ⊆ 引擎的出字集**。所以「吃不吃」的判据必须 DLL 本地就能算出（本地候选缓存 + 本地「哪些键归我管」的判定表），不能依赖 server 回话。历史症状是「有些应用打不出字、有些只出半角」，极难归因。这是 D18「按键路径零阻塞」更硬的一面：不只是不能等，是**判断依据必须已经在本进程里**。
+    > **实机证据（M1.0 日志）**：同一份 DLL，Notepad++（Scintilla）只回调 `OnTestKeyDown` / `OnTestKeyUp`，WorkBuddy（Electron/Chromium）只回调 `OnKeyDown` / `OnKeyUp`。两种键路由风格——前者「先问要不要，不要就自己处理、不再回调」，后者直接调 `ITfKeystrokeMgr::KeyDown`。⇒ **吃键判定必须在两条路径上都返回 TRUE**，只写一条会表现为「在某些程序里能用、在另一些里完全没反应」。
+13. **已注册的 DLL 会被宿主映射，`Copy-Item` 覆盖必然失败（`os error 32`）。** 而且 COM 的 DLL 要等**宿主进程退出**才真正卸载：切换输入法、切走窗口都不够。开发期最坑的是宿主里包含你自己的终端——本项目在 WorkBuddy 的内置终端里测过一次输入法之后，WorkBuddy 进程就一直持有 `heinrich_win.dll`，`build.ps1` 从此写不进 `dist`。
+    **解法**：Windows 允许**重命名**正在映射的镜像文件，只是不允许删除或覆盖。所以先 `Move-Item` 到 `dist\.stale\heinrich_win.<时间戳>.dll`，再拷新的——运行中的宿主继续映射旧内容（不受影响），新启动的宿主拿到新版。`build.ps1` 已经把这条做成失败提示；`.stale` 目录可以随时整体删掉。
+    查持有者：`Get-Process | Where-Object { $_.Modules.FileName -like '*heinrich_win.dll' }`。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 

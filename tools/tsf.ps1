@@ -47,7 +47,9 @@ function Show-Log {
     }
     $info = Get-Item $logPath
     Write-Host ("== 日志 {0}（{1:N0} 字节，最后写入 {2:HH:mm:ss}）" -f $logPath, $info.Length, $info.LastWriteTime) -ForegroundColor Cyan
-    Get-Content $logPath -Tail $TailLines
+    # 必须显式 UTF8：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI(936) 解码，
+    # 而 DLL 写的是 UTF-8，不指定编码时中文会变成「鈥斺€?鎸夐敭」。
+    Get-Content $logPath -Tail $TailLines -Encoding UTF8
 }
 
 if ($Action -eq 'log') {

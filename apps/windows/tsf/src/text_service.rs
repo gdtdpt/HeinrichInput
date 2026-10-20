@@ -11,6 +11,23 @@
 //!
 //! 好处是把「注册对不对」和「接口写对没」分开诊断：注册错了语言列表里没名字，
 //! 接口错了日志里没按键，两种故障不会混在一起。
+//!
+//! ## 实测：宿主只走其中一条回调路径（M1.0 真机日志）
+//!
+//! 同一份 DLL、同一台机器，两个宿主的按键事件落在**不同的方法**上：
+//!
+//! | 宿主 | 实际收到的回调 |
+//! |---|---|
+//! | Notepad++（Scintilla） | 只有 `OnTestKeyDown` / `OnTestKeyUp` |
+//! | WorkBuddy（Electron/Chromium） | 只有 `OnKeyDown` / `OnKeyUp` |
+//!
+//! 这不是巧合，是两种键路由风格：前者先问「你要不要这个键」，不要就自己处理、
+//! 不再回调；后者直接调 `ITfKeystrokeMgr::KeyDown`。
+//!
+//! ⇒ **M1.1 的吃键判定必须在两条路径上都返回 TRUE**，只写一条会在另一半宿主里
+//! 失效（表现为「在某些程序里能用、在另一些里完全没反应」）。这也正是
+//! dev-guide 第 12 条「吃键集 ⊆ 出字集」的实机证据：判定依据必须本地可算，
+//! 因为 `OnTestKeyDown` 返回 TRUE 的那一刻键就已经被吃掉了，没有事后反悔的机会。
 
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -268,7 +285,12 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 /// 把一次按键写进日志。`lparam` 按 Win32 位域解读：bit 30 = 之前是否已按下。
 fn log_key(seq: u32, kind: &str, wparam: WPARAM, lparam: LPARAM) {
     let vk = wparam.0 as u16;
-    let repeat = (lparam.0 >> 30) & 1 == 1;
+    // bit 30 是「此前该键是否已按下」。对 key-down 它正是自动重复标志；
+    // 但对 key-up 它**恒为 1**（因为刚才确实按着），拿它判重复会让每一个
+    // up 事件都标上 REPEAT——日志里一半的行都带这个标记，标记就等于废了。
+    // 所以只在 down 类事件上看这一位。
+    let is_down = kind.ends_with("down");
+    let repeat = is_down && (lparam.0 >> 30) & 1 == 1;
     // M1.0 刻意用 info 级：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」。
     // 若压在 debug 级，用户必须给每个宿主进程单独设 HEINRICH_TSF_LOG 才看得到，
     // 验收等于做不成。M1.1 有了真正的组合串之后降回 debug。
@@ -300,22 +322,64 @@ fn modifiers() -> String {
 }
 
 /// vkey → 人能读的名字。M1.0 全靠这个看「键到底进没进来」。
+///
+/// 覆盖范围按「M1.1 会用到」定：字母数字、五笔用到的标点（`;` 与 `'`，
+/// 后者是 §6.5 的显式拼音标记）、编辑键、修饰键、方向键、功能键。
+/// 未收录的落到 `(0x..)`，不会丢信息——只是要多查一次表。
 fn describe_vk(vk: u16) -> String {
-    match vk {
-        0x41..=0x5A => format!("'{}'", (b'A' + (vk - 0x41) as u8) as char),
-        0x30..=0x39 => format!("'{}'", (b'0' + (vk - 0x30) as u8) as char),
-        0x20 => "SPACE".to_string(),
-        0x0D => "ENTER".to_string(),
-        0x1B => "ESC".to_string(),
-        0x08 => "BACKSPACE".to_string(),
-        0x09 => "TAB".to_string(),
-        0x14 => "CAPSLOCK".to_string(),
-        0x10 => "SHIFT".to_string(),
-        0x11 => "CTRL".to_string(),
-        0x12 => "ALT".to_string(),
-        0xBA => "OEM_1(;)".to_string(),
-        0xDE => "OEM_7(')".to_string(),
-        0x2E => "DELETE".to_string(),
-        other => format!("({other:#04x})"),
-    }
+    let named = match vk {
+        0x08 => "BACKSPACE",
+        0x09 => "TAB",
+        0x0D => "ENTER",
+        0x10 => "SHIFT",
+        0x11 => "CTRL",
+        0x12 => "ALT",
+        0x14 => "CAPSLOCK",
+        0x1B => "ESC",
+        0x20 => "SPACE",
+        0x21 => "PGUP",
+        0x22 => "PGDN",
+        0x23 => "END",
+        0x24 => "HOME",
+        0x25 => "LEFT",
+        0x26 => "UP",
+        0x27 => "RIGHT",
+        0x28 => "DOWN",
+        0x2D => "INSERT",
+        0x2E => "DELETE",
+        0x5B => "LWIN",
+        0x5C => "RWIN",
+        0x5D => "APPS",
+        0x90 => "NUMLOCK",
+        0x91 => "SCROLLLOCK",
+        0xA0 => "LSHIFT",
+        0xA1 => "RSHIFT",
+        0xA2 => "LCTRL",
+        0xA3 => "RCTRL",
+        0xA4 => "LALT",
+        0xA5 => "RALT",
+        // 标点：OEM 键的 vkey 与键盘布局无关，映射是固定的。
+        0xBA => "OEM_1(;)",
+        0xBB => "OEM_PLUS(=)",
+        0xBC => "OEM_COMMA(,)",
+        0xBD => "OEM_MINUS(-)",
+        0xBE => "OEM_PERIOD(.)",
+        0xBF => "OEM_2(/)",
+        0xC0 => "OEM_3(`)",
+        0xDB => "OEM_4([)",
+        0xDC => "OEM_5(\\)",
+        0xDD => "OEM_6(])",
+        0xDE => "OEM_7(')",
+        0xE2 => "OEM_102(<\\)",
+        _ => {
+            return match vk {
+                0x41..=0x5A => format!("'{}'", (b'A' + (vk - 0x41) as u8) as char),
+                0x30..=0x39 => format!("'{}'", (b'0' + (vk - 0x30) as u8) as char),
+                0x60..=0x69 => format!("NUM{}", vk - 0x60),
+                0x70..=0x87 => format!("F{}", vk - 0x6F),
+                other => format!("({other:#04x})"),
+            }
+        }
+    };
+    named.to_string()
 }
