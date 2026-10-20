@@ -23,10 +23,15 @@
 //!
 //! ## 两条路径的分工
 //!
-//! - `OnTestKey*`：**只回答吃不吃，不改状态**。它是「问句」，同一个键可能被问多次。
-//! - `OnKey*`：**真正干活**（改缓冲、上屏、切模式）。
+//! - `OnTestKey*`：**只回答吃不吃，不碰编码缓冲**。它是「问句」，同一个键可能被问多次。
+//! - `OnKey*`：**真正干活**（改缓冲、上屏）。
 //!
 //! 这样即使某个宿主「先问、再调」，也不会把同一个键处理两遍。
+//!
+//! 唯一的例外是 Shift 采样状态机（`sync_shift`）：**四条回调都要调**。走 test 路径
+//! 的宿主（Notepad++）永远不调 `OnKeyDown`，把置位动作放在那里等于这一半逻辑
+//! 不存在——M1.1 第一版就是这么错的，Shift 切换在 Notepad++ 里完全失效。
+//! 状态机本身幂等（见 `keys::ShiftTap`），重复回调不会切两次。
 
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -44,19 +49,11 @@ use windows::Win32::UI::TextServices::{
 };
 
 use crate::commit::CommitSession;
-use crate::keys::{self, Action, Mode, Mods, MAX_CODE_LEN};
+use crate::keys::{self, Action, Mode, Mods, ShiftTap, MAX_CODE_LEN};
 use crate::tinydict;
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
 static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-// vkey：Shift 有三个码（通用 / 左 / 右），宿主给哪个都可能。
-const VK_LSHIFT: u16 = 0xA0;
-const VK_RSHIFT: u16 = 0xA1;
-
-fn is_shift_key(vk: u16) -> bool {
-    vk == VK_SHIFT.0 || vk == VK_LSHIFT || vk == VK_RSHIFT
-}
 
 /// 一个宿主进程里的一份文本服务实例。
 ///
@@ -79,11 +76,11 @@ pub struct TextService {
     buffer: RefCell<String>,
     /// 中英模式。
     mode: Cell<Mode>,
-    /// 「Shift 已按下且期间没夹杂别的键」。
+    /// 单击 Shift 切中英的状态机。
     ///
-    /// 单击 Shift 切中英靠它判定。用「按下去置位、任何别的键清除、松开时读一次」
-    /// 这套状态机，重复的 key-up 回调不会切两次。
-    shift_armed: Cell<bool>,
+    /// 判定逻辑在 `keys::ShiftTap`（纯函数，有单测）；这里只负责每次按键回调时
+    /// 采样一次物理 Shift 状态喂给它。
+    shift_tap: RefCell<ShiftTap>,
 }
 
 impl TextService {
@@ -97,7 +94,7 @@ impl TextService {
             seq,
             buffer: RefCell::new(String::new()),
             mode: Cell::new(Mode::Chinese),
-            shift_armed: Cell::new(false),
+            shift_tap: RefCell::new(ShiftTap::default()),
         }
     }
 
@@ -123,20 +120,26 @@ impl TextService {
         keys::decide(self.mode.get(), self.buffer_len(), vk, self.mods())
     }
 
-    /// 按下任何键时更新 Shift 状态机。
-    fn note_key_down(&self, vk: u16) {
-        // 夹了别的键就不算「单击 Shift」，否则 Shift+A 会被当成切模式。
-        self.shift_armed.set(is_shift_key(vk));
-    }
-
-    /// 松开 Shift 时若仍是「单击」，切换中英。返回是否切换了。
+    /// 每次按键回调的入口都调一次：采样物理 Shift 状态，推进「单击切中英」状态机。
     ///
-    /// 幂等：第一次处理就把 `shift_armed` 清掉，重复的 up 回调不会再切一次。
-    fn note_key_up(&self, vk: u16) -> bool {
-        if !is_shift_key(vk) || !self.shift_armed.get() {
+    /// **四条回调路径全都要调**。M1.1 第一版只在 `OnKeyDown` 里置位，结果
+    /// Notepad++（只走 `OnTestKeyDown` / `OnTestKeyUp`）里 Shift 切换完全失效：
+    /// 置位那一半从不执行，松手时的判定被整段跳过。见 `keys::ShiftTap` 的文档。
+    ///
+    /// 返回 `true` 表示刚刚切换了中英模式。
+    fn sync_shift(&self, vk: u16, is_down: bool) -> bool {
+        let shift_now = key_down(VK_SHIFT.0);
+        let tapped = self.shift_tap.borrow_mut().observe(shift_now, vk, is_down);
+        tsf_debug!(
+            "#{} shift 采样 down={} is_down={} vk={vk:#04x} -> {}",
+            self.seq,
+            shift_now,
+            is_down,
+            if tapped { "单击" } else { "-" }
+        );
+        if !tapped {
             return false;
         }
-        self.shift_armed.set(false);
         let next = match self.mode.get() {
             Mode::Chinese => Mode::English,
             Mode::English => Mode::Chinese,
@@ -412,12 +415,17 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(())
     }
 
-    /// **问句，不改状态。** 与 `OnKeyDown` 必须返回同一个判定结果，
+    /// **问句，不碰编码缓冲。** 与 `OnKeyDown` 必须返回同一个判定结果，
     /// 否则会出现「键被吃掉但没输入」或「输入两次」（预研坑 #2）。
+    ///
+    /// 唯一在这里推进的状态是 Shift 采样状态机：走 test 路径的宿主不会调
+    /// `OnKeyDown`，把它挪过去等于这一半逻辑不存在。状态机本身幂等，
+    /// 「先问再调」的宿主重复回调也不会切两次。
     fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let seq = self.seq;
         guarded("OnTestKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
+            self.sync_shift(vk, true);
             let action = self.decide(vk);
             debug_key(seq, "test-down", vk, lparam, action);
             Ok(bool_of(action))
@@ -428,8 +436,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         let seq = self.seq;
         guarded("OnTestKeyUp", Ok(FALSE), || {
             let vk = wparam.0 as u16;
-            // 只有走 test 路径的宿主会到这里；armed 状态机保证不会切两次。
-            self.note_key_up(vk);
+            self.sync_shift(vk, false);
             debug_key(seq, "test-up", vk, lparam, Action::Pass);
             Ok(FALSE)
         })
@@ -439,7 +446,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         let seq = self.seq;
         guarded("OnKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
-            self.note_key_down(vk);
+            self.sync_shift(vk, true);
             let action = self.decide(vk);
             debug_key(seq, "down", vk, lparam, action);
             if action == Action::Pass {
@@ -464,7 +471,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         let seq = self.seq;
         guarded("OnKeyUp", Ok(FALSE), || {
             let vk = wparam.0 as u16;
-            self.note_key_up(vk);
+            self.sync_shift(vk, false);
             debug_key(seq, "up", vk, lparam, Action::Pass);
             Ok(FALSE)
         })

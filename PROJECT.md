@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.2
+> **版本**：v1.3
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳：注册 / 激活 / 观测按键）**已验收**；**M1.1（缓冲 + 上屏 + 中英切换）代码完成并已打包，等待真机验收**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -93,9 +93,10 @@
 | D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |
 | D24 | **工程分两层：`crates/` 放平台中立件，`apps/<platform>/` 放平台专属产物** | Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`；**包名与产物名不变**。`heinrich-server` 仍归 `crates/`。M5 加平台时只新增平级 `apps/macos/`、`apps/linux/`，`crates/` 不动 | ① **四家实证**：Weasel（C++）与 windows-chewing-tsf（纯 Rust）都只有 Windows，前者平铺组件目录 + 一个 sln、后者全塞 `crates/`——在单平台前提下都成立；青简与 WindInput 因为真的有第二、三个平台，才长出平台目录层。② **壳用什么语言写，决定壳放哪**：WindInput 的壳是 C++17 / Swift，物理上进不了 cargo workspace，只能放在仓库根；我们的壳是 Rust，要共享 `heinrich-core` 就必须同 workspace（跨 workspace 的 path 依赖要各写一份 `[patch]`），于是平台目录层是必然而非选择。③ **server 不按平台复制**：WindInput 一份 `apps/service`，用 `[target.'cfg(target_os = "linux")'.dependencies]` + `linux-host` feature 分形态，且它真在 Linux 发版；青简的 `apps/windows/server` + `apps/linux/server` 两份属未验证部分 |
 | D25 | **最多保留一个极窄的平台能力 trait 注入面，不做平台抽象层** | v1 不设；M5 若需要，按 WindInput 的判据收录：「协调器逻辑中途要**同步 pull** 的平台能力，且 `cfg` 兜底值是语义错误」才进 trait，其余用 `#[cfg]` + 合理兜底 | WindInput 的 `HostServices` 整份只装剪贴板三个方法，而它的 AGENTS.md 明确写着「`cfg` 兜底值在缺失平台**可接受**的探测函数 → **不进 trait**，同名函数三平台并列 `cfg` + 兜底」。TSF / IMKit / IBus 在注册方式、按键回传、组合串生命周期、候选窗归属四处几乎无共性，抽「全平台抽象 trait」只会得到一堆空实现 |
-| D26 | **「吃不吃这个键」由唯一一个纯函数回答，两条回调路径共用** | `keys::decide(mode, buffer_len, vk, mods)` **不碰任何 Windows API、无副作用**；`OnTestKeyDown`/`OnTestKeyUp` 只问不改状态，`OnKeyDown`/`OnKeyUp` 才执行 | **M1.0 真机日志实测**：Notepad++（Scintilla）只回调 `OnTestKeyDown`，WorkBuddy（Electron/Chromium）只回调 `OnKeyDown`，两条路径**互斥**。只写一条会在另一半宿主里完全失效，症状是「某些程序能用、某些毫无反应」，极难归因。做成纯函数还带来两个好处：① `OnTestKeyDown` 说「要」的那一刻键已被吃掉，事后没有反悔机会，所以判定依据必须本进程可算（D18 更硬的一面）② 该模块可在任意平台跑单测 |
+| D26 | **「吃不吃这个键」由唯一一个纯函数回答，两条回调路径共用** | `keys::decide(mode, buffer_len, vk, mods)` **不碰任何 Windows API、无副作用**；`OnTestKeyDown`/`OnTestKeyUp` 只问不改编码缓冲，`OnKeyDown`/`OnKeyUp` 才执行。**唯一例外是 Shift 采样状态机（D29）**：四条回调都要调，因为 test 路径宿主从不调 `OnKeyDown` | **M1.0 真机日志实测**：Notepad++（Scintilla）只回调 `OnTestKeyDown`，WorkBuddy（Electron/Chromium）只回调 `OnKeyDown`，两条路径**互斥**。只写一条会在另一半宿主里完全失效，症状是「某些程序能用、某些毫无反应」，极难归因。做成纯函数还带来两个好处：① `OnTestKeyDown` 说「要」的那一刻键已被吃掉，事后没有反悔机会，所以判定依据必须本进程可算（D18 更硬的一面）② 该模块可在任意平台跑单测 |
 | D27 | **吃掉的键必须变成输出：没命中原样上屏** | 缓冲无命中、或已满 4 码还来第 5 键时，把缓冲的字母原样写进文档；空缓冲时的空格/回车/Esc/退格一律放行 | 吃掉 4 个键却什么都不写，在严格宿主里那几个字母**永久消失**（踩坑 #12）。原样上屏同时给用户一个逃生口：打错就重打。空缓冲放行是因为此时这些键在宿主里本来就有正常语义（空格、换行、关窗口、删字） |
-| D28 | **中英切换 = 单击 Shift；Shift + 字母 = 临时英文** | `Shift` 按下置位 `shift_armed`、任何别的键清除、松开时读一次并切换（幂等，重复 up 不会切两次）；模式为中文时 Shift 按住的字母放行，由宿主输出大写 | ① 单击 Shift 切中英是微软拼音 / 搜狗的共同肌肉记忆 ② 不加切换则装上后完全无法输入英文，连验收步骤都得靠切回别的输入法 ③ Shift+字母放行等于一个零成本的「临时英文」逃生口，比切模式快，也不占额外按键 |
+| D28 | **中英切换 = 单击 Shift；Shift + 字母 = 临时英文** | 状态机在 `keys::ShiftTap`（纯逻辑、有单测）；按下置位、任何别的键清除、观察到松开时切换（幂等，重复 up 不会切两次）；模式为中文时 Shift 按住的字母放行，由宿主输出大写 | ① 单击 Shift 切中英是微软拼音 / 搜狗的共同肌肉记忆 ② 不加切换则装上后完全无法输入英文，连验收步骤都得靠切回别的输入法 ③ Shift+字母放行等于一个零成本的「临时英文」逃生口，比切模式快，也不占额外按键 |
+| D29 | **修饰键状态用「采样 + 比对上次」判定，不依赖按键上下事件** | 每次按键回调都取一次 `GetKeyState(VK_SHIFT)`，与上次采样比对：由「未按」变「按着」⇒ 置位；由「按着」变「未按」⇒ 若期间无别的键则判定为单击。**四条回调（`OnTestKeyDown`/`OnTestKeyUp`/`OnKeyDown`/`OnKeyUp`）全都要调** | M1.1 首版把置位写在 `OnKeyDown` 里，Notepad++（只走 test 路径）里单击 Shift **完全不生效**——置位那一半从不执行。另外 M1.0 日志显示宿主不一定送修饰键的 **key-up**（Notepad++ 对 Alt 只有 `test-down`）。采样法对两者都不敏感：up 缺失时判定在下一个按键回调上补做，最坏晚一拍 |
 
 ## 4. 架构
 
@@ -516,6 +517,12 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | 32 | `register_profile` 的 `fEnabledByDefault` 传 **true**；`hklSubstitute` 传 `NULL`（与 Weasel 一致） |
 | 33 | **工程分两层**：`crates/` 只放平台中立件，平台专属产物进 `apps/<platform>/`；Windows 壳迁至 `apps/windows/{tsf,setup}`，包名与产物名不变（D24） |
 | 34 | 平台能力**最多保留一个极窄 trait 注入面**（v1 为零），不做「平台抽象层」（D25） |
+| 35 | M1.0 真机验收通过：**`Get-WinUserLanguageList` 里出现该 TIP** 是「注册生效」最硬的证据（`InstallLayoutOrTip` 返回 void，只能事后验） |
+| 36 | 按键日志的 `REPEAT` 只在 down 类事件上判定（`lparam` bit 30 对 key-up 恒为 1） |
+| 37 | 已注册 DLL 被宿主映射时 `build.ps1` 先改名到 `dist\.stale\` 再落位（踩坑 #13） |
+| 38 | `[CmdletBinding()]` 脚本的 `param` 默认值不得引用 `$PSScriptRoot`（`-File` 调用下为空串，踩坑 #14） |
+| 39 | **修饰键状态一律采样 `GetKeyState` 与上次比对，不依赖按键上下事件**，且四条回调都要采样（D29） |
+| 40 | 日志级别可用标志文件 `%LOCALAPPDATA%\Heinrich\debug.on` 临时提到 `debug`（`tools\tsf.ps1 debug on`），不必去改环境变量；环境变量仍优先 |
 
 ### 11.2 仍待确认
 
@@ -544,3 +551,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v1.0 | 2026-10-20 | **M1.0 代码落地**：新增 `heinrich-tip-id`（TSF 身份常量）、`heinrich-win`（TSF DLL：`DllGetClassObject` / `IClassFactory` / `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink`，按键只记录不消费、全方法 `catch_unwind`）、`heinrich-setup`（注册 / 反注册 / 状态检查，主动提权）。新增 D21（`panic=unwind` 强制）、D22（身份常量集中且不可变）、D23（DLL 日志策略）；§11.1 #28–#32；`build.ps1` 纳入 `heinrich-setup.exe` 与 `heinrich_win.dll` |
 | v1.1 | 2026-10-20 | **工程分层重构**：Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`，`crates/` 收敛为平台中立件（D24）；新增 D25（不做平台抽象层，最多一个极窄 trait 注入面）；§4.1.2 补四家仓库结构实测对照（WindInput / 青简 / Weasel / chewing-tsf）；D8 依赖清单更正为 `windows-rs + heinrich-tip-id`；§11.1 #33–#34；dev-guide 补第 12 条踩坑「壳的吃键集必须 ⊆ 引擎的出字集」 |
 | v1.2 | 2026-10-20 | **M1.0 真机验收通过**（语言列表出现「亨利五笔」、`vbgd` 逐键入日志、打字照常出英文）；同批修掉三处诊断缺陷：按键日志 `REPEAT` 误标、`describe_vk` 缺方向键与 OEM 标点、`tsf.ps1` 读日志未指定 UTF-8。**M1.1 代码落地**：新增 `keys`（纯逻辑判定）、`tinydict`（20 条临时码表）、`commit`（`ITfEditSession` 上屏），`text_service` 改为「`OnTestKey*` 只回答、`OnKey*` 才执行」；新增 D26（唯一纯判定函数供两条回调路径共用）、D27（吃键必须变成输出：没命中原样上屏）、D28（单击 Shift 切中英 / Shift+字母临时英文）；§11.1 #35–#38；`HeinrichTsfAbiVersion` → 2；`tools/` 五个脚本修掉 `param` 默认值引用 `$PSScriptRoot` 导致 `-File` 调用全失败的问题 |
+| v1.3 | 2026-10-20 | **修 M1.1 真机验收发现的中英切换失效**：`shift_armed` 原先只在 `OnKeyDown` 里置位，而 Notepad++（Scintilla）只回调 `OnTestKeyDown`/`OnTestKeyUp`，置位那一半从不执行，单击 Shift 完全不切模式。改为 `keys::ShiftTap` —— 采样 `GetKeyState` 与上次比对、四条回调都调、松开事件缺失时在下一个按键上补判，新增 D29；D26 补「Shift 采样为唯一例外」；`log.rs` 支持 `%LOCALAPPDATA%\Heinrich\debug.on` 标志文件把级别提到 debug，`tools\tsf.ps1` 增 `debug on|off` 子命令（并显式声明位置参数）；§11.1 #35–#40；dev-guide 补踩坑 #15「状态更新不能只挂 OnKeyDown」与 #16「位置参数按声明顺序分配」；45 单测 |

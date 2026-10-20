@@ -16,14 +16,29 @@
 .EXAMPLE
     # 直接看日志尾部
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log
+
+.EXAMPLE
+    # 打开逐键 debug 日志（改完要重启宿主程序才生效）
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug off
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('install', 'uninstall', 'status', 'log')]
+    [Parameter(Position = 0)]
+    [ValidateSet('install', 'uninstall', 'status', 'log', 'debug')]
     [string]$Action = 'status',
 
+    # 只给 debug 用：`tsf.ps1 debug on` / `tsf.ps1 debug off`。
+    # 位置必须显式声明：PowerShell 按声明顺序分配位置参数，不写 Position 的话
+    # `debug on` 里的 `on` 会落到下一个按顺序排列的参数上。
+    [Parameter(Position = 1)]
+    [ValidateSet('on', 'off', '')]
+    [string]$Switch = '',
+
+    [Parameter(Position = 2)]
     [string]$DistDir,
 
+    [Parameter(Position = 3)]
     [int]$TailLines = 40
 )
 
@@ -36,7 +51,9 @@ $ErrorActionPreference = 'Stop'
 if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 
 $setup = Join-Path $DistDir 'heinrich-setup.exe'
-$logPath = Join-Path $env:LOCALAPPDATA 'Heinrich\logs\tsf.log'
+$logDir = Join-Path $env:LOCALAPPDATA 'Heinrich'
+$logPath = Join-Path $logDir 'logs\tsf.log'
+$debugMarker = Join-Path $logDir 'debug.on'
 
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -55,6 +72,40 @@ function Show-Log {
     # 必须显式 UTF8：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI(936) 解码，
     # 而 DLL 写的是 UTF-8，不指定编码时中文会变成「鈥斺€?鎸夐敭」。
     Get-Content $logPath -Tail $TailLines -Encoding UTF8
+}
+
+function Set-DebugSwitch {
+    param([string]$Value)
+    switch ($Value) {
+        'on' {
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+            Set-Content -Path $debugMarker -Value 'debug' -Encoding ASCII
+            Write-Host "已打开 debug 日志：$debugMarker" -ForegroundColor Green
+            Write-Host '注意：日志级别在每个宿主进程里只解析一次，' -ForegroundColor Yellow
+            Write-Host '      必须**重启要观察的程序**（如 Notepad++）才生效。'
+        }
+        'off' {
+            if (Test-Path $debugMarker) { Remove-Item $debugMarker -Force }
+            Write-Host '已关闭 debug 日志，回到 info 级。' -ForegroundColor Green
+            Write-Host '同样要重启宿主程序才生效。' -ForegroundColor Yellow
+        }
+        default {
+            if (Test-Path $debugMarker) {
+                Write-Host "debug 日志：已打开（$debugMarker）" -ForegroundColor Green
+            }
+            else {
+                Write-Host 'debug 日志：未打开（info 级）' -ForegroundColor DarkGray
+            }
+            if ($env:HEINRICH_TSF_LOG) {
+                Write-Host "环境变量 HEINRICH_TSF_LOG=$($env:HEINRICH_TSF_LOG) 优先于标志文件。" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+if ($Action -eq 'debug') {
+    Set-DebugSwitch -Value $Switch
+    exit 0
 }
 
 if ($Action -eq 'log') {

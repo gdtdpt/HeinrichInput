@@ -47,17 +47,34 @@ static WARNED: AtomicU8 = AtomicU8::new(0);
 
 fn level() -> Level {
     *LEVEL.get_or_init(|| {
+        // 1) 环境变量优先，显式设了就以它为准。
         let raw = std::env::var("HEINRICH_TSF_LOG").unwrap_or_default();
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "off" | "none" | "0" => Level::Off,
-            "error" => Level::Error,
-            "warn" | "warning" => Level::Warn,
-            "debug" | "trace" => Level::Debug,
-            "info" => Level::Info,
-            // 未设置或写错 → info。写错时不静默变 off，否则「日志是空的」会被误判成没收到按键。
-            _ => Level::Info,
+        let from_env = match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => Some(Level::Off),
+            "error" => Some(Level::Error),
+            "warn" | "warning" => Some(Level::Warn),
+            "debug" | "trace" => Some(Level::Debug),
+            "info" => Some(Level::Info),
+            _ => None,
+        };
+        if let Some(l) = from_env {
+            return l;
         }
+        // 2) 没设环境变量时看标志文件。DLL 跑在别人的进程里，改环境变量要去
+        //    系统设置里翻、还要重启宿主；一个标志文件用 `tools\tsf.ps1 debug on`
+        //    就能开关，排障成本低得多。
+        if debug_marker().is_some_and(|p| p.exists()) {
+            return Level::Debug;
+        }
+        // 3) 默认 info。写错时不静默变 off，否则「日志是空的」会被误判成没收到按键。
+        Level::Info
     })
+}
+
+/// 诊断开关文件：`%LOCALAPPDATA%\Heinrich\debug.on`，存在即把级别提到 `debug`。
+fn debug_marker() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("debug.on"))
 }
 
 fn path() -> Option<&'static PathBuf> {

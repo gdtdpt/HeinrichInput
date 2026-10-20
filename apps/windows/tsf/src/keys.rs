@@ -53,6 +53,16 @@ pub const VK_Y: u16 = 0x59;
 /// 单字全码最长 4 码（D15：3 或 4 码，不足四字根补末笔识别码）。
 pub const MAX_CODE_LEN: usize = 4;
 
+/// Shift 有三个 vkey：通用 `VK_SHIFT`、左 `VK_LSHIFT`、右 `VK_RSHIFT`，
+/// 宿主给哪个都可能。
+pub const VK_SHIFT: u16 = 0x10;
+pub const VK_LSHIFT: u16 = 0xA0;
+pub const VK_RSHIFT: u16 = 0xA1;
+
+pub fn is_shift_key(vk: u16) -> bool {
+    vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT
+}
+
 /// vkey → 五笔码字母。在 `a`–`y` 之外返回 `None`。
 pub fn wubi_letter(vk: u16) -> Option<char> {
     if (VK_A..=VK_Y).contains(&vk) {
@@ -95,6 +105,65 @@ pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
         // 退格：空缓冲时交还宿主，否则会删不掉文档里已有的字。
         0x08 if !empty => Action::Backspace,
         _ => Action::Pass,
+    }
+}
+
+/// 「单击 Shift 切中英」的状态机。**纯逻辑**：Shift 的物理状态由调用方采样后传进来。
+///
+/// ## 为什么不直接按 vkey 判上下
+///
+/// 最初的实现是「收到 Shift 的 down 就置位、收到 up 就读一次」。实测有两处靠不住：
+///
+/// 1. 它假设 down 与 up 都经 `OnKeyDown` / `OnKeyUp` 到达。但 Notepad++（Scintilla）
+///    只回调 `OnTestKeyDown` / `OnTestKeyUp`，`OnKeyDown` 从不被调用——置位那一半
+///    永远不会执行，松手时的判定被整段跳过。
+/// 2. M1.0 的真机日志里，Notepad++ 对 Alt 只留下了 `test-down`，**没有对应的
+///    `test-up`**。也就是说宿主不一定会把修饰键的松开事件送进来。
+///
+/// 所以改成「每次按键回调都采样一次物理状态，与上次比对」：
+///
+/// - 看到「上次没按、这次按着」→ 置位；
+/// - 看到「上次按着、这次没按」→ 若期间没夹杂别的键，就是一次单击；
+/// - 松开事件没送到也不致命——那个「上次按着、这次没按」的比对会在**下一个按键
+///   回调**上补做，只是判定晚一拍（见 `late_detection_when_up_missing` 测试）。
+#[derive(Default, Debug)]
+pub struct ShiftTap {
+    /// 上次回调时采样到的 Shift 是否按下。
+    seen_down: bool,
+    /// 本次 Shift 按下之后没有夹杂别的键。
+    armed: bool,
+}
+
+impl ShiftTap {
+    /// 计入一次按键回调。
+    ///
+    /// - `shift_now`：回调发生时 `GetKeyState(VK_SHIFT)` 的结果
+    /// - `vk` / `is_down`：这次回调对应的键与方向
+    ///
+    /// 返回 `true` 表示刚刚完成一次单击 Shift，调用方应当切换中英。
+    ///
+    /// 幂等：同一个键被重复回调（宿主可能「先问再调」）不会切两次。
+    pub fn observe(&mut self, shift_now: bool, vk: u16, is_down: bool) -> bool {
+        let was_down = self.seen_down;
+        self.seen_down = shift_now;
+
+        let mut tapped = false;
+        if shift_now && !was_down {
+            self.armed = true;
+        } else if !shift_now && was_down && self.armed {
+            tapped = true;
+            self.armed = false;
+        }
+
+        // 任何别的键按下都意味着这不再是「单独按了一下 Shift」，否则按住 Shift
+        // 打一个大写字母，松手时会把模式切走。
+        //
+        // 必须放在上面之后：松开事件缺失时，补齐判定发生在那个键的 down 回调上，
+        // 先判后清才不会把这次单击吞掉。
+        if is_down && !is_shift_key(vk) {
+            self.armed = false;
+        }
+        tapped
     }
 }
 
@@ -190,5 +259,61 @@ mod tests {
             shift: true,
         };
         assert_eq!(decide(Mode::Chinese, 2, SHIFT, mods), Action::Pass);
+    }
+
+    // ---------------------------------------------------------------
+    // ShiftTap：单击 Shift 切中英
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tap_toggles_on_release() {
+        let mut t = ShiftTap::default();
+        assert!(!t.observe(true, SHIFT, true), "按下不算单击");
+        assert!(t.observe(false, SHIFT, false), "松开时判定为单击");
+        assert!(!t.observe(false, SHIFT, false), "重复的 up 不得再切一次");
+    }
+
+    /// 按住 Shift 打一个大写字母，松手时不能把模式切走。
+    #[test]
+    fn held_shift_with_a_letter_does_not_toggle() {
+        let mut t = ShiftTap::default();
+        assert!(!t.observe(true, SHIFT, true));
+        assert!(!t.observe(true, 0x41, true), "Shift+A 是组合，不是单击");
+        assert!(!t.observe(true, 0x41, false));
+        assert!(!t.observe(false, SHIFT, false), "松手时 armed 已被清掉");
+    }
+
+    /// 宿主没送 Shift 的 key-up 时，判定会在下一个按键回调上补做。
+    ///
+    /// 这正是 Notepad++ 的实际情况：M1.0 日志里它只留下了 Alt 的 test-down。
+    #[test]
+    fn late_detection_when_up_missing() {
+        let mut t = ShiftTap::default();
+        assert!(!t.observe(true, SHIFT, true), "按下 Shift");
+        // 松开事件缺失，直接来了 'A' 的 down
+        assert!(t.observe(false, 0x41, true), "在下一个按键上补判出单击");
+        assert!(!t.observe(false, 0x41, false), "同一键的 up 不得再切一次");
+    }
+
+    /// 连按两次 Shift 应当切两次（中→英→中）。
+    #[test]
+    fn two_taps_toggle_twice() {
+        let mut t = ShiftTap::default();
+        t.observe(true, SHIFT, true);
+        assert!(t.observe(false, SHIFT, false));
+        t.observe(true, SHIFT, true);
+        assert!(t.observe(false, SHIFT, false));
+    }
+
+    /// 宿主「先问再调」会把同一个键回调两遍，判定必须幂等。
+    #[test]
+    fn double_callback_is_idempotent() {
+        let mut t = ShiftTap::default();
+        // test-down 与 down 都送进来
+        assert!(!t.observe(true, SHIFT, true));
+        assert!(!t.observe(true, SHIFT, true));
+        // test-up 与 up 都送进来
+        assert!(t.observe(false, SHIFT, false));
+        assert!(!t.observe(false, SHIFT, false));
     }
 }

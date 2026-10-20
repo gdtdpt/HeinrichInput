@@ -70,7 +70,7 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 |---|---|
 | `crates/heinrich-tip-id/src/lib.rs` | CLSID / Profile GUID / 描述串。**发布后不可改**，值由 `uuid5` 生成 |
 | `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` / `HeinrichTsfAbiVersion` |
-| `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action`。不碰 Windows API，可在任意平台单测 |
+| `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action` + `ShiftTap`。不碰 Windows API，可在任意平台单测 |
 | `apps/windows/tsf/src/tinydict.rs` | 20 条硬编码小码表。**M1.3 接 server 后整个删除** |
 | `apps/windows/tsf/src/commit.rs` | `ITfEditSession`：`GetSelection` → `SetText` → `Collapse` → `SetSelection` |
 | `apps/windows/tsf/src/text_service.rs` | TSF 接口实现，只做搬运；`OnTestKey*` 只回答、`OnKey*` 才执行 |
@@ -88,12 +88,20 @@ OnKeyDown ─────┘                            └→ 其余  → 返�
 ```
 
 - **`decide` 是唯一决策点**，两条路径共用，答案必须一致。
-- **`OnTestKey*` 不改状态**。它是问句，同一个键可能被问多次。
-- **`OnKey*` 才执行**：改缓冲、上屏、切模式。
+- **`OnTestKey*` 不碰编码缓冲**。它是问句，同一个键可能被问多次。
+- **`OnKey*` 才执行**：改缓冲、上屏。
+- **唯一的例外是 Shift 采样状态机**（`sync_shift` → `keys::ShiftTap`）：**四条回调都要调**。
+
+那条例外是踩坑 #15 换来的：走 test 路径的宿主（Notepad++）**永远不调 `OnKeyDown`**，
+把「Shift 按下就置位」写在那里，等于这一半逻辑根本不存在。状态机做成幂等的，
+所以「先问再调」的宿主重复回调也不会切两次。
 
 违反这条的症状是「某些程序能用、某些完全没反应」，或「一个字进去两次」。原因见踩坑 #12 与 #13 前面的实测表。
 
-**日志级别**：M1.1 起按键退回 `debug`，`info` 只留 Activate / Deactivate / 提交 / 无命中 / 模式切换。要逐键排查就设 `HEINRICH_TSF_LOG=debug`。
+**日志级别**：M1.1 起按键退回 `debug`，`info` 只留 Activate / Deactivate / 提交 / 无命中 / 模式切换。
+要逐键排查用 `powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on`（写一个
+`%LOCALAPPDATA%\Heinrich\debug.on` 标志文件），**改完必须重启要观察的宿主程序**——
+级别在每个进程里只解析一次。环境变量 `HEINRICH_TSF_LOG` 仍然可用，且优先级更高。
 
 ### 4.1.2 缓冲与提交规则
 
@@ -112,7 +120,7 @@ OnKeyDown ─────┘                            └→ 其余  → 返�
 | **已满 4 码还来字母** | 原样上屏 + 清空，该字母开始新组合（D27） |
 | Ctrl / Alt 组合 | 一律放行 |
 | Shift + 字母 | 放行，宿主输出大写 = 临时英文（D28） |
-| 单击 Shift | 切换中英（幂等，重复 key-up 不会切两次） |
+| 单击 Shift | 切换中英。判定靠**采样物理状态**而不是靠 vkey 上下，松开事件缺失也能在下一个按键上补判（`ShiftTap`） |
 
 ### 4.2 上手
 
@@ -137,7 +145,11 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 status
 # 4) 看日志尾部
 powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log
 
-# 5) 反注册
+# 5) 打开 / 关闭逐键 debug 日志（改完要重启宿主程序）
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug off
+
+# 6) 反注册
 powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 uninstall
 ```
 
@@ -234,6 +246,10 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     `无法将参数绑定到参数"Path"，因为该参数为空字符串`，脚本在绑参阶段就死了、一行都没执行。
     **更阴的是它只在 `-File` 下发作**：`& .\tools\x.ps1` 或 `. .\tools\x.ps1` 都正常。所以本地调试全绿、照着文档调用却报错。
     **写法**：`param` 里只声明 `[string]$DistDir`（不给默认值），函数体里再 `if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }`。本项目 `tools\` 下 5 个脚本已全部按此改。
+15. **状态更新不能只挂在 `OnKeyDown` 上——走 test 路径的宿主永远不调它。** M1.1 第一版把「Shift 按下就置位」写在 `OnKeyDown` 里，结果 Notepad++ 里单击 Shift 完全切换不了中英：它只回调 `OnTestKeyDown` / `OnTestKeyUp`，置位那一半从不执行，松手时的判定被整段跳过。日志里表现为**一条模式切换都没有**，而逐键日志看着一切正常。
+    **推论**：凡是「同一个物理动作要产生副作用」的逻辑，四条回调都是入口，不能假手 `OnKey*` 代劳。
+    **并且**：宿主不一定把修饰键的 **key-up** 送进来（M1.0 日志里 Notepad++ 对 Alt 只留下了 `test-down`，没有 `test-up`）。所以判定不能依赖「收到 up」，改成**每次回调采样一次 `GetKeyState` 与上次比对**：看到「上次按着、这次没按」就补判，最坏只是晚一拍（那个按键本身）。实现见 `keys::ShiftTap`，它是纯逻辑、有单测。
+16. **`[CmdletBinding()]` 脚本的位置参数按声明顺序分配。** 给 `tsf.ps1` 加 `debug on` 的子参数时，新加的 `[string]$Switch` 声明在 `$DistDir` 之后，`on` 就被绑到了 `$DistDir` 上，`$Switch` 一直是空串——命令静默走了 `default` 分支，看起来像功能没实现。多参数脚本一律显式写 `[Parameter(Position = n)]`。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
