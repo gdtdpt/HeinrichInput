@@ -17,7 +17,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$DistDir = (Join-Path $PSScriptRoot '..\dist')
+    [string]$DistDir
 )
 
 # 只对 PowerShell 自己的 cmdlet 用 Stop。原生程序写 stderr 时，Windows PowerShell 5.1
@@ -29,6 +29,10 @@ $ErrorActionPreference = 'Stop'
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location $root
+
+# 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
+# `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串。
+if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 
 # 显式按包名列出本平台的产物，不用 --workspace / --all。
 # M5 加入 apps/macos、apps/linux 之后，--workspace 会去编别的平台的壳、必然失败；

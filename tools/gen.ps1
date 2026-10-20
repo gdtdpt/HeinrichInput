@@ -16,9 +16,9 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RawDir = (Join-Path $PSScriptRoot '..\data\raw'),
-    [string]$OutDir = (Join-Path $PSScriptRoot '..\data\wubi86'),
-    [string]$Report = (Join-Path $PSScriptRoot '..\out\m0a-report.md')
+    [string]$RawDir,
+    [string]$OutDir,
+    [string]$Report
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +26,13 @@ $ErrorActionPreference = 'Stop'
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location $root
+
+# 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
+# `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串，
+# `Join-Path` 会直接抛「无法将参数绑定到参数 Path，因为该参数为空字符串」。
+if (-not $RawDir) { $RawDir = Join-Path $PSScriptRoot '..\data\raw' }
+if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot '..\data\wubi86' }
+if (-not $Report) { $Report = Join-Path $PSScriptRoot '..\out\m0a-report.md' }
 
 if (-not (Test-Path (Join-Path $RawDir 'wubi86.dict.yaml'))) {
     throw "缺少 $RawDir\wubi86.dict.yaml，先跑 tools\fetch-data.ps1"

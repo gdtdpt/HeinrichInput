@@ -11,7 +11,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$DataDir = (Join-Path $PSScriptRoot '..\data\wubi86')
+    [string]$DataDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +19,10 @@ $ErrorActionPreference = 'Stop'
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location $root
+
+# 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
+# `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串。
+if (-not $DataDir) { $DataDir = Join-Path $PSScriptRoot '..\data\wubi86' }
 
 function Invoke-Step([string]$Name, [scriptblock]$Action) {
     Write-Host "== $Name" -ForegroundColor Cyan

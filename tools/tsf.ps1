@@ -22,13 +22,18 @@ param(
     [ValidateSet('install', 'uninstall', 'status', 'log')]
     [string]$Action = 'status',
 
-    [string]$DistDir = (Join-Path $PSScriptRoot '..\dist'),
+    [string]$DistDir,
 
     [int]$TailLines = 40
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
+# `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串，
+# `Join-Path` 会直接抛「无法将参数绑定到参数 Path，因为该参数为空字符串」。
+if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 
 $setup = Join-Path $DistDir 'heinrich-setup.exe'
 $logPath = Join-Path $env:LOCALAPPDATA 'Heinrich\logs\tsf.log'

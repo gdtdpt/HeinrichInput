@@ -191,6 +191,10 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 13. **已注册的 DLL 会被宿主映射，`Copy-Item` 覆盖必然失败（`os error 32`）。** 而且 COM 的 DLL 要等**宿主进程退出**才真正卸载：切换输入法、切走窗口都不够。开发期最坑的是宿主里包含你自己的终端——本项目在 WorkBuddy 的内置终端里测过一次输入法之后，WorkBuddy 进程就一直持有 `heinrich_win.dll`，`build.ps1` 从此写不进 `dist`。
     **解法**：Windows 允许**重命名**正在映射的镜像文件，只是不允许删除或覆盖。所以先 `Move-Item` 到 `dist\.stale\heinrich_win.<时间戳>.dll`，再拷新的——运行中的宿主继续映射旧内容（不受影响），新启动的宿主拿到新版。`build.ps1` 已经把这条做成失败提示；`.stale` 目录可以随时整体删掉。
     查持有者：`Get-Process | Where-Object { $_.Modules.FileName -like '*heinrich_win.dll' }`。
+14. **`[CmdletBinding()]` 的脚本里，`param` 默认值不能用 `$PSScriptRoot`。** 用 `powershell -File tools\x.ps1` 调用时，参数绑定早于脚本作用域建立，`$PSScriptRoot` 还是空串，`Join-Path` 直接抛
+    `无法将参数绑定到参数"Path"，因为该参数为空字符串`，脚本在绑参阶段就死了、一行都没执行。
+    **更阴的是它只在 `-File` 下发作**：`& .\tools\x.ps1` 或 `. .\tools\x.ps1` 都正常。所以本地调试全绿、照着文档调用却报错。
+    **写法**：`param` 里只声明 `[string]$DistDir`（不给默认值），函数体里再 `if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }`。本项目 `tools\` 下 5 个脚本已全部按此改。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 

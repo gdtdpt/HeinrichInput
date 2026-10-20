@@ -14,11 +14,15 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RawDir = (Join-Path $PSScriptRoot '..\data\raw')
+    [string]$RawDir
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
+# `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串。
+if (-not $RawDir) { $RawDir = Join-Path $PSScriptRoot '..\data\raw' }
 # Invoke-WebRequest 的进度条会把每个 16KB 块的提示都刷到控制台，关掉
 $ProgressPreference = 'SilentlyContinue'
 
