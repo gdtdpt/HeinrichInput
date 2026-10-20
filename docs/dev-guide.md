@@ -60,7 +60,7 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 **`heinrich-win` 的依赖纪律（D8）**：只允许 `windows` + `heinrich-tip-id`。它被注入到每个宿主进程，加一个库等于让 chrome 的每个 tab 都多背一份。
 
-## 4. TSF 壳（M1.0 / M1.1）
+## 4. TSF 壳（M1.0 – M1.2）
 
 「薄壳」指的是**不含引擎、词库、SQLite、UI 绘制**，不是行数少。TSF 管线本身是重活：WindInput 的 C++ 壳约 1 MB 源码（`TextService.cpp` 385 KB、`KeyEventSink.cpp` 184 KB、`IPCClient.cpp` 114 KB、`LangBarItemButton.cpp` 60 KB），这些代码全部在 D8 的依赖纪律下活着。`heinrich-win` 到 M2 长到几千行是正常的，别拿行数当验收标准。
 
@@ -72,7 +72,7 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 | `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` / `HeinrichTsfAbiVersion` |
 | `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action` + `ShiftTap`。不碰 Windows API，可在任意平台单测 |
 | `apps/windows/tsf/src/tinydict.rs` | 20 条硬编码小码表。**M1.3 接 server 后整个删除** |
-| `apps/windows/tsf/src/commit.rs` | `ITfEditSession`：`GetSelection` → `SetText` → `Collapse` → `SetSelection` |
+| `apps/windows/tsf/src/preedit.rs` | 组合串：`Show` / `Finish(Some)` / `Finish(None)` 三个动作的编辑会话，以及没有组合串时的直接插入降级 |
 | `apps/windows/tsf/src/text_service.rs` | TSF 接口实现，只做搬运；`OnTestKey*` 只回答、`OnKey*` 才执行 |
 | `apps/windows/tsf/src/log.rs` | 文件日志（多进程安全，见 D23） |
 | `apps/windows/setup/src/main.rs` | `install` / `uninstall` / `status`，主动提权 |
@@ -92,9 +92,13 @@ OnKeyDown ─────┘                            └→ 其余  → 返�
 - **`OnKey*` 才执行**：改缓冲、上屏。
 - **唯一的例外是 Shift 采样状态机**（`sync_shift` → `keys::ShiftTap`）：**四条回调都要调**。
 
-那条例外是踩坑 #15 换来的：走 test 路径的宿主（Notepad++）**永远不调 `OnKeyDown`**，
-把「Shift 按下就置位」写在那里，等于这一半逻辑根本不存在。状态机做成幂等的，
-所以「先问再调」的宿主重复回调也不会切两次。
+那条例外是踩坑 #15 换来的：M1.1 首版把「Shift 按下就置位」写在 `OnKeyDown` 里，
+而 Notepad++ 这类宿主是**先问后做**的——问了说不要，它就不再调 `OnKeyDown`，于是
+置位那一半根本不执行。状态机做成幂等的，所以「先问再调」的宿主重复回调也不会切两次。
+
+> **别被 M1.0 的日志误导**：那一版 Notepad++ 只留下 `test-down`、没有 `down`，
+> 是因为 `OnKeyDown` 当时恒返回 FALSE、一个键都不吃。**在 `OnTestKeyDown` 回答 TRUE
+> 之后，宿主会接着调 `OnKeyDown`**，两条路径都会到齐（顺序是先问后做）。
 
 违反这条的症状是「某些程序能用、某些完全没反应」，或「一个字进去两次」。原因见踩坑 #12 与 #13 前面的实测表。
 
@@ -121,6 +125,33 @@ OnKeyDown ─────┘                            └→ 其余  → 返�
 | Ctrl / Alt 组合 | 一律放行 |
 | Shift + 字母 | 放行，宿主输出大写 = 临时英文（D28） |
 | 单击 Shift | 切换中英。判定靠**采样物理状态**而不是靠 vkey 上下，松开事件缺失也能在下一个按键上补判（`ShiftTap`） |
+| 方向键 / Home / End / PgUp / PgDn（0x21–0x28），组合态 | 吃掉并取消（D31）。代价是一次按键被吞，换来的是不留错位组合串 |
+| 方向键类，缓冲为空 | 放行（正常移动光标） |
+
+### 4.1.3 组合串（M1.2）
+
+缓冲里那串编码**就是组合串的内容**——两者是同一份状态的两种表现，所以「缓冲一变
+就同步组合串」是唯一不变式。三个动作都在 `preedit.rs`，全部走 `TF_ES_SYNC` 编辑会话：
+
+| 动作 | 时机 | 会话里做什么 |
+|---|---|---|
+| `Show(text)` | 每次缓冲变化（加字母、退格） | 有组合串就改内容；没有就 `StartComposition` 后写入；`text` 为空则结束并抹掉 |
+| `Finish(Some(t))` | 空格 / 回车提交 | 内容换成 `t`（符号或原样字母）→ 光标收到末尾 → `EndComposition`，文字留下 |
+| `Finish(None)` | Esc、方向键、失焦、切窗口、单击 Shift | 内容抹成空 → `EndComposition` |
+
+三条硬约束（都来自 TSF 的语义，不是我们的选择）：
+
+1. **`StartComposition` 要一个空 range。** 流程必须「清选区 → 起组合串 → 再往组合串的
+   range 里写」。反过来组合串起点会落在文字末尾，覆盖不到 preedit，之后 `SetText` 改的
+   内容看不见。
+2. **`EndComposition` 不删文字**，它只把这段文字「转正」。取消必须先把内容写成空串。
+3. **写文档只能在 `DoEditSession(ec)` 里**，且必须先 `SetSelection` 把光标收到 preedit
+   末尾，否则看起来像「字往左边长」。
+
+组合串也可能被**别人**终止（宿主换焦点、文档关闭、另一个 TIP 抢走）。这时 TSF 通过
+`ITfCompositionSink::OnCompositionTerminated(ecwrite, comp)` 通知我们，我们趁 `ecwrite`
+还有效把残留文字删掉——否则文档里会永久留一串 `vbg`。**自己 `EndComposition` 不会
+触发它**，而且删之前会比对句柄身份，双保险。
 
 ### 4.2 上手
 
@@ -246,10 +277,17 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     `无法将参数绑定到参数"Path"，因为该参数为空字符串`，脚本在绑参阶段就死了、一行都没执行。
     **更阴的是它只在 `-File` 下发作**：`& .\tools\x.ps1` 或 `. .\tools\x.ps1` 都正常。所以本地调试全绿、照着文档调用却报错。
     **写法**：`param` 里只声明 `[string]$DistDir`（不给默认值），函数体里再 `if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }`。本项目 `tools\` 下 5 个脚本已全部按此改。
-15. **状态更新不能只挂在 `OnKeyDown` 上——走 test 路径的宿主永远不调它。** M1.1 第一版把「Shift 按下就置位」写在 `OnKeyDown` 里，结果 Notepad++ 里单击 Shift 完全切换不了中英：它只回调 `OnTestKeyDown` / `OnTestKeyUp`，置位那一半从不执行，松手时的判定被整段跳过。日志里表现为**一条模式切换都没有**，而逐键日志看着一切正常。
+15. **状态更新不能只挂在 `OnKeyDown` 上——先问后做的宿主问了说不要就不调它。** M1.1 第一版把「Shift 按下就置位」写在 `OnKeyDown` 里，结果 Notepad++ 里单击 Shift 完全切换不了中英：它只回调 `OnTestKeyDown` / `OnTestKeyUp`，置位那一半从不执行，松手时的判定被整段跳过。日志里表现为**一条模式切换都没有**，而逐键日志看着一切正常。
+    > **前提要记准**：`OnKeyDown` 不是「永远不调」，而是「`OnTestKeyDown` 回答 FALSE 时不调」。M1.0 的日志里 Notepad++ 只有 `test-down` 没有 `down`，是因为那一版一个键都不吃。回答 TRUE 之后两条路都会到齐（先问后做）。
     **推论**：凡是「同一个物理动作要产生副作用」的逻辑，四条回调都是入口，不能假手 `OnKey*` 代劳。
     **并且**：宿主不一定把修饰键的 **key-up** 送进来（M1.0 日志里 Notepad++ 对 Alt 只留下了 `test-down`，没有 `test-up`）。所以判定不能依赖「收到 up」，改成**每次回调采样一次 `GetKeyState` 与上次比对**：看到「上次按着、这次没按」就补判，最坏只是晚一拍（那个按键本身）。实现见 `keys::ShiftTap`，它是纯逻辑、有单测。
 16. **`[CmdletBinding()]` 脚本的位置参数按声明顺序分配。** 给 `tsf.ps1` 加 `debug on` 的子参数时，新加的 `[string]$Switch` 声明在 `$DistDir` 之后，`on` 就被绑到了 `$DistDir` 上，`$Switch` 一直是空串——命令静默走了 `default` 分支，看起来像功能没实现。多参数脚本一律显式写 `[Parameter(Position = n)]`。
+17. **组合串有三处语义与直觉相反（M1.2 起生效）：**
+    - **`StartComposition` 要的是一个空 range。** 先写文字再起组合串，组合串起点落在文字末尾，覆盖不到 preedit，之后 `SetText` 改的内容在屏幕上根本看不见——症状是「能上屏、但打字过程中什么都没有」。正确顺序：清选区 → 起组合串 → 往组合串的 range 里写。
+    - **`EndComposition` 不删文字。** 它只把这段文字转正，「取消」如果不先把内容写成空串，那几个编码字母会永久留在文档里。
+    - **写完必须 `SetSelection` 把光标收到 preedit 末尾**，否则光标停在组合串起点，看起来像「字往左边长」。
+    另外组合串可能被**别人**终止（换焦点 / 文档关闭 / 别的 TIP 抢走），要实现的不是自己再 end 一次，而是 `ITfCompositionSink::OnCompositionTerminated` 里用给的 `ecwrite` 把残留删掉；删之前比对句柄身份，避免把自己刚提交的字也删了。
+18. **`#[implement]` 生成的 `as_interface_ref()` 是泛型方法。** 直接 `self.as_interface_ref().cast::<T>()` 会报 `type annotations needed`，得写成 `ComObjectInterface::<IUnknown>::as_interface_ref(self)`；要一份能长期持有的引用再加 `.to_owned()`（它会 AddRef）。相关：`ITfContextComposition::StartComposition` 的 sink 参数是 `Param<ITfCompositionSink>`，`&Option<T>` **不满足**，要传 `Option<&T>`（`self.sink.as_ref()`）。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -272,7 +310,7 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1 TSF 壳 | 预研完成（`docs/design/tsf-preflight.md`），按 M1.0–M1.3 四步推进 |
 | M1.0 键进得来 | ✅ 已验收（注册 / 激活 / 按键只记录不消费 / 状态检查；`Get-WinUserLanguageList` 里已出现该 TIP） |
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
-| M1.2 组合串 | composition + 显示属性虚线 + 光标跟随 |
+| M1.2 组合串 | 🟡 代码完成，待真机验收（`ITfComposition` preedit + 提交/取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗） |
 | M1.3 接 server | 命名管道 + 本地候选缓存 + `--debug-sleep` 零阻塞验证 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。

@@ -104,6 +104,11 @@ pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
         0x1B if !empty => Action::Cancel,
         // 退格：空缓冲时交还宿主，否则会删不掉文档里已有的字。
         0x08 if !empty => Action::Backspace,
+        // 方向键 / Home / End / PgUp / PgDn（0x21–0x28）：组合态下光标一动，
+        // 组合串就停在原地，下一个字母还会往那个旧位置写，屏幕上出现「光标在这、
+        // 字却在那」的错位。M1.2 既没有候选窗也不做组合态光标，折中成
+        // 「吃掉并取消」：代价是一次方向键被吞，换来的是绝不留下错位的组合串。
+        0x21..=0x28 if !empty => Action::Cancel,
         _ => Action::Pass,
     }
 }
@@ -214,6 +219,20 @@ mod tests {
     fn backspace_only_eaten_with_a_buffer() {
         assert_eq!(decide(Mode::Chinese, 0, BACK, m()), Action::Pass);
         assert_eq!(decide(Mode::Chinese, 2, BACK, m()), Action::Backspace);
+    }
+
+    /// 组合态下方向键一律「吃掉并取消」：吃了才不会留下错位的组合串，
+    /// 空缓冲时必须放行，否则用户连光标都移不动。
+    #[test]
+    fn navigation_cancels_only_during_composition() {
+        for vk in [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28] {
+            assert_eq!(
+                decide(Mode::Chinese, 2, vk, m()),
+                Action::Cancel,
+                "{vk:#04x}"
+            );
+            assert_eq!(decide(Mode::Chinese, 0, vk, m()), Action::Pass, "{vk:#04x}");
+        }
     }
 
     #[test]

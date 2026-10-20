@@ -17,24 +17,25 @@
 //! 只允许 `windows` 与 `heinrich-tip-id`。想加别的库之前先问一句：
 //! 它值得让每个宿主进程都多背一份吗。
 //!
-//! ## M1.1 的边界
+//! ## M1.2 的边界
 //!
-//! 缓冲 `a`–`y`，空格 / 回车把命中字经 `ITfEditSession` 写进文档；单击 Shift 切中英。
-//! 组合串（虚线、光标跟随）、候选窗、IPC 全部留到后续阶段。
+//! 缓冲 `a`–`y`，编码以**组合串**的形式显示在文档里（`vbg` 边走边出现在光标处），
+//! 空格 / 回车把命中字原地替换上去；Esc 取消；单击 Shift 切中英。
+//! 候选窗、显示属性（虚线）、IPC 全部留到后续阶段。
 //!
 //! 模块分工：
 //!
 //! - [`keys`]：**纯逻辑**，不碰 Windows API。「吃不吃这个键」只在这里回答一次。
 //! - [`tinydict`]：20 条硬编码小码表，M1.3 接 server 后删除。
-//! - [`commit`]：把文本写进宿主文档的编辑会话。
+//! - [`preedit`]：组合串（显示 / 提交 / 取消）的编辑会话。
 //! - [`text_service`]：TSF 接口实现，只做搬运。
 
 #[allow(unused_macros)]
 #[macro_use]
 mod log;
 
-mod commit;
 mod keys;
+mod preedit;
 mod text_service;
 mod tinydict;
 
@@ -158,7 +159,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 /// 「注册表写错了」这两种故障。
 #[no_mangle]
 pub extern "system" fn HeinrichTsfAbiVersion() -> u32 {
-    // 1 = M1.0（观测按键）；2 = M1.1（缓冲 + 上屏 + 中英切换）。
-    // 改动导出的语义时递增。
-    2
+    // 1 = M1.0（观测按键）；2 = M1.1（缓冲 + 上屏 + 中英切换）；
+    // 3 = M1.2（组合串）。改动导出的语义时递增。
+    3
 }
