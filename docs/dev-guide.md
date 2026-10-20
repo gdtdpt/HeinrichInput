@@ -39,13 +39,19 @@ crates/              平台中立：换平台不该改这里，两个 target 都
   heinrich-scheme    编码表示 + 词库装载 + 索引 + 清单解析         （零依赖，无平台分支）
       ↑
   heinrich-core      查询语义 + 排序 + 学习模型                   （纯逻辑：不读时钟、不做文件 I/O）
+  heinrich-proto     DLL↔server 帧：长度前缀 + 消息类型 + 编解码     （零依赖）
+      ↑
+  heinrich-server    常驻进程：core 宿主 + 命名管道服务端 + 空闲退出
+  heinrich-ui        候选窗**几何**：布局 + 定位（不碰 Windows、不做字体量测）（零依赖）
       ↑
   heinrich-cli       REPL / check                                （仅 M0 验收用，不进产品）
   heinrich-gen       原始码表 → 方案数据 + 校验报告               （仅构建期用，不进产品）
 
 apps/windows/        平台专属产物：调 Windows API，或产物是注入件 / 注册器
-  tsf/               TSF DLL，只依赖 windows + heinrich-tip-id     （D8）
+  tsf/               TSF DLL，只依赖 windows + heinrich-tip-id + heinrich-proto（D8）
   setup/             注册器，依赖 windows + heinrich-tip-id
+  ui/                候选窗：HWND + 分层窗口 + D2D/DWrite          （M2.2）
+  cand-preview/      候选窗预览器：假候选直接弹窗                   （M2.2）
 ```
 
 **这个两层划分是硬约定，不是目录洁癖**。判据只有两条：调某个平台的系统 API，或产物是 `.dll` / `.ime` 这类注入件、平台注册器 ⇒ 进 `apps/<platform>/`；其余一律进 `crates/`。新增 crate 前先问「它在另一个平台上编得过吗」，答否就是走错了层。
@@ -54,9 +60,8 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 **M5 加平台时只新增平级的 `apps/macos/`、`apps/linux/`，`crates/` 不动**。届时构建脚本必须用 `-p` 显式指定产物——`cargo build --workspace` 会去编别的平台的壳、必然失败。
 
-后续（M1.3+）：`heinrich-proto`（DLL↔server 帧）、`heinrich-server`（常驻进程）、`heinrich-ui`（候选窗）。
-
-**已实现**：`heinrich-proto` 与 `heinrich-server`（M1.3）。`heinrich-ui` 仍待 M2。
+**已实现**：`heinrich-proto` 与 `heinrich-server`（M1.3），`heinrich-ui` 的几何部分（M2.1）。
+`heinrich-ui` 的边界见 §4.6：它只算矩形，字形量测与绘制在 `apps/windows/ui`。
 
 **边界纪律**：`heinrich-core` 里出现 `cfg(windows)`、`std::fs`、`SystemTime::now()` 就说明分层错了。时间一律由调用方作为 Unix 秒传入——这是排序行为可测的前提。
 
@@ -290,8 +295,34 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow     # 默认�
 三个必须知道的点，否则会得出相反结论：
 
 1. **`--debug-sleep` 对所有帧生效，包括 `Hello`。** 而 DLL 的握手预算是 `GREET_BUDGET = 3000ms` ⇒ `--debug-sleep 5000` 连握手都过不去，你测到的是「连不上」（瞬间返回），不是「连上了但慢」（50ms 上限才在这里生效）。要验上限就用 **800**。
-2. **字母键根本不走 IPC。** `ipc::query` 只在上屏键（空格/回车）和标点键上调用 ⇒ 打字过程永远不卡，唯一可能卡的是**按下空格的那一下**。
+2. **字母键根本不走 IPC。** `ipc::query` 只在上屏键（空格/回车）和标点键上调用 ⇒ 打字过程永远不卡，唯一可能卡的是**按下空格的那一下**。**M2.3 起这条会变**：候选窗要逐键查询（D37），届时「不卡」要靠 64 条缓存 + 超时只丢结果、不空窗；量逐键延迟是 M2.3 的第一件事。
 3. **进程内候选缓存（64 条）会掩盖降级。** 判据不是「卡不卡」，而是**输出的字**：日志里出现 `server 不可用（ab），原样上屏` 才算降级生效；出现 `提交 ab → 某字` 说明这个码命中了缓存，换一个该宿主进程从没打过的码。
+
+### 4.6 候选窗（M2）：同类产品怎么做的、我们怎么切
+
+**先给结论：没有一家把候选呈现交给宿主的 TSF 候选 UI。** 三家都自绘，只是自绘的层不同：
+
+| 产品 | 窗口 | 布局 | 定位 | 交互 |
+|---|---|---|---|---|
+| Weasel（小狼毫） | 自绘 `WeaselPanel`：`WS_POPUP｜WS_CLIPSIBLINGS｜WS_DISABLED` + `WS_EX_TOOLWINDOW｜TOPMOST｜NOACTIVATE｜LAYERED`，`_LayerUpdate` 走 `UpdateLayeredWindow`，`WM_DPICHANGED` 时重建资源 | 独立的 `Layout` 类层次（`HorizontalLayout` / `VerticalLayout` / `FullScreenLayout`），**只算矩形不画** | `MonitorFromRect(光标)` 取 `rcWork` → 越右夹右、越下翻上方（`y = inputPos.top - height`）、再不行贴边 | `WM_MOUSEACTIVATE` 拦激活、`WM_LBUTTONUP` 命中、`WM_MOUSEWHEEL` 翻页、`WM_MOUSEMOVE/LEAVE` 悬停 |
+| fcitx5 Classic UI | 自绘，Cairo + Pango；X11 用 override-redirect 窗，Wayland 用 layer-shell | **Yoga 布局引擎**建节点树（`rootNode_` / `candidatesNode_` …），`InputWindow::paint` 只负责照画 | 按输入光标 + 逐屏 DPI 算（多屏各算各的） | 主题 9-patch、悬停、点选 |
+| 青简 | 平台壳各写一份（macOS IMK / Windows TSF + 独立引擎进程） | core 不管界面 | core 不管界面 | core 不管界面 |
+
+能抄的就三条：
+
+1. **布局与绘制必须分家。** Weasel 的 `Layout` 类、fcitx5 的 Yoga 树，都是「先算矩形、再照画」。我们的落点是 `crates/heinrich-ui`（纯几何、23 单测）+ `apps/windows/ui`（HWND/DWrite）。
+2. **定位永远夹进 `rcWork`，且越下就翻到光标上方。** Weasel 的 `_RepositionWindow` 就是全部逻辑，见 `crates/heinrich-ui/src/place.rs` 的文档注释。唯一和它不同的地方：窗口比工作区还高时我们**贴顶**，它贴底（贴底会连行首一起推出屏幕）。
+3. **窗口不激活。** `WS_EX_NOACTIVATE` 只是不让它抢前台，**点它仍然会激活**——必须 `WM_MOUSEACTIVATE` 返回 `MA_NOACTIVATE`，再自己处理 `WM_LBUTTONUP`。这条不抄会得到一个「点候选就丢失组合串」的输入法。
+
+我们**不抄**的：Weasel 的竖向/全屏布局（v1 只做单行 5 条）、fcitx5 的 9-patch 主题（v1 不做皮肤）、青简把候选窗算作壳的一部分（我们把它拆成几何 + 窗口两块，因为几何能单测）。
+
+**分步与验收**：M2.1 几何（`crates/heinrich-ui`，`cargo test -p heinrich-ui`）→ M2.2 窗口 + `cand-preview.exe`（自截图验收）→ M2.3 接进 TSF（逐键查询、`GetTextExt` 定位、数字键与点选）→ M2.4 学习落库。四个阶段与验收项见 PROJECT.md。
+
+**看一眼几何**（不需要窗口、不需要装输入法）：
+
+```powershell
+cargo run -q -p heinrich-ui --example geometry > dist\candidate-geometry.svg
+```
 
 ## 5. 数据管线
 
@@ -380,7 +411,10 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
 | M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
-| M2 候选窗 | 分层窗口 + DirectWrite 排版 + 光标跟随（`ITfContextView::GetTextExt`）+ 数字键选词 |
+| M2.1 候选窗几何 | 🟡 代码完成，待验收（`crates/heinrich-ui`：单行布局 + 分页 + 超宽压窄 + 命中测试 + 定位夹工作区，23 单测；`examples/geometry.rs` 出几何 SVG） |
+| M2.2 候选窗窗口 | 分层窗口 + D2D/DWrite + `cand-preview.exe`（自截图验收） |
+| M2.3 接进 TSF | 逐键查询 + `ITfContextView::GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页（D37/D38） |
+| M2.4 学习落库 | SQLite `usage` 表 + 上屏回报 + 完整 §5 打分 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

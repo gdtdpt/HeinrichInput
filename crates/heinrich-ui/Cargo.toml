@@ -1,0 +1,11 @@
+[package]
+name = "heinrich-ui"
+description = "亨利输入法：候选窗的纯几何层（布局与定位，无 OS 依赖、不做字体度量）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# 刻意零依赖（D8 的延伸）：这个 crate 会被 DLL 侧的 UI 模块引用，
+# 而 DLL 跑在别人的进程里，多一个依赖就是每个宿主多背一份。
+[dependencies]

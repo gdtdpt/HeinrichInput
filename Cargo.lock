@@ -54,6 +54,10 @@ name = "heinrich-tip-id"
 version = "0.1.0"
 
 [[package]]
+name = "heinrich-ui"
+version = "0.1.0"
+
+[[package]]
 name = "heinrich-win"
 version = "0.1.0"
 dependencies = [
