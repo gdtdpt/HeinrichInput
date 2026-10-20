@@ -26,6 +26,12 @@
     # 看常驻 server 的状态 / 手动起停 / 看它的日志
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server stop
+
+.EXAMPLE
+    # 验 D18「按键路径零阻塞」：把 server 换成「能握手、查询必超时」的慢实例，
+    # 再按提示打一个码，脚本自己读日志判定降级有没有生效。
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow -SlowMs 1500
 #>
 [CmdletBinding()]
 param(
@@ -37,14 +43,23 @@ param(
     # 位置必须显式声明：PowerShell 按声明顺序分配位置参数，不写 Position 的话
     # `debug on` 里的 `on` 会落到下一个按顺序排列的参数上。
     [Parameter(Position = 1)]
-    [ValidateSet('', 'on', 'off', 'status', 'start', 'stop')]
+    [ValidateSet('', 'on', 'off', 'status', 'start', 'stop', 'slow')]
     [string]$Sub = '',
 
     [Parameter(Position = 2)]
     [string]$DistDir,
 
     [Parameter(Position = 3)]
-    [int]$TailLines = 40
+    [int]$TailLines = 40,
+
+    # `server slow` 的每帧延迟。默认 800ms：**必须小于 DLL 的握手预算 3s**，
+    # 否则握手就过不去，测到的是「连不上」而不是「连上了但慢」。
+    [Parameter()]
+    [int]$SlowMs = 800,
+
+    # `server slow` 自动盯日志的时长。这段时间内去宿主里打字，脚本自己判定。
+    [Parameter()]
+    [int]$WaitSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,6 +155,118 @@ function Invoke-ServerAction {
                 $_ | Stop-Process -Force -ErrorAction SilentlyContinue
             }
             Write-Host '已结束。下一次按键会自动重连（会重新拉起一个新 server）。' -ForegroundColor Green
+        }
+        'slow' {
+            if (-not (Test-Path $serverExe)) {
+                Write-Host "找不到 $serverExe" -ForegroundColor Red
+                Write-Host '先跑 tools\build.ps1。'
+                return
+            }
+            if ($SlowMs -ge 3000) {
+                Write-Host "SlowMs=$SlowMs ≥ DLL 的握手预算 3s：这样连握手都过不去，" -ForegroundColor Yellow
+                Write-Host '测到的是「连不上」而不是「连上了但慢」。想看超时路径请用 800 左右。' -ForegroundColor Yellow
+            }
+
+            # 同会话互斥体只有一个赢家：正常实例占着，慢实例会被直接挤掉。
+            # 所以先结束它——但 DLL 的后台线程每 200ms 就会拉起一个新的正常实例，
+            # 我们只有那 200ms 的窗口。输了就重来（慢实例已被挤掉，重来是安全的）。
+            $won = $null
+            for ($i = 1; $i -le 6; $i++) {
+                Get-Process -Name 'heinrich-server' -ErrorAction SilentlyContinue |
+                    Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 40
+                $p = Start-Process -FilePath $serverExe `
+                    -ArgumentList '--debug-sleep', "$SlowMs", '--idle-exit', '0' `
+                    -WindowStyle Hidden -PassThru
+                Start-Sleep -Milliseconds 900
+                $p.Refresh()
+                if (-not $p.HasExited) {
+                    $won = $p
+                    break
+                }
+            }
+            if (-not $won) {
+                Write-Host '没抢到互斥体（一直被自动拉起的正常实例抢先）。再跑一次本命令。' -ForegroundColor Red
+                return
+            }
+            Write-Host "慢 server 已就位 pid $($won.Id)，每帧延迟 $SlowMs ms。" -ForegroundColor Green
+
+            $skip = 0
+            if (Test-Path $logPath) {
+                $skip = @(Get-Content $logPath -Encoding UTF8).Count
+            }
+
+            Write-Host ''
+            Write-Host '现在切到记事本 / Notepad++（不用重启），敲一个【这个宿主进程从没打过】的码再按空格，' -ForegroundColor Cyan
+            Write-Host "例如 ab、qq。我在这边自动盯日志，你不用切回来按键；$WaitSeconds 秒内没动静就算超时。" -ForegroundColor Cyan
+            Write-Host ''
+
+            # 轮询而不是 Read-Host：让用户只切一次窗口（去打字），判定与收尾都在这里自动完成。
+            # try/finally 是为了「按 Ctrl+C 放弃」也不把慢实例留在机器上。
+            $deadline = (Get-Date).AddSeconds($WaitSeconds)
+            $degraded = $null
+            $cached = @()
+            $new = @()
+            try {
+                $lastRemain = -1
+                while ((Get-Date) -lt $deadline) {
+                    Start-Sleep -Milliseconds 500
+                    if (Test-Path $logPath) {
+                        $new = @(Get-Content $logPath -Encoding UTF8 | Select-Object -Skip $skip)
+                    }
+                    $degraded = $new | Where-Object { $_ -match 'server 不可用' } | Select-Object -First 1
+                    if ($degraded) { break }
+
+                    # 命中缓存时提示换码，但**继续等**——不用重新跑脚本。
+                    foreach ($line in @($new | Where-Object { $_ -match '提交 .+ → ' })) {
+                        if ($cached -notcontains $line) {
+                            $cached += $line
+                            if ($line -match '提交 (\S+) → (\S+)') {
+                                Write-Host ''
+                                Write-Host ("  「{0}」走了缓存（早就查过，所以还是出「{1}」）。换一个没打过的码，我继续等。" -f $Matches[1], $Matches[2]) -ForegroundColor Yellow
+                            }
+                        }
+                    }
+                    $remain = [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
+                    if ($remain -ne $lastRemain) {
+                        $lastRemain = $remain
+                        Write-Host ("`r  等待中，还剩 {0} 秒…        " -f $remain) -NoNewline -ForegroundColor DarkGray
+                    }
+                }
+                Write-Host ''
+
+                Write-Host ''
+                Write-Host '== 这一轮新增的日志' -ForegroundColor Cyan
+                if ($new.Count -eq 0) {
+                    Write-Host '  （没有新增）' -ForegroundColor DarkGray
+                }
+                else {
+                    $new | ForEach-Object { Write-Host "  $_" }
+                }
+
+                Write-Host ''
+                if ($degraded) {
+                    Write-Host '判定：降级路径生效 ✅' -ForegroundColor Green
+                    Write-Host ("  server 慢到 {0} ms，宿主一次都没等，编码原样上屏 ⇒ D18 成立。" -f $SlowMs) -ForegroundColor Green
+                }
+                elseif ($cached.Count -gt 0) {
+                    Write-Host '判定：只看到缓存命中，没测到降级 ⚠' -ForegroundColor Yellow
+                    Write-Host '  再跑一次本命令，换一个这个宿主进程从没打过的码。' -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host '判定：这一轮日志里什么都没有 ⚠' -ForegroundColor Yellow
+                    Write-Host '  三种可能：① 光标不在支持 TSF 的输入框里 ② 宿主里还是旧 DLL（需重启宿主）' -ForegroundColor Yellow
+                    Write-Host '  ③ 敲的码一直没按空格（查询只在上屏键上发生）。' -ForegroundColor Yellow
+                }
+            }
+            finally {
+                # 收尾自动恢复：撤掉慢实例，DLL 下一次激活会拉起正常的那个。
+                # 用户不该为了「撤销一次测试」再记一条命令。
+                Get-Process -Name 'heinrich-server' -ErrorAction SilentlyContinue |
+                    Stop-Process -Force -ErrorAction SilentlyContinue
+                Write-Host ''
+                Write-Host '已自动恢复：慢实例结束，正常 server 会在你下次切到输入框时拉起（无需额外命令）。' -ForegroundColor Green
+            }
         }
         default {
             if ($procs.Count -eq 0) {

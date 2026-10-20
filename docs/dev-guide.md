@@ -277,6 +277,22 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 uninstall
 
 日志级别：`HEINRICH_TSF_LOG=debug` 可看焦点事件等细节；`off` 关闭。
 
+### 4.5 验 D18：怎么造一个「慢 server」
+
+D18 的判据是「server 卡住时宿主一个键都不等」。要真机验它，先得有一个**连着但很慢**的 server：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow     # 默认每帧 800ms
+```
+
+脚本会抢占同会话互斥体（正常实例每 200ms 会被 DLL 自动拉起，所以是竞态，输了自动重试最多 6 次）。**跑起来之后只需要切到宿主敲一个码，不用切回来按键**：脚本每 0.5s 读一次日志，判定完自己打印结论，并在结束时自动撤掉慢实例（中途 Ctrl+C 也会撤）。`-WaitSeconds` 默认 60 秒，`-SlowMs` 默认 800ms。
+
+三个必须知道的点，否则会得出相反结论：
+
+1. **`--debug-sleep` 对所有帧生效，包括 `Hello`。** 而 DLL 的握手预算是 `GREET_BUDGET = 3000ms` ⇒ `--debug-sleep 5000` 连握手都过不去，你测到的是「连不上」（瞬间返回），不是「连上了但慢」（50ms 上限才在这里生效）。要验上限就用 **800**。
+2. **字母键根本不走 IPC。** `ipc::query` 只在上屏键（空格/回车）和标点键上调用 ⇒ 打字过程永远不卡，唯一可能卡的是**按下空格的那一下**。
+3. **进程内候选缓存（64 条）会掩盖降级。** 判据不是「卡不卡」，而是**输出的字**：日志里出现 `server 不可用（ab），原样上屏` 才算降级生效；出现 `提交 ab → 某字` 说明这个码命中了缓存，换一个该宿主进程从没打过的码。
+
 ## 5. 数据管线
 
 ```
@@ -363,7 +379,7 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.0 键进得来 | ✅ 已验收（注册 / 激活 / 按键只记录不消费 / 状态检查；`Get-WinUserLanguageList` 里已出现该 TIP） |
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
-| M1.3 接 server | 🟡 代码完成，待真机验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式；候选窗 / SQLite / 数字键选词仍不做） |
+| M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
 | M2 候选窗 | 分层窗口 + DirectWrite 排版 + 光标跟随（`ITfContextView::GetTextExt`）+ 数字键选词 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
