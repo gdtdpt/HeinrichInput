@@ -1,7 +1,7 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.0
-> **状态**：M0a（数据装配）+ M0b（引擎）已验收；**M1.0（TSF 壳：注册 / 激活 / 观测按键）代码完成并已打包，等待真机注册验收**
+> **版本**：v1.2
+> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳：注册 / 激活 / 观测按键）**已验收**；**M1.1（缓冲 + 上屏 + 中英切换）代码完成并已打包，等待真机验收**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
 > **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
@@ -93,6 +93,9 @@
 | D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |
 | D24 | **工程分两层：`crates/` 放平台中立件，`apps/<platform>/` 放平台专属产物** | Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`；**包名与产物名不变**。`heinrich-server` 仍归 `crates/`。M5 加平台时只新增平级 `apps/macos/`、`apps/linux/`，`crates/` 不动 | ① **四家实证**：Weasel（C++）与 windows-chewing-tsf（纯 Rust）都只有 Windows，前者平铺组件目录 + 一个 sln、后者全塞 `crates/`——在单平台前提下都成立；青简与 WindInput 因为真的有第二、三个平台，才长出平台目录层。② **壳用什么语言写，决定壳放哪**：WindInput 的壳是 C++17 / Swift，物理上进不了 cargo workspace，只能放在仓库根；我们的壳是 Rust，要共享 `heinrich-core` 就必须同 workspace（跨 workspace 的 path 依赖要各写一份 `[patch]`），于是平台目录层是必然而非选择。③ **server 不按平台复制**：WindInput 一份 `apps/service`，用 `[target.'cfg(target_os = "linux")'.dependencies]` + `linux-host` feature 分形态，且它真在 Linux 发版；青简的 `apps/windows/server` + `apps/linux/server` 两份属未验证部分 |
 | D25 | **最多保留一个极窄的平台能力 trait 注入面，不做平台抽象层** | v1 不设；M5 若需要，按 WindInput 的判据收录：「协调器逻辑中途要**同步 pull** 的平台能力，且 `cfg` 兜底值是语义错误」才进 trait，其余用 `#[cfg]` + 合理兜底 | WindInput 的 `HostServices` 整份只装剪贴板三个方法，而它的 AGENTS.md 明确写着「`cfg` 兜底值在缺失平台**可接受**的探测函数 → **不进 trait**，同名函数三平台并列 `cfg` + 兜底」。TSF / IMKit / IBus 在注册方式、按键回传、组合串生命周期、候选窗归属四处几乎无共性，抽「全平台抽象 trait」只会得到一堆空实现 |
+| D26 | **「吃不吃这个键」由唯一一个纯函数回答，两条回调路径共用** | `keys::decide(mode, buffer_len, vk, mods)` **不碰任何 Windows API、无副作用**；`OnTestKeyDown`/`OnTestKeyUp` 只问不改状态，`OnKeyDown`/`OnKeyUp` 才执行 | **M1.0 真机日志实测**：Notepad++（Scintilla）只回调 `OnTestKeyDown`，WorkBuddy（Electron/Chromium）只回调 `OnKeyDown`，两条路径**互斥**。只写一条会在另一半宿主里完全失效，症状是「某些程序能用、某些毫无反应」，极难归因。做成纯函数还带来两个好处：① `OnTestKeyDown` 说「要」的那一刻键已被吃掉，事后没有反悔机会，所以判定依据必须本进程可算（D18 更硬的一面）② 该模块可在任意平台跑单测 |
+| D27 | **吃掉的键必须变成输出：没命中原样上屏** | 缓冲无命中、或已满 4 码还来第 5 键时，把缓冲的字母原样写进文档；空缓冲时的空格/回车/Esc/退格一律放行 | 吃掉 4 个键却什么都不写，在严格宿主里那几个字母**永久消失**（踩坑 #12）。原样上屏同时给用户一个逃生口：打错就重打。空缓冲放行是因为此时这些键在宿主里本来就有正常语义（空格、换行、关窗口、删字） |
+| D28 | **中英切换 = 单击 Shift；Shift + 字母 = 临时英文** | `Shift` 按下置位 `shift_armed`、任何别的键清除、松开时读一次并切换（幂等，重复 up 不会切两次）；模式为中文时 Shift 按住的字母放行，由宿主输出大写 | ① 单击 Shift 切中英是微软拼音 / 搜狗的共同肌肉记忆 ② 不加切换则装上后完全无法输入英文，连验收步骤都得靠切回别的输入法 ③ Shift+字母放行等于一个零成本的「临时英文」逃生口，比切模式快，也不占额外按键 |
 
 ## 4. 架构
 
@@ -427,8 +430,8 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 |---|---|---|
 | **M0a** 数据装配 ✅ **已完成** | `heinrich-gen`：解析 `wubi86.dict.yaml` → 生成 `data/wubi86/{scheme.toml,lexicon.tsv}`；校验报告见 `out/m0a-report.md` | ① 常用字覆盖 **100%（3498/3498，表内 2 个 `_` 占位已剔除）** ② 报告可复现（两次运行同哈希 `1b5c432c…`）③ 2–3 级简码非全码前缀 **17/4203 = 0.40% ≤ 1%** ④ 一级简码 **25 键、每键 1 条** |
 | **M0b** 引擎 ✅ **已完成** | `heinrich-scheme`（编码打包 + TSV 装配 + 索引）+ `heinrich-core`（精确查询、§5 排序、组合期锁）+ `heinrich-cli`（REPL / check） | ① 26 个单测覆盖排序三档、阈值边界、衰减、精确/回退查询 ② REPL 连打可观测：单次使用升一位、首位受 1.5 倍保护、持续使用可夺位 ③ `heinrich-cli check` 全部通过 ④ `clippy -D warnings` + `fmt --check` 干净 |
-| **M1.0** 键进得来 | `heinrich-win` 只实现 `DllGetClassObject`+`IClassFactory`+`ITfTextInputProcessorEx`+`ITfKeyEventSink`；`OnKeyDown` 只写日志、**不消费按键**；`heinrich-setup --install/--uninstall` 完成三件注册 | ① 语言列表出现「亨利五笔」② 切过去后记事本打字**照常出英文**（正确的中间态）③ 日志见每个 vkey ④ 卸载后列表条目消失、无残留键 |
-| **M1.1** 字上得去 | 缓冲 a–y + 20 条硬编码小码表；空格/回车把命中字经 `ITfEditSession` 上屏 | ① 记事本敲 `vbg` 出「好」② Esc 取消无残留 ③ 切窗口再回来不出乱码 |
+| **M1.0** 键进得来 ✅ **已验收** | `heinrich-win` 只实现 `DllGetClassObject`+`IClassFactory`+`ITfTextInputProcessorEx`+`ITfKeyEventSink`；`OnKeyDown` 只写日志、**不消费按键**；`heinrich-setup --install/--uninstall` 完成三件注册 | ① 语言列表出现「亨利五笔」② 切过去后记事本打字**照常出英文**（正确的中间态）③ 日志见每个 vkey ④ 卸载后列表条目消失、无残留键 |
+| **M1.1** 字上得去 🟡 **代码完成，待真机验收** | 缓冲 a–y + 20 条硬编码小码表（`tinydict.rs`，M1.3 删）；空格/回车把命中字经 `ITfEditSession` 上屏；单击 Shift 切中英、Shift+字母临时英文（D26–D28） | ① 记事本 / Notepad++ / Chromium 类宿主各敲 `vbg` 出「好」（**三处都要过**，两族宿主的回调路径不同，见 D26）② Esc 取消无残留 ③ 切窗口再回来不出乱码 ④ 无命中码原样上屏、不吞键 ⑤ 单击 Shift 能切回英文正常输入 |
 | **M1.2** 组合串 | composition + `ITfDisplayAttributeProvider` 虚线 + 光标跟随（坐标由 `ITfContextView::GetTextExt` 算） | ① 组合串有虚线 ② 候选窗跟光标 ③ 宿主右键改变选择后组合自动终止 |
 | **M1.3** 接 server | 命名管道查真码表 + 本地候选缓存 + 断连重连 + **`--debug-sleep` 零阻塞验证** | ① 13.6 万条下打字无延迟感 ② server 被杀 5 秒内自动重连 ③ server 故意睡 5 秒时**宿主完全不卡**（D18 不过则 D1 不成立） |
 | **M2** 候选窗 | `heinrich-ui` 自绘候选窗（DirectWrite）+ 完整 §5 排序 + 设置里的学习数据查看 | ① 真机连打三天，词序符合预期且不抢位 ② 高分屏/多屏/DPI 切换不错位 ③ 候选窗不遮挡、不抢焦点 |
@@ -540,3 +543,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v0.9 | 2026-10-20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」，品牌短名「亨利」，语言栏显示「亨利五笔」（D20 / §11.1 #27）。原代号「析字 / Xizi」因三重歧义废弃；全量替换 4 crate、4 exe、目录名与 25 个文件的文档脚本（177 处引用），数据重新生成 |
 | v1.0 | 2026-10-20 | **M1.0 代码落地**：新增 `heinrich-tip-id`（TSF 身份常量）、`heinrich-win`（TSF DLL：`DllGetClassObject` / `IClassFactory` / `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink`，按键只记录不消费、全方法 `catch_unwind`）、`heinrich-setup`（注册 / 反注册 / 状态检查，主动提权）。新增 D21（`panic=unwind` 强制）、D22（身份常量集中且不可变）、D23（DLL 日志策略）；§11.1 #28–#32；`build.ps1` 纳入 `heinrich-setup.exe` 与 `heinrich_win.dll` |
 | v1.1 | 2026-10-20 | **工程分层重构**：Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`，`crates/` 收敛为平台中立件（D24）；新增 D25（不做平台抽象层，最多一个极窄 trait 注入面）；§4.1.2 补四家仓库结构实测对照（WindInput / 青简 / Weasel / chewing-tsf）；D8 依赖清单更正为 `windows-rs + heinrich-tip-id`；§11.1 #33–#34；dev-guide 补第 12 条踩坑「壳的吃键集必须 ⊆ 引擎的出字集」 |
+| v1.2 | 2026-10-20 | **M1.0 真机验收通过**（语言列表出现「亨利五笔」、`vbgd` 逐键入日志、打字照常出英文）；同批修掉三处诊断缺陷：按键日志 `REPEAT` 误标、`describe_vk` 缺方向键与 OEM 标点、`tsf.ps1` 读日志未指定 UTF-8。**M1.1 代码落地**：新增 `keys`（纯逻辑判定）、`tinydict`（20 条临时码表）、`commit`（`ITfEditSession` 上屏），`text_service` 改为「`OnTestKey*` 只回答、`OnKey*` 才执行」；新增 D26（唯一纯判定函数供两条回调路径共用）、D27（吃键必须变成输出：没命中原样上屏）、D28（单击 Shift 切中英 / Shift+字母临时英文）；§11.1 #35–#38；`HeinrichTsfAbiVersion` → 2；`tools/` 五个脚本修掉 `param` 默认值引用 `$PSScriptRoot` 导致 `-File` 调用全失败的问题 |

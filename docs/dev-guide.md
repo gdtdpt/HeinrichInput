@@ -60,20 +60,59 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 **`heinrich-win` 的依赖纪律（D8）**：只允许 `windows` + `heinrich-tip-id`。它被注入到每个宿主进程，加一个库等于让 chrome 的每个 tab 都多背一份。
 
-## 4. TSF 壳（M1.0）
+## 4. TSF 壳（M1.0 / M1.1）
 
 「薄壳」指的是**不含引擎、词库、SQLite、UI 绘制**，不是行数少。TSF 管线本身是重活：WindInput 的 C++ 壳约 1 MB 源码（`TextService.cpp` 385 KB、`KeyEventSink.cpp` 184 KB、`IPCClient.cpp` 114 KB、`LangBarItemButton.cpp` 60 KB），这些代码全部在 D8 的依赖纪律下活着。`heinrich-win` 到 M2 长到几千行是正常的，别拿行数当验收标准。
 
-### 4.1 三个组件
+### 4.1 组件
 
 | 文件 | 作用 |
 |---|---|
 | `crates/heinrich-tip-id/src/lib.rs` | CLSID / Profile GUID / 描述串。**发布后不可改**，值由 `uuid5` 生成 |
-| `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` |
-| `apps/windows/tsf/src/text_service.rs` | `ITfTextInputProcessorEx` / `ITfKeyEventSink` / `ITfThreadMgrEventSink` |
+| `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` / `HeinrichTsfAbiVersion` |
+| `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action`。不碰 Windows API，可在任意平台单测 |
+| `apps/windows/tsf/src/tinydict.rs` | 20 条硬编码小码表。**M1.3 接 server 后整个删除** |
+| `apps/windows/tsf/src/commit.rs` | `ITfEditSession`：`GetSelection` → `SetText` → `Collapse` → `SetSelection` |
+| `apps/windows/tsf/src/text_service.rs` | TSF 接口实现，只做搬运；`OnTestKey*` 只回答、`OnKey*` 才执行 |
 | `apps/windows/tsf/src/log.rs` | 文件日志（多进程安全，见 D23） |
 | `apps/windows/setup/src/main.rs` | `install` / `uninstall` / `status`，主动提权 |
 | `apps/windows/setup/src/tsf.rs` | `RegisterProfile` / `RegisterCategory` / `InstallLayoutOrTip` / COM 探针 |
+
+### 4.1.1 按键处理的固定形状（D26）
+
+```
+OnTestKeyDown ─┐
+               ├→ keys::decide() → Action ─┬→ Pass  → 返回 FALSE（宿主处理）
+OnKeyDown ─────┘                            └→ 其余  → 返回 TRUE（我处理）
+                                              └ OnKeyDown 里才改状态 / 上屏
+```
+
+- **`decide` 是唯一决策点**，两条路径共用，答案必须一致。
+- **`OnTestKey*` 不改状态**。它是问句，同一个键可能被问多次。
+- **`OnKey*` 才执行**：改缓冲、上屏、切模式。
+
+违反这条的症状是「某些程序能用、某些完全没反应」，或「一个字进去两次」。原因见踩坑 #12 与 #13 前面的实测表。
+
+**日志级别**：M1.1 起按键退回 `debug`，`info` 只留 Activate / Deactivate / 提交 / 无命中 / 模式切换。要逐键排查就设 `HEINRICH_TSF_LOG=debug`。
+
+### 4.1.2 缓冲与提交规则
+
+| 情形 | 行为 |
+|---|---|
+| `a`–`y` | 吃掉，追加缓冲（上限 4 码） |
+| `z` | **放行**。86 版 `z` 是万能学习键，M1.1 不实现，吃掉不出字等于丢键 |
+| 空格 / 回车，缓冲非空 | 吃掉并提交 |
+| 空格 / 回车，缓冲为空 | 放行（正常空格 / 换行） |
+| `Esc`，缓冲非空 | 吃掉并丢弃缓冲 |
+| `Esc`，缓冲为空 | 放行（很多程序用它关窗口） |
+| `Backspace`，缓冲非空 | 吃掉并退一格 |
+| `Backspace`，缓冲为空 | 放行（否则文档里已有的字删不掉） |
+| 缓冲命中码表 | 上屏对应字/词 |
+| **缓冲没命中** | **原样上屏缓冲的字母**（D27） |
+| **已满 4 码还来字母** | 原样上屏 + 清空，该字母开始新组合（D27） |
+| Ctrl / Alt 组合 | 一律放行 |
+| Shift + 字母 | 放行，宿主输出大写 = 临时英文（D28） |
+| 单击 Shift | 切换中英（幂等，重复 key-up 不会切两次） |
 
 ### 4.2 上手
 

@@ -1,16 +1,9 @@
-//! TSF 文本服务（M1.0 版）。
+//! TSF 文本服务（M1.1 版）。
 //!
-//! ## 本阶段只做一件事
+//! ## 本阶段做到什么
 //!
-//! 「证明注册对了、接口接上了、按键进得来」。所以：
-//!
-//! - `OnTestKeyDown` / `OnKeyDown` **一律返回 FALSE（不消费）**，
-//!   用户在记事本里打字照常出英文——这是**正确的中间态**，不是 bug。
-//! - 每次按键写一行日志，验证 vkey 真的到了。
-//! - 组合串、候选窗、server 通信全部不做（M1.1 起逐步加）。
-//!
-//! 好处是把「注册对不对」和「接口写对没」分开诊断：注册错了语言列表里没名字，
-//! 接口错了日志里没按键，两种故障不会混在一起。
+//! 「字上得去」：缓冲 `a`–`y`，空格 / 回车把命中字经 `ITfEditSession` 写进文档。
+//! 组合串（虚线、光标跟随）与候选窗仍不做，那是 M1.2。
 //!
 //! ## 实测：宿主只走其中一条回调路径（M1.0 真机日志）
 //!
@@ -24,27 +17,46 @@
 //! 这不是巧合，是两种键路由风格：前者先问「你要不要这个键」，不要就自己处理、
 //! 不再回调；后者直接调 `ITfKeystrokeMgr::KeyDown`。
 //!
-//! ⇒ **M1.1 的吃键判定必须在两条路径上都返回 TRUE**，只写一条会在另一半宿主里
-//! 失效（表现为「在某些程序里能用、在另一些里完全没反应」）。这也正是
-//! dev-guide 第 12 条「吃键集 ⊆ 出字集」的实机证据：判定依据必须本地可算，
-//! 因为 `OnTestKeyDown` 返回 TRUE 的那一刻键就已经被吃掉了，没有事后反悔的机会。
+//! ⇒ 所以两条路径都调 `keys::decide()`（同一个纯函数），**答案必须一致**。
+//! 这也正是 dev-guide 第 12 条「吃键集 ⊆ 出字集」的实机证据：`OnTestKeyDown`
+//! 返回 TRUE 的那一刻键就已经被吃掉了，没有事后反悔的机会。
+//!
+//! ## 两条路径的分工
+//!
+//! - `OnTestKey*`：**只回答吃不吃，不改状态**。它是「问句」，同一个键可能被问多次。
+//! - `OnKey*`：**真正干活**（改缓冲、上屏、切模式）。
+//!
+//! 这样即使某个宿主「先问、再调」，也不会把同一个键处理两遍。
 
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use windows::core::{implement, ComObjectInterface, Interface, Ref, Result, BOOL, GUID};
-use windows::Win32::Foundation::{FALSE, LPARAM, WPARAM};
+use windows::Win32::Foundation::{FALSE, LPARAM, TRUE, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
+    GetKeyState, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
-    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
-    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_INVALID_COOKIE,
+    ITfContext, ITfDocumentMgr, ITfEditSession, ITfKeyEventSink, ITfKeyEventSink_Impl,
+    ITfKeystrokeMgr, ITfSource, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
+    ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
+
+use crate::commit::CommitSession;
+use crate::keys::{self, Action, Mode, Mods, MAX_CODE_LEN};
+use crate::tinydict;
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
 static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+// vkey：Shift 有三个码（通用 / 左 / 右），宿主给哪个都可能。
+const VK_LSHIFT: u16 = 0xA0;
+const VK_RSHIFT: u16 = 0xA1;
+
+fn is_shift_key(vk: u16) -> bool {
+    vk == VK_SHIFT.0 || vk == VK_LSHIFT || vk == VK_RSHIFT
+}
 
 /// 一个宿主进程里的一份文本服务实例。
 ///
@@ -62,6 +74,16 @@ pub struct TextService {
     keysink_advertised: Cell<bool>,
     /// 实例序号。
     seq: u32,
+
+    /// 当前编码缓冲（五笔字母），上限 [`MAX_CODE_LEN`] 码。
+    buffer: RefCell<String>,
+    /// 中英模式。
+    mode: Cell<Mode>,
+    /// 「Shift 已按下且期间没夹杂别的键」。
+    ///
+    /// 单击 Shift 切中英靠它判定。用「按下去置位、任何别的键清除、松开时读一次」
+    /// 这套状态机，重复的 key-up 回调不会切两次。
+    shift_armed: Cell<bool>,
 }
 
 impl TextService {
@@ -73,6 +95,137 @@ impl TextService {
             thread_mgr_cookie: Cell::new(TF_INVALID_COOKIE),
             keysink_advertised: Cell::new(false),
             seq,
+            buffer: RefCell::new(String::new()),
+            mode: Cell::new(Mode::Chinese),
+            shift_armed: Cell::new(false),
+        }
+    }
+
+    fn buffer_len(&self) -> usize {
+        self.buffer.borrow().chars().count()
+    }
+
+    fn clear_buffer(&self) -> String {
+        std::mem::take(&mut *self.buffer.borrow_mut())
+    }
+
+    /// 当前位置的修饰键快照。`GetKeyState` 读本线程输入队列，开销可忽略。
+    fn mods(&self) -> Mods {
+        Mods {
+            ctrl: key_down(VK_CONTROL.0),
+            alt: key_down(VK_MENU.0),
+            shift: key_down(VK_SHIFT.0),
+        }
+    }
+
+    /// 用当前状态跑一次判定。两条回调路径都走这里。
+    fn decide(&self, vk: u16) -> Action {
+        keys::decide(self.mode.get(), self.buffer_len(), vk, self.mods())
+    }
+
+    /// 按下任何键时更新 Shift 状态机。
+    fn note_key_down(&self, vk: u16) {
+        // 夹了别的键就不算「单击 Shift」，否则 Shift+A 会被当成切模式。
+        self.shift_armed.set(is_shift_key(vk));
+    }
+
+    /// 松开 Shift 时若仍是「单击」，切换中英。返回是否切换了。
+    ///
+    /// 幂等：第一次处理就把 `shift_armed` 清掉，重复的 up 回调不会再切一次。
+    fn note_key_up(&self, vk: u16) -> bool {
+        if !is_shift_key(vk) || !self.shift_armed.get() {
+            return false;
+        }
+        self.shift_armed.set(false);
+        let next = match self.mode.get() {
+            Mode::Chinese => Mode::English,
+            Mode::English => Mode::Chinese,
+        };
+        self.mode.set(next);
+        // 切模式时丢掉半截编码：留着它会让下次输入莫名其妙多出几个字母。
+        let dropped = self.clear_buffer();
+        tsf_info!(
+            "#{} 切换为{}模式{}",
+            self.seq,
+            if next == Mode::Chinese {
+                "中文"
+            } else {
+                "英文"
+            },
+            if dropped.is_empty() {
+                String::new()
+            } else {
+                format!("（丢弃编码 {dropped:?}）")
+            }
+        );
+        true
+    }
+
+    /// 执行判定结果。**只有 `OnKey*` 会调它**，`OnTestKey*` 绝不调。
+    fn apply(&self, context: &ITfContext, action: Action) {
+        match action {
+            Action::Pass => {}
+            Action::Buffer(ch) => {
+                if self.buffer_len() >= MAX_CODE_LEN {
+                    // 已满 4 码还来第 5 个键：五笔全码最长 4 位，不可能命中。
+                    // 原样上屏再重新开始，比"忽略这个键"或"卡住不响应"都好——
+                    // 用户至少能看出发生了什么。
+                    let prev = self.clear_buffer();
+                    tsf_info!("#{} 已满 {MAX_CODE_LEN} 码，原样上屏 {prev:?}", self.seq);
+                    self.commit_text(context, &prev);
+                }
+                self.buffer.borrow_mut().push(ch);
+                tsf_debug!("#{} 缓冲={:?}", self.seq, self.buffer.borrow());
+            }
+            Action::Commit => self.flush(context),
+            Action::Cancel => {
+                let dropped = self.clear_buffer();
+                tsf_info!("#{} 取消，丢弃编码 {dropped:?}", self.seq);
+            }
+            Action::Backspace => {
+                self.buffer.borrow_mut().pop();
+                tsf_debug!("#{} 退格后缓冲={:?}", self.seq, self.buffer.borrow());
+            }
+        }
+    }
+
+    /// 把缓冲提交上屏。
+    fn flush(&self, context: &ITfContext) {
+        let code = self.clear_buffer();
+        if code.is_empty() {
+            return;
+        }
+        match tinydict::lookup(&code) {
+            Some(word) => {
+                tsf_info!("#{} 提交 {code} → {word}", self.seq);
+                self.commit_text(context, word);
+            }
+            None => {
+                // 没命中也必须出字。吃掉了 4 个键却什么都不写，在严格宿主里
+                // 那几个字母就永久消失了（踩坑 #12）。原样上屏同时给了用户
+                // 逃生口：打错了就重新打。
+                tsf_info!("#{} 无命中 {code}，原样上屏", self.seq);
+                self.commit_text(context, &code);
+            }
+        }
+    }
+
+    /// 请求一次同步编辑会话，把 `text` 写到光标处。
+    fn commit_text(&self, context: &ITfContext, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let session: ITfEditSession = CommitSession::new(context.clone(), text).into();
+        // SYNC：等宿主自己的 UI 线程完成写入。不涉及跨进程往返，见 `commit.rs`。
+        let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+        let r = unsafe { context.RequestEditSession(self.tid.get(), &session, flags) };
+        match r {
+            Ok(hr) if hr == TS_S_ASYNC => {
+                tsf_debug!("#{} 编辑会话排队执行", self.seq);
+            }
+            Ok(hr) if hr.is_ok() => {}
+            Ok(hr) => tsf_error!("#{} RequestEditSession 返回失败 {hr:?}", self.seq),
+            Err(e) => tsf_error!("#{} RequestEditSession 失败：{e}", self.seq),
         }
     }
 }
@@ -81,6 +234,11 @@ impl Default for TextService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 修饰键是否按下。`GetKeyState` 最高位为 1 表示当前按下。
+fn key_down(vk: u16) -> bool {
+    unsafe { GetKeyState(vk as i32) < 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,13 +256,12 @@ impl TextService_Impl {
         unsafe {
             let thread_mgr = ptim.ok()?;
 
-            // 焦点 sink：M1.0 只观察；M1.1 起用来清缓冲，
-            // 否则在 A 窗口打的字会跑到 B 窗口（预研坑 #5）。
+            // 焦点 sink：用来在切窗口时清缓冲，否则在 A 窗口打的字会跑到 B 窗口（预研坑 #5）。
             let source: ITfSource = thread_mgr.cast()?;
             let cookie = source.AdviseSink(&ITfThreadMgrEventSink::IID, self.as_interface_ref())?;
             self.thread_mgr_cookie.set(cookie);
 
-            // 按键 sink：M1.0 唯一真正关心的东西。
+            // 按键 sink：唯一真正关心按键的地方。
             let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
             keystroke_mgr.AdviseKeyEventSink(tid, self.as_interface_ref(), true)?;
             self.keysink_advertised.set(true);
@@ -113,10 +270,15 @@ impl TextService_Impl {
         }
 
         tsf_info!(
-            "#{} Activate tid={} pid={} —— 按键 sink 与焦点 sink 已挂",
+            "#{} Activate tid={} pid={} —— 按键 sink 与焦点 sink 已挂（{}）",
             self.seq,
             tid,
-            std::process::id()
+            std::process::id(),
+            if self.mode.get() == Mode::Chinese {
+                "中文"
+            } else {
+                "英文"
+            }
         );
         Ok(())
     }
@@ -148,6 +310,7 @@ impl TextService_Impl {
             }
         }
 
+        self.clear_buffer();
         tsf_info!("#{} Deactivate pid={}", self.seq, std::process::id());
         Ok(())
     }
@@ -215,7 +378,12 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
             pdimfocus.is_null(),
             pdimprevfocus.is_null()
         );
-        // M1.1 在这里清缓冲 + 结束组合串。
+        // 换窗口时丢掉半截编码：不清的话，在 A 窗口敲的 vbg 会跟着跑到 B 窗口，
+        // 用户按空格时莫名其妙多出一个「好」。
+        if !self.buffer.borrow().is_empty() {
+            let dropped = self.clear_buffer();
+            tsf_debug!("#{} 焦点变化，丢弃编码 {dropped:?}", self.seq);
+        }
         Ok(())
     }
 
@@ -237,42 +405,67 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             self.seq,
             foreground.as_bool()
         );
+        // 失去前台焦点时清缓冲，理由同 ThreadMgr 的 OnSetFocus。
+        if !foreground.as_bool() {
+            self.clear_buffer();
+        }
         Ok(())
     }
 
-    /// 与 `OnKeyDown` 必须返回同一个判定结果，否则会出现
-    /// 「键被吃掉但没输入」或「输入两次」（预研坑 #2）。
-    ///
-    /// M1.0 两者都返回 FALSE：不接管任何键。
+    /// **问句，不改状态。** 与 `OnKeyDown` 必须返回同一个判定结果，
+    /// 否则会出现「键被吃掉但没输入」或「输入两次」（预研坑 #2）。
     fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let seq = self.seq;
         guarded("OnTestKeyDown", Ok(FALSE), || {
-            log_key(seq, "test-down", wparam, lparam);
-            Ok(FALSE)
+            let vk = wparam.0 as u16;
+            let action = self.decide(vk);
+            debug_key(seq, "test-down", vk, lparam, action);
+            Ok(bool_of(action))
         })
     }
 
     fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let seq = self.seq;
         guarded("OnTestKeyUp", Ok(FALSE), || {
-            log_key(seq, "test-up", wparam, lparam);
+            let vk = wparam.0 as u16;
+            // 只有走 test 路径的宿主会到这里；armed 状态机保证不会切两次。
+            self.note_key_up(vk);
+            debug_key(seq, "test-up", vk, lparam, Action::Pass);
             Ok(FALSE)
         })
     }
 
-    fn OnKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+    fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let seq = self.seq;
         guarded("OnKeyDown", Ok(FALSE), || {
-            log_key(seq, "down", wparam, lparam);
-            // M1.0：不消费。
-            Ok(FALSE)
+            let vk = wparam.0 as u16;
+            self.note_key_down(vk);
+            let action = self.decide(vk);
+            debug_key(seq, "down", vk, lparam, action);
+            if action == Action::Pass {
+                return Ok(FALSE);
+            }
+
+            // 说吃就一定要吃到底：即使拿不到 context 也返回 TRUE，
+            // 否则与 `OnTestKeyDown` 的回答不一致（会出现输入两次或丢键）。
+            let context = match pic.ok() {
+                Ok(c) => c,
+                Err(e) => {
+                    tsf_error!("#{seq} 拿不到 ITfContext（{e}），按键被丢弃");
+                    return Ok(TRUE);
+                }
+            };
+            self.apply(context, action);
+            Ok(TRUE)
         })
     }
 
     fn OnKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let seq = self.seq;
         guarded("OnKeyUp", Ok(FALSE), || {
-            log_key(seq, "up", wparam, lparam);
+            let vk = wparam.0 as u16;
+            self.note_key_up(vk);
+            debug_key(seq, "up", vk, lparam, Action::Pass);
             Ok(FALSE)
         })
     }
@@ -282,32 +475,49 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 }
 
-/// 把一次按键写进日志。`lparam` 按 Win32 位域解读：bit 30 = 之前是否已按下。
-fn log_key(seq: u32, kind: &str, wparam: WPARAM, lparam: LPARAM) {
-    let vk = wparam.0 as u16;
+fn bool_of(action: Action) -> BOOL {
+    if action == Action::Pass {
+        FALSE
+    } else {
+        TRUE
+    }
+}
+
+/// 每次按键写一行 `debug` 日志。
+///
+/// M1.0 曾把按键压在 `info` 级，因为那一阶段唯一的验收标准是「日志里能看到 vkey」。
+/// M1.1 有了真正的行为，验收看的是「提交了什么」，按键退回 `debug`；
+/// 需要逐键排查时设 `HEINRICH_TSF_LOG=debug` 即可。
+fn debug_key(seq: u32, kind: &str, vk: u16, lparam: LPARAM, action: Action) {
+    let is_down = kind.ends_with("down");
     // bit 30 是「此前该键是否已按下」。对 key-down 它正是自动重复标志；
     // 但对 key-up 它**恒为 1**（因为刚才确实按着），拿它判重复会让每一个
-    // up 事件都标上 REPEAT——日志里一半的行都带这个标记，标记就等于废了。
-    // 所以只在 down 类事件上看这一位。
-    let is_down = kind.ends_with("down");
+    // up 事件都标上 REPEAT。所以只在 down 类事件上看这一位。
     let repeat = is_down && (lparam.0 >> 30) & 1 == 1;
-    // M1.0 刻意用 info 级：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」。
-    // 若压在 debug 级，用户必须给每个宿主进程单独设 HEINRICH_TSF_LOG 才看得到，
-    // 验收等于做不成。M1.1 有了真正的组合串之后降回 debug。
-    tsf_info!(
-        "#{seq} {kind} vk={vk:#04x} {} {} {}",
+    tsf_debug!(
+        "#{seq} {kind} vk={vk:#04x} {} {} {} -> {}",
         describe_vk(vk),
-        modifiers(),
-        if repeat { "REPEAT" } else { "" }
+        modifiers_text(),
+        if repeat { "REPEAT" } else { "" },
+        action_name(action)
     );
 }
 
-/// 修饰键状态。`GetKeyState` 读本线程输入队列，开销可忽略。
-fn modifiers() -> String {
-    let down = |vk: VIRTUAL_KEY| unsafe { GetKeyState(vk.0 as i32) < 0 };
+fn action_name(action: Action) -> &'static str {
+    match action {
+        Action::Pass => "pass",
+        Action::Buffer(_) => "buffer",
+        Action::Commit => "commit",
+        Action::Cancel => "cancel",
+        Action::Backspace => "backspace",
+    }
+}
+
+/// 修饰键状态文本，供日志用。
+fn modifiers_text() -> String {
     let mut s = String::new();
-    for (vk, ch) in [(VK_CONTROL, 'C'), (VK_MENU, 'A'), (VK_SHIFT, 'S')] {
-        if down(vk) {
+    for (vk, ch) in [(VK_CONTROL.0, 'C'), (VK_MENU.0, 'A'), (VK_SHIFT.0, 'S')] {
+        if key_down(vk) {
             s.push(ch);
         }
     }
@@ -321,9 +531,9 @@ fn modifiers() -> String {
     }
 }
 
-/// vkey → 人能读的名字。M1.0 全靠这个看「键到底进没进来」。
+/// vkey → 人能读的名字。M1.1 全靠这个看「键到底进没进来」。
 ///
-/// 覆盖范围按「M1.1 会用到」定：字母数字、五笔用到的标点（`;` 与 `'`，
+/// 覆盖范围按「会用到」定：字母数字、五笔用到的标点（`;` 与 `'`，
 /// 后者是 §6.5 的显式拼音标记）、编辑键、修饰键、方向键、功能键。
 /// 未收录的落到 `(0x..)`，不会丢信息——只是要多查一次表。
 fn describe_vk(vk: u16) -> String {
