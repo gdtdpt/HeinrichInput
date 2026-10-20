@@ -310,11 +310,13 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow     # 默认�
 
 能抄的就三条：
 
-1. **布局与绘制必须分家。** Weasel 的 `Layout` 类、fcitx5 的 Yoga 树，都是「先算矩形、再照画」。我们的落点是 `crates/heinrich-ui`（纯几何、23 单测）+ `apps/windows/ui`（HWND/DWrite）。
+1. **布局与绘制必须分家。** Weasel 的 `Layout` 类、fcitx5 的 Yoga 树，都是「先算矩形、再照画」。我们的落点是 `crates/heinrich-ui`（纯几何、27 单测）+ `apps/windows/ui`（HWND/DWrite）。
 2. **定位永远夹进 `rcWork`，且越下就翻到光标上方。** Weasel 的 `_RepositionWindow` 就是全部逻辑，见 `crates/heinrich-ui/src/place.rs` 的文档注释。唯一和它不同的地方：窗口比工作区还高时我们**贴顶**，它贴底（贴底会连行首一起推出屏幕）。
 3. **窗口不激活。** `WS_EX_NOACTIVATE` 只是不让它抢前台，**点它仍然会激活**——必须 `WM_MOUSEACTIVATE` 返回 `MA_NOACTIVATE`，再自己处理 `WM_LBUTTONUP`。这条不抄会得到一个「点候选就丢失组合串」的输入法。
 
 我们**不抄**的：Weasel 的竖向/全屏布局（v1 只做单行 5 条）、fcitx5 的 9-patch 主题（v1 不做皮肤）、青简把候选窗算作壳的一部分（我们把它拆成几何 + 窗口两块，因为几何能单测）。
+
+**翻页提示只画箭头，不画页码（D39）。** 这条是**反着主流做的**，理由写清楚免得后人来「补全」它：不少输入法在候选窗角上打 `2/3`，但那个数字的价值来自「知道还剩多少」，而我们只提供前后翻、不提供直接跳页 ⇒ 它对用户没有可操作的落点，却要在单行窗口里长期占一块横向空间。需要传递的只有一条信息：「这个方向还有」。所以用两端各一个箭头，**没有候选的那个方向连箭头都不画、也不占宽度**（`page_nav()` 给 `has_prev` / `has_next`），这样单页时候选窗能窄一截。要靠键盘翻页的用户看箭头也能发现 `←`/`→` 能用。
 
 **分步与验收**：M2.1 几何（`crates/heinrich-ui`，`cargo test -p heinrich-ui`）→ M2.2 窗口 + `cand-preview.exe`（自截图验收）→ M2.3 接进 TSF（逐键查询、`GetTextExt` 定位、数字键与点选）→ M2.4 学习落库。四个阶段与验收项见 PROJECT.md。
 
@@ -411,7 +413,7 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
 | M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
-| M2.1 候选窗几何 | 🟡 代码完成，待验收（`crates/heinrich-ui`：单行布局 + 分页 + 超宽压窄 + 命中测试 + 定位夹工作区，23 单测；`examples/geometry.rs` 出几何 SVG） |
+| M2.1 候选窗几何 | 🟡 代码完成，待验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中测试 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
 | M2.2 候选窗窗口 | 分层窗口 + D2D/DWrite + `cand-preview.exe`（自截图验收） |
 | M2.3 接进 TSF | 逐键查询 + `ITfContextView::GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页（D37/D38） |
 | M2.4 学习落库 | SQLite `usage` 表 + 上屏回报 + 完整 §5 打分 |

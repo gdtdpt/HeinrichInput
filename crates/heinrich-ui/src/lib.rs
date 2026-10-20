@@ -10,9 +10,12 @@
 //!
 //! ## 为什么这么切
 //!
-//! 候选窗最容易出错的地方不是绘制效果，而是**算错又看不出来**：页码压住了最后
-//! 一条候选、翻页后窗口比屏幕高、右侧越界被系统裁掉、150% DPI 下光标和窗口错开
-//! 二十像素。这些全是数值问题，放在「必须开窗口才能验」的层里就只能靠人眼扫。
+//! 候选窗最容易出错的地方不是绘制效果，而是**算错又看不出来**：翻页箭头压住了
+//! 最后一条候选、翻页后窗口比屏幕高、右侧越界被系统裁掉、150% DPI 下光标和窗口
+//! 错开二十像素。这些全是数值问题，放在「必须开窗口才能验」的层里就只能靠人眼扫。
+//!
+//! 翻页提示只给**「这个方向还有」**（两端各一个箭头，没有就不占宽度），不给页码：
+//! 用户不能跳页，`2/9` 对他来说没有任何可操作的信息。
 //!
 //! 所以这里刻意不做字体度量：文字宽度由调用方用 DirectWrite 量好传进来
 //! （[`CandidateText::width`]），本 crate 于是能在任何平台上跑单测。
@@ -36,6 +39,7 @@ mod place;
 
 pub use geom::{Rect, Size};
 pub use layout::{
-    layout, page_count, page_slice, CandidateText, ItemBox, Layout, LayoutInput, Metrics,
+    layout, page_count, page_nav, page_slice, CandidateText, Dir, ItemBox, Layout, LayoutInput,
+    Metrics, PageArrow, ARROW_NEXT, ARROW_PREV,
 };
 pub use place::{place, Placement};

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! 画的是 `layout()` 吐出来的矩形，不是最终渲染——文字位置由 SVG 自己排，
-//! 所以它验的是「框对不对、间距对不对、页码会不会压住候选」，不验字形。
+//! 所以它验的是「框对不对、间距对不对、箭头会不会压住候选」，不验字形。
 
 use heinrich_ui::{layout, CandidateText, LayoutInput, Metrics};
 
@@ -28,11 +28,11 @@ fn main() {
     y += panel(
         &mut body,
         y,
-        "① 100% DPI（字号 16px）· 5 条候选 · 第 1/3 页",
+        "① 100% DPI（字号 16px）· 5 条候选 · 中间页：两端都有箭头",
         1.0,
         &page,
         Some(0),
-        true,
+        (true, true),
     );
     y += panel(
         &mut body,
@@ -41,24 +41,34 @@ fn main() {
         1.5,
         &page,
         Some(0),
-        true,
+        (true, true),
     );
-    // 3 条 + 页码：验「窄窗口时页码贴右端且不压住候选」
+    // 3 条 + 只有左箭头：验「末页不画右箭头」「箭头不压住候选」
     y += panel(
         &mut body,
         y,
-        "③ 只有 3 条候选时，min_width 与页码的位置",
+        "③ 只有 3 条候选（末页）：只有左箭头",
         1.0,
         &page[..3],
         Some(2),
-        true,
+        (true, false),
+    );
+    // 只有一页：两个箭头都不存在，也就不占宽度
+    y += panel(
+        &mut body,
+        y,
+        "④ 只有一页：两端都没有箭头，窗口相应变窄",
+        1.0,
+        &page[..3],
+        Some(2),
+        (false, false),
     );
 
     let width = 1100.0;
     println!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{y}" viewBox="0 0 {width} {y}" font-family="{FONT}">
 <rect width="{width}" height="{y}" fill="#f5f5f5"/>
-<text x="40" y="34" font-size="18" fill="{INK}">heinrich-ui 候选窗几何（矩形来自 layout()，虚线是鼠标命中区）</text>
+<text x="40" y="34" font-size="18" fill="{INK}">heinrich-ui 候选窗几何（矩形来自 layout()，虚线是鼠标命中区；箭头只表示「这个方向还有」）</text>
 {body}</svg>"##
     );
 }
@@ -71,11 +81,9 @@ fn panel(
     scale: f32,
     page: &[CandidateText],
     highlight: Option<usize>,
-    with_page_label: bool,
+    nav: (bool, bool),
 ) -> f32 {
     let m = Metrics::new(16.0).scaled(scale);
-    let label_width = m.font_size * 1.7;
-    let page_label = with_page_label.then_some(("1/3", label_width));
     let scaled: Vec<CandidateText> = page
         .iter()
         .map(|c| CandidateText::new(c.text.clone(), c.width * scale))
@@ -84,10 +92,9 @@ fn panel(
     let l = layout(&LayoutInput {
         page: &scaled,
         page_start: 25,
-        page_index: 0,
-        page_count: 3,
+        has_prev: nav.0,
+        has_next: nav.1,
         highlight,
-        page_label,
         metrics: m,
     });
 
@@ -144,24 +151,33 @@ fn panel(
         ));
     }
 
-    if let Some(pl) = &l.page_label {
+    // 两端箭头（虚线框同样是命中区：点箭头翻页，不选词）
+    for arrow in [l.prev.as_ref(), l.next.as_ref()].into_iter().flatten() {
         out.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="{}" fill="{MUTED}" text-anchor="end">{}</text>"#,
-            x0 + pl.rect.right(),
-            y0 + pl.rect.y + m.line_height * 0.76,
-            m.font_size * 0.75,
-            pl.text
+            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="{HITBOX}" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.5"/>"#,
+            x0 + arrow.rect.x,
+            y0 + arrow.rect.y,
+            arrow.rect.w,
+            arrow.rect.h
+        ));
+        out.push_str(&format!(
+            r#"<text x="{}" y="{}" font-size="{}" fill="{MUTED}" text-anchor="middle">{}</text>"#,
+            x0 + arrow.rect.x + arrow.rect.w / 2.0,
+            y0 + arrow.rect.y + m.line_height * 0.76,
+            m.font_size * 0.85,
+            arrow.text
         ));
     }
 
     // 尺寸标注
     out.push_str(&format!(
-        r#"<text x="{x0}" y="{:.0}" font-size="11" fill="{MUTED}">窗口 {} × {}　行高 {}　候选间距 {}　圆角 {}</text>"#,
+        r#"<text x="{x0}" y="{:.0}" font-size="11" fill="{MUTED}">窗口 {} × {}　行高 {}　候选间距 {}　箭头 {}　圆角 {}</text>"#,
         y0 + l.size.h + 16.0,
         l.size.w,
         l.size.h,
         m.line_height,
         m.item_gap,
+        m.arrow_width,
         m.corner_radius
     ));
 

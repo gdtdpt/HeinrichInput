@@ -48,8 +48,10 @@ pub struct Metrics {
     pub label_gap: f32,
     /// 一个数字序号的宽度。
     pub label_width: f32,
-    /// 页码与最后一个候选之间。
-    pub page_gap: f32,
+    /// 翻页箭头的宽度。
+    pub arrow_width: f32,
+    /// 箭头与候选之间。
+    pub arrow_gap: f32,
     pub corner_radius: f32,
     /// 窗口最小宽度（候选很少时不至于缩成一个方块）。
     pub min_width: f32,
@@ -74,7 +76,10 @@ impl Metrics {
             item_padding_x: (font_size * 0.28).round(),
             label_gap: (font_size * 0.28).round(),
             label_width: (font_size * 0.62).round(),
-            page_gap: (font_size * 0.50).round(),
+            // 一个字号宽：字形在这里居中绘制，留一点余量比正好贴边安全
+            // （量出来的字形宽度在 100%/150% DPI 下不会完全等于字号）。
+            arrow_width: (font_size * 1.0).round(),
+            arrow_gap: (font_size * 0.30).round(),
             corner_radius: (font_size * 0.25).round(),
             min_width: (font_size * 5.0).round(),
             max_width: 0.0,
@@ -93,7 +98,8 @@ impl Metrics {
             item_padding_x: self.item_padding_x * s,
             label_gap: self.label_gap * s,
             label_width: self.label_width * s,
-            page_gap: self.page_gap * s,
+            arrow_width: self.arrow_width * s,
+            arrow_gap: self.arrow_gap * s,
             corner_radius: self.corner_radius * s,
             min_width: self.min_width * s,
             max_width: self.max_width * s,
@@ -106,6 +112,32 @@ impl Metrics {
     }
 }
 
+/// 翻页方向。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    /// 往前一页（更靠前的候选）。
+    Prev,
+    /// 往后一页（更多候选）。
+    Next,
+}
+
+/// 翻页箭头文字的默认字形。
+///
+/// 只说明「这个方向还有候选」，不说明「第几页」——用户不能跳页，页码对他没有
+/// 信息量，五个候选的一行窗口里还要腾地方给它更不值得。真正的观感（字形大小、
+/// 是否换成 `‹ ›`、要不要淡一点）留到 M2.2 真窗口里对着 100%/150% DPI 再定，
+/// 这里是常量，改一处就全变。
+pub const ARROW_PREV: &str = "◂";
+pub const ARROW_NEXT: &str = "▸";
+
+/// 一个翻页箭头。它**不是候选**：不参与 `hit()`，点它只翻页不选词。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageArrow {
+    pub dir: Dir,
+    pub text: String,
+    pub rect: Rect,
+}
+
 /// 一次布局的输入。`page` 是**已经切好页**的候选。
 #[derive(Clone, Debug)]
 pub struct LayoutInput<'a> {
@@ -113,14 +145,13 @@ pub struct LayoutInput<'a> {
     /// 本页第一条在全部候选里的序号。点选时要回传全局序号（`vbg` 的第 7 个候选
     /// 不是本页的第 2 个），所以在布局里就带上。
     pub page_start: usize,
-    /// 本页在全部页里的下标（0 起）。
-    pub page_index: usize,
-    pub page_count: usize,
+    /// 还有更靠前的候选（第 1 页时为 `false`）。`false` 时左端箭头不存在、
+    /// 也不占宽度。
+    pub has_prev: bool,
+    /// 还有更靠后的候选（最后一页时为 `false`）。
+    pub has_next: bool,
     /// 本页内的高亮项（键盘选中项），不参与几何。
     pub highlight: Option<usize>,
-    /// 页码文字与它的量测宽度，如 `("2/3", 22.0)`。只有一页时传 `None`——
-    /// 一页还画「1/1」是噪音。
-    pub page_label: Option<(&'a str, f32)>,
     pub metrics: Metrics,
 }
 
@@ -146,19 +177,37 @@ pub struct ItemBox {
 pub struct Layout {
     pub size: Size,
     pub items: Vec<ItemBox>,
-    pub page_label: Option<ItemBox>,
+    /// 左端翻页箭头。第 1 页时不存在，也不占宽度。
+    pub prev: Option<PageArrow>,
+    /// 右端翻页箭头。最后一页时不存在，也不占宽度。
+    pub next: Option<PageArrow>,
     pub highlight: Option<usize>,
     /// 有候选因为 `max_width` 被压窄。渲染端据此决定要不要在末尾画省略号。
     pub clipped: bool,
 }
 
 impl Layout {
-    /// 命中测试：返回**全局**候选序号。落在缝隙或窗口内边距上返回 `None`。
+    /// 命中测试：返回**全局**候选序号。落在缝隙、箭头、窗口内边距上返回 `None`。
     pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
         self.items
             .iter()
             .find(|it| it.rect.contains(x, y))
             .map(|it| it.index)
+    }
+
+    /// 命中测试：落在哪个翻页箭头上。**与 `hit()` 分开**，因为点箭头只翻页、
+    /// 不选词——两条动作不能混在一个返回值里。
+    pub fn hit_arrow(&self, x: f32, y: f32) -> Option<Dir> {
+        self.prev
+            .as_ref()
+            .filter(|a| a.rect.contains(x, y))
+            .map(|a| a.dir)
+            .or_else(|| {
+                self.next
+                    .as_ref()
+                    .filter(|a| a.rect.contains(x, y))
+                    .map(|a| a.dir)
+            })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -187,16 +236,29 @@ pub fn page_slice(total: usize, page_size: usize, page: usize) -> core::ops::Ran
     start..end
 }
 
+/// 第 `page` 页两端的翻页箭头该不该出现：`(has_prev, has_next)`。
+///
+/// 和 [`page_slice`] 用同一套夹紧规则，所以越界页号得到的答案与它一致。
+pub fn page_nav(total: usize, page_size: usize, page: usize) -> (bool, bool) {
+    let pages = page_count(total, page_size);
+    if pages == 0 {
+        return (false, false);
+    }
+    let page = page.min(pages - 1);
+    (page > 0, page + 1 < pages)
+}
+
 /// 算一页的布局。
 pub fn layout(input: &LayoutInput<'_>) -> Layout {
     let m = input.metrics;
     let n = input.page.len();
 
     let mut widths: Vec<f32> = input.page.iter().map(|c| c.width.max(0.0)).collect();
-    let reserved = match input.page_label {
-        Some((_, w)) => m.page_gap + w.max(0.0),
-        None => 0.0,
-    };
+
+    // 箭头只在真有候选的那个方向占地方：第 1 页没有左箭头，窗口就不必为此变宽。
+    let arrow = m.arrow_width + m.arrow_gap;
+    let reserved =
+        if input.has_prev { arrow } else { 0.0 } + if input.has_next { arrow } else { 0.0 };
 
     // 先按自然宽度算一遍总宽。
     let mut total = sum_width(&m, &widths, reserved);
@@ -228,6 +290,16 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     let mut items = Vec::with_capacity(n);
     let mut x = m.padding_x;
     let y = m.padding_y;
+
+    let prev = input.has_prev.then(|| PageArrow {
+        dir: Dir::Prev,
+        text: ARROW_PREV.to_string(),
+        rect: Rect::new(m.padding_x, y, m.arrow_width, m.line_height),
+    });
+    if prev.is_some() {
+        x = m.padding_x + m.arrow_width + m.arrow_gap;
+    }
+
     for (i, cand) in input.page.iter().enumerate() {
         let item_w = m.item_width(widths[i]);
         let rect = Rect::new(x, y, item_w, m.line_height);
@@ -248,20 +320,25 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
         x = rect.right() + m.item_gap;
     }
 
-    let page_label = input.page_label.map(|(text, w)| ItemBox {
-        index: usize::MAX,
-        label: String::new(),
-        text: text.to_string(),
-        rect: Rect::new(width - m.padding_x - w, y, w, m.line_height),
-        label_rect: Rect::default(),
-        text_rect: Rect::new(width - m.padding_x - w, y, w, m.line_height),
-        elided: false,
+    // 右箭头贴窗口右端。候选满了之后它本来就紧跟在最后一条后面；只有
+    // 「有下一页 + 本页没满」这种不会发生的情况（有下一页 ⇒ 本页是满页）
+    // 才会看到它和候选之间空出一块。
+    let next = input.has_next.then(|| PageArrow {
+        dir: Dir::Next,
+        text: ARROW_NEXT.to_string(),
+        rect: Rect::new(
+            width - m.padding_x - m.arrow_width,
+            y,
+            m.arrow_width,
+            m.line_height,
+        ),
     });
 
     Layout {
         size: Size::new(width, height),
         items,
-        page_label,
+        prev,
+        next,
         highlight: input.highlight,
         clipped,
     }
@@ -289,10 +366,9 @@ mod tests {
         LayoutInput {
             page,
             page_start: 0,
-            page_index: 0,
-            page_count: 1,
+            has_prev: false,
+            has_next: false,
             highlight: Some(0),
-            page_label: None,
             metrics: Metrics::new(16.0),
         }
     }
@@ -345,8 +421,7 @@ mod tests {
         ];
         let mut input = input(&page);
         input.page_start = 5;
-        input.page_index = 1;
-        input.page_count = 2;
+        input.has_prev = true;
         let out = layout(&input);
 
         assert_eq!(
@@ -363,23 +438,83 @@ mod tests {
     }
 
     #[test]
-    fn 页码贴右端且不压住最后一个候选() {
+    fn 右箭头贴右端且不压住最后一个候选() {
         let page = [cand("好", 16.0), cand("㛅", 16.0)];
         let mut input = input(&page);
-        input.page_label = Some(("2/9", 26.0));
+        input.has_next = true;
         let m = Metrics::new(16.0);
         let out = layout(&input);
 
-        let label = out.page_label.as_ref().unwrap();
-        assert!((label.rect.right() - (out.size.w - m.padding_x)).abs() < 0.01);
-        assert!(label.rect.x >= out.items.last().unwrap().rect.right());
+        let arrow = out.next.as_ref().unwrap();
+        assert_eq!(arrow.dir, Dir::Next);
+        assert!((arrow.rect.right() - (out.size.w - m.padding_x)).abs() < 0.01);
+        assert!(arrow.rect.x >= out.items.last().unwrap().rect.right());
+        assert!(out.prev.is_none());
     }
 
     #[test]
-    fn 只有一页时不画页码() {
+    fn 左箭头排在最前且与第一个候选隔_arrow_gap() {
+        let page = [cand("好", 16.0), cand("㛅", 16.0)];
+        let mut input = input(&page);
+        input.has_prev = true;
+        let m = Metrics::new(16.0);
+        let out = layout(&input);
+
+        let arrow = out.prev.as_ref().unwrap();
+        assert_eq!(arrow.dir, Dir::Prev);
+        assert_eq!(arrow.rect.x, m.padding_x);
+        assert_eq!(arrow.rect.w, m.arrow_width);
+        assert!((out.items[0].rect.x - (arrow.rect.right() + m.arrow_gap)).abs() < 0.01);
+        assert!(out.next.is_none());
+    }
+
+    #[test]
+    fn 只有一页时两端都没有箭头() {
         let page = [cand("好", 16.0)];
         let out = layout(&input(&page));
-        assert!(out.page_label.is_none());
+        assert!(out.prev.is_none());
+        assert!(out.next.is_none());
+    }
+
+    #[test]
+    fn 箭头只在需要时占宽度() {
+        let page = [cand("好", 16.0), cand("㛅", 16.0)];
+        let plain = layout(&input(&page));
+
+        let mut with_next = input(&page);
+        with_next.has_next = true;
+        let one_side = layout(&with_next);
+
+        let mut both = input(&page);
+        both.has_prev = true;
+        both.has_next = true;
+        let two_sides = layout(&both);
+
+        let m = Metrics::new(16.0);
+        let step = m.arrow_width + m.arrow_gap;
+        assert!((one_side.size.w - plain.size.w - step).abs() < 0.01);
+        assert!((two_sides.size.w - plain.size.w - step * 2.0).abs() < 0.01);
+        // 候选本身不被压窄，只是整体右移
+        assert!((two_sides.items[0].rect.x - plain.items[0].rect.x - step).abs() < 0.01);
+        assert_eq!(two_sides.items[0].text_rect.w, plain.items[0].text_rect.w);
+    }
+
+    #[test]
+    fn 点箭头只翻页_不选词() {
+        let page = [cand("好", 16.0), cand("㛅", 16.0)];
+        let mut input = input(&page);
+        input.has_prev = true;
+        input.has_next = true;
+        let out = layout(&input);
+
+        for arrow in [out.prev.as_ref().unwrap(), out.next.as_ref().unwrap()] {
+            let (x, y) = (arrow.rect.x + 1.0, arrow.rect.y + 1.0);
+            assert_eq!(out.hit(x, y), None, "箭头不该被当成候选");
+            assert_eq!(out.hit_arrow(x, y), Some(arrow.dir));
+        }
+        // 候选身上不会误判成箭头
+        let it = out.items[0].rect;
+        assert_eq!(out.hit_arrow(it.x + 1.0, it.y + 1.0), None);
     }
 
     #[test]
@@ -472,6 +607,21 @@ mod tests {
         assert_eq!(page_slice(12, 5, 2), 10..12);
         assert_eq!(page_slice(12, 5, 99), 10..12);
         assert_eq!(page_slice(0, 5, 0), 0..0);
+    }
+
+    #[test]
+    fn 翻页箭头只在真有多页时出现() {
+        // 只有一页：两端都没有
+        assert_eq!(page_nav(3, 5, 0), (false, false));
+        // 两页：首页只有右、末页只有左
+        assert_eq!(page_nav(12, 5, 0), (false, true));
+        assert_eq!(page_nav(12, 5, 2), (true, false));
+        // 中间页两端都有
+        assert_eq!(page_nav(20, 5, 1), (true, true));
+        // 越界页号按最后一页算，与 page_slice 一致
+        assert_eq!(page_nav(12, 5, 99), (true, false));
+        assert_eq!(page_nav(0, 5, 0), (false, false));
+        assert_eq!(page_nav(12, 0, 0), (false, false));
     }
 
     #[test]
