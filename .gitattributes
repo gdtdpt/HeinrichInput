@@ -1,0 +1,13 @@
+# 统一用 LF：data/wubi86/lexicon.tsv 的 SHA-256 是按字节算的，
+# 若检出时被转成 CRLF，哈希立刻变，装载器会判定「数据不一致」。
+* text=auto eol=lf
+
+# PowerShell 脚本：UTF-8 with BOM + CRLF（Windows PowerShell 5.1 的稳妥组合）
+*.ps1 text eol=crlf
+
+# 词库是生成物，必须与生成时逐字节一致
+data/wubi86/lexicon.tsv text eol=lf
+
+# 二进制
+*.exe binary
+*.dll binary

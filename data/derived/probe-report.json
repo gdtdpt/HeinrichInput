@@ -1,0 +1,138 @@
+{
+  "dict_single_chars": 70391,
+  "common3500_chars": 3499,
+  "common_in_dict": 3498,
+  "common_with_chaizi": 3479,
+  "code_len_dist": {
+    "1": 25,
+    "2": 567,
+    "3": 2063,
+    "4": 843
+  },
+  "min_split_len_dist": {
+    "2": 3012,
+    "3": 331,
+    "4": 102,
+    "5": 22,
+    "6": 8,
+    "7": 2,
+    "8": 1,
+    "9": 1
+  },
+  "table_entries": 67,
+  "aligned_samples": 30,
+  "eval_4comp_4code": 842,
+  "eval_matched": 12,
+  "eval_rate": 0.0143,
+  "unresolvable_component": 9,
+  "mismatch_samples": [
+    {
+      "char": "养",
+      "dict": "udyj",
+      "gen": "udnj",
+      "split": "羊 介"
+    },
+    {
+      "char": "制",
+      "dict": "rmhj",
+      "gen": "nhhv",
+      "split": "丿 二 巾 刀"
+    },
+    {
+      "char": "卑",
+      "dict": "rtfj",
+      "gen": "ytnf",
+      "split": "丶 田 丿 十"
+    },
+    {
+      "char": "善",
+      "dict": "uduk",
+      "gen": "ukup",
+      "split": "羊 丷 一 口"
+    },
+    {
+      "char": "场",
+      "dict": "fnrt",
+      "gen": "fnnn",
+      "split": "土 弓 丿 丿"
+    },
+    {
+      "char": "寨",
+      "dict": "pfjs",
+      "gen": "pujc",
+      "split": "宀 一 共 木"
+    },
+    {
+      "char": "岛",
+      "dict": "qynm",
+      "gen": "qyqm",
+      "split": "勹 丶 勹 山"
+    },
+    {
+      "char": "州",
+      "dict": "ytyh",
+      "gen": "yyyy",
+      "split": "川 丶 丶 丶"
+    },
+    {
+      "char": "戈",
+      "dict": "agnt",
+      "gen": "ugny",
+      "split": "一 乁 丿 丶"
+    },
+    {
+      "char": "旅",
+      "dict": "ytey",
+      "gen": "ynuy",
+      "split": "方 丿 一 氏"
+    },
+    {
+      "char": "桑",
+      "dict": "cccs",
+      "gen": "cccc",
+      "split": "木 叒"
+    },
+    {
+      "char": "畅",
+      "dict": "jhnr",
+      "gen": "jnnn",
+      "split": "申 弓 丿 丿"
+    },
+    {
+      "char": "篡",
+      "dict": "thdc",
+      "gen": "thjc",
+      "split": "竹 目 大 厶"
+    },
+    {
+      "char": "衡",
+      "dict": "tqdh",
+      "gen": "tvtj",
+      "split": "行 刀 田 大"
+    },
+    {
+      "char": "追",
+      "dict": "wnnp",
+      "gen": "wnnu",
+      "split": "辵 戶 乛 一"
+    },
+    {
+      "char": "饰",
+      "dict": "qnth",
+      "gen": "qnuh",
+      "split": "食 丿 一 巾"
+    },
+    {
+      "char": "鸟",
+      "dict": "qyng",
+      "gen": "qynu",
+      "split": "勹 丶 ㇉ 一"
+    },
+    {
+      "char": "鹰",
+      "dict": "ywwg",
+      "gen": "ywgg",
+      "split": "广 人 隹 鸟"
+    }
+  ]
+}

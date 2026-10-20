@@ -1,0 +1,14 @@
+# 构建产物
+/target/
+dist/
+
+# 生成的报告（可随时重跑生成）
+/out/
+
+# 原始数据：许可各异、体积大，不进仓库；用 tools/fetch-data.ps1 拉取
+/data/raw/
+
+# 编辑器
+.vs/
+.idea/
+*.user

@@ -1,0 +1,10 @@
+# 析字方案清单（由 xizi-gen 生成，请勿手改）
+id = "wubi86"
+name = "五笔 86"
+version = "1.0"
+alphabet = "abcdefghijklmnopqrstuvwxy"
+max_code_len = 4
+source = "rime/rime-wubi wubi86.dict.yaml"
+license = "LGPL-3.0"
+entry_count = 136239
+lexicon_sha256 = "1b5c432cc4deeb5a83e797f13f210e1eabae8d10a6bad5bb37a8510de1a91e23"
