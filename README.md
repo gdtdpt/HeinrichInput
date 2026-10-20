@@ -1,4 +1,4 @@
-# 析字 Xizi
+# 亨利输入法 HeinrichInput
 
 一个 Windows 五笔（86 版）输入法。目标是把三件市面五笔普遍缺失的事做对：
 
@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File tools\fetch-data.ps1
 powershell -ExecutionPolicy Bypass -File tools\gen.ps1
 
 # 3) 在终端里打字
-cargo run --release -p xizi-cli -- repl
+cargo run --release -p heinrich-cli -- repl
 ```
 
 REPL 里一行就是一次完整按键序列：

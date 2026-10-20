@@ -1,4 +1,4 @@
-//! `xizi-gen`：把原始码表装配成 `data/wubi86/`，并产出 M0a 校验报告。
+//! `heinrich-gen`：把原始码表装配成 `data/wubi86/`，并产出 M0a 校验报告。
 //!
 //! 输入（`data/raw/`，不进产物、不进仓库）：
 //! - `wubi86.dict.yaml`：Rime 格式，`...` 之后是 `词 \t 码 \t 权重`
@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use xizi_scheme::{sha256_hex, Code, MAX_CODE_LEN};
+use heinrich_scheme::{sha256_hex, Code, MAX_CODE_LEN};
 
 struct Args {
     raw: PathBuf,
@@ -132,7 +132,9 @@ fn run() -> Result<bool, String> {
 
     // ---- 写 lexicon.tsv ----
     let mut text = String::with_capacity(lexicon.len() * 24);
-    text.push_str("# 析字 / Xizi —— 五笔 86 词库（生成物，请勿手改；重新生成用 tools/gen.ps1）\n");
+    text.push_str(
+        "# 亨利 / Heinrich —— 五笔 86 词库（生成物，请勿手改；重新生成用 tools/gen.ps1）\n",
+    );
     text.push_str("# source: rime/rime-wubi wubi86.dict.yaml (LGPL-3.0)\n");
     text.push_str(
         "# format: code<TAB>word<TAB>weight<TAB>short   (short: 0=全码, 1/2/3=简码级别)\n",
@@ -153,7 +155,7 @@ fn run() -> Result<bool, String> {
     let digest = sha256_hex(text.as_bytes());
 
     let manifest = format!(
-        "# 析字方案清单（由 xizi-gen 生成，请勿手改）\n\
+        "# 亨利方案清单（由 heinrich-gen 生成，请勿手改）\n\
          id = \"wubi86\"\n\
          name = \"五笔 86\"\n\
          version = \"1.0\"\n\
@@ -374,7 +376,7 @@ fn render_report(
 ) -> String {
     let mut r = String::new();
     r.push_str("# M0a 数据装配校验报告\n\n");
-    r.push_str("> 由 `xizi-gen` 自动生成，请勿手改。本文不含时间戳，同输入必得同字节。\n\n");
+    r.push_str("> 由 `heinrich-gen` 自动生成，请勿手改。本文不含时间戳，同输入必得同字节。\n\n");
 
     r.push_str("## 1. 产物\n\n| 项 | 值 |\n|---|---|\n");
     r.push_str(&format!(
@@ -486,7 +488,7 @@ fn render_report(
 
     r.push_str("\n## 7. 复现方式\n\n```powershell\n");
     r.push_str(
-        "cargo run -p xizi-gen -- --raw data/raw --out data/wubi86 --report out/m0a-report.md\n",
+        "cargo run -p heinrich-gen -- --raw data/raw --out data/wubi86 --report out/m0a-report.md\n",
     );
     r.push_str("```\n");
     r

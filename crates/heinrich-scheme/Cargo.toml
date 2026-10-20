@@ -1,6 +1,6 @@
 [package]
-name = "xizi-scheme"
-description = "析字：方案数据加载与校验（零第三方依赖）"
+name = "heinrich-scheme"
+description = "亨利输入法：方案数据加载与校验（零第三方依赖）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -3,27 +3,27 @@
 version = 4
 
 [[package]]
-name = "xizi-cli"
+name = "heinrich-cli"
 version = "0.1.0"
 dependencies = [
- "xizi-core",
- "xizi-scheme",
+ "heinrich-core",
+ "heinrich-scheme",
 ]
 
 [[package]]
-name = "xizi-core"
+name = "heinrich-core"
 version = "0.1.0"
 dependencies = [
- "xizi-scheme",
+ "heinrich-scheme",
 ]
 
 [[package]]
-name = "xizi-gen"
+name = "heinrich-gen"
 version = "0.1.0"
 dependencies = [
- "xizi-scheme",
+ "heinrich-scheme",
 ]
 
 [[package]]
-name = "xizi-scheme"
+name = "heinrich-scheme"
 version = "0.1.0"

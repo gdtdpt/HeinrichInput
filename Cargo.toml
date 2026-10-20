@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/xizi-scheme",
-    "crates/xizi-core",
-    "crates/xizi-gen",
-    "crates/xizi-cli",
+    "crates/heinrich-scheme",
+    "crates/heinrich-core",
+    "crates/heinrich-gen",
+    "crates/heinrich-cli",
 ]
 
 [workspace.package]
@@ -14,8 +14,8 @@ rust-version = "1.83"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-xizi-scheme = { path = "crates/xizi-scheme", version = "0.1.0" }
-xizi-core = { path = "crates/xizi-core", version = "0.1.0" }
+heinrich-scheme = { path = "crates/heinrich-scheme", version = "0.1.0" }
+heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

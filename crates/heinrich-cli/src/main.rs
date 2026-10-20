@@ -1,4 +1,4 @@
-//! `xizi-cli`：在没有 TSF 壳的情况下先让引擎「能打字」。
+//! `heinrich-cli`：在没有 TSF 壳的情况下先让引擎「能打字」。
 //!
 //! 两个子命令：
 //! - `repl`：逐行模拟键盘——输入字母组成缓冲区、数字选词，打印候选与打分依据。
@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use xizi_core::{Engine, LookupMode, MemoryStore, RankingConfig, Tier};
-use xizi_scheme::{Code, Scheme};
+use heinrich_core::{Engine, LookupMode, MemoryStore, RankingConfig, Tier};
+use heinrich_scheme::{Code, Scheme};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
         "repl" => match Scheme::load(&data) {
             Ok(scheme) => {
                 let text = format!(
-                    "析字 {name} v{ver} · {} 条词条 · 数据来自 {src}（{lic}）",
+                    "亨利输入法 · {name} v{ver} · {} 条词条 · 数据来自 {src}（{lic}）",
                     scheme.entry_count(),
                     name = scheme.meta.name,
                     ver = scheme.meta.version,
@@ -55,12 +55,12 @@ fn main() -> ExitCode {
         },
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  xizi-cli repl  [--data <目录>]   交互打字（默认）\n  xizi-cli check [--data <目录>]   方案完整性校验"
+                "用法：\n  heinrich-cli repl  [--data <目录>]   交互打字（默认）\n  heinrich-cli check [--data <目录>]   方案完整性校验"
             );
             ExitCode::SUCCESS
         }
         other => {
-            eprintln!("未知子命令 `{other}`，用 `xizi-cli --help` 查看用法");
+            eprintln!("未知子命令 `{other}`，用 `heinrich-cli --help` 查看用法");
             ExitCode::FAILURE
         }
     }
@@ -85,7 +85,7 @@ fn now_unix() -> i64 {
 
 fn repl(mut eng: Engine<MemoryStore>) {
     let mut buffer = String::new();
-    let mut last: Vec<xizi_core::Candidate> = Vec::new();
+    let mut last: Vec<heinrich_core::Candidate> = Vec::new();
     println!("输入字母组成编码，数字选词；`:help` 看命令，`:q` 退出。\n");
 
     let stdin = io::stdin();
@@ -163,7 +163,7 @@ fn command(
     cmd: &str,
     eng: &mut Engine<MemoryStore>,
     buffer: &mut String,
-    last: &[xizi_core::Candidate],
+    last: &[heinrich_core::Candidate],
 ) -> Flow {
     let mut parts = cmd.split_whitespace();
     let head = parts.next().unwrap_or("");
@@ -287,7 +287,7 @@ fn command(
     Flow::Continue
 }
 
-fn print_candidates(buffer: &str, cands: &[xizi_core::Candidate], mode: Option<LookupMode>) {
+fn print_candidates(buffer: &str, cands: &[heinrich_core::Candidate], mode: Option<LookupMode>) {
     if buffer.is_empty() {
         println!("  （空缓冲区）");
         return;

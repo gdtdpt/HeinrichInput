@@ -78,7 +78,7 @@ pub struct SchemeMeta {
     pub lexicon_sha256: String,
 }
 
-/// 装载时顺带算好的统计量（供 `xizi-cli check` 与报告复用）。
+/// 装载时顺带算好的统计量（供 `heinrich-cli check` 与报告复用）。
 #[derive(Clone, Debug, Default)]
 pub struct SchemeStats {
     pub total: usize,

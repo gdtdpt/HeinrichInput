@@ -20,7 +20,7 @@
 //! 第一名保护（§5.2）：候选要越过当前第一名，需 `total ≥ K × total(第一名)`，
 //! `K` 默认 1.5。低频词偶用一次够不着门槛，只能上浮到第二名。
 
-use xizi_scheme::{CodeKind, Scheme};
+use heinrich_scheme::{CodeKind, Scheme};
 
 use crate::usage::{Tier, Usage, UsageStore};
 
@@ -116,7 +116,7 @@ pub fn lookup<S: UsageStore + ?Sized>(
     now: i64,
     cfg: &RankingConfig,
 ) -> (Vec<Candidate>, LookupMode) {
-    let Some(code) = xizi_scheme::Code::parse(input) else {
+    let Some(code) = heinrich_scheme::Code::parse(input) else {
         return (Vec::new(), LookupMode::Exact);
     };
     let exact = scheme.exact_indices(&code);

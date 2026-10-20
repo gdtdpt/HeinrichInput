@@ -4,7 +4,7 @@
 //! 按键在翻页过程中会「跳位」，用户的手指会落到错的候选上。因此同一缓冲区
 //! 的排序结果被缓存，直到缓冲区变化或组合结束才重算。
 
-use xizi_scheme::Scheme;
+use heinrich_scheme::Scheme;
 
 use crate::rank::{lookup, Candidate, LookupMode, RankingConfig};
 use crate::usage::{Tier, UsageStore};

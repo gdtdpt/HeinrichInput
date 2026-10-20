@@ -1,9 +1,10 @@
-# 析字 Xizi — 项目规范（PROJECT.md）
+# 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v0.7
-> **状态**：M0a（数据装配）+ M0b（引擎）已完成并验收；下一步 M1（TSF 壳）
+> **版本**：v0.9
+> **状态**：M0a（数据装配）+ M0b（引擎）已完成并验收；M1 前置的 TSF 落地预研已完成（`docs/design/tsf-preflight.md`），可开工 M1.0
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
-> **项目名**：析字 / Xizi（已确认，目录 `C:\Users\richard\Develop\Xizi`）
+> **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
+> **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
 
 ---
 
@@ -54,11 +55,11 @@
 
 | 钩子 | 位置 | 形态 |
 |---|---|---|
-| 平台适配 | `xizi-proto` 协议 + `Shell` 边界 | 任何平台前端只要实现同一套 pipe 协议与帧格式即可接入；core 内**禁止** `#[cfg(windows)]` |
-| 输入方案适配 | `xizi-scheme` + `scheme.toml` | 方案 = 数据（表 + 规则清单），core 不硬编码 86 的任何常量 |
+| 平台适配 | `heinrich-proto` 协议 + `Shell` 边界 | 任何平台前端只要实现同一套 pipe 协议与帧格式即可接入；core 内**禁止** `#[cfg(windows)]` |
+| 输入方案适配 | `heinrich-scheme` + `scheme.toml` | 方案 = 数据（表 + 规则清单），core 不硬编码 86 的任何常量 |
 | 解码器适配 | `Decoder` trait | 拼音引擎、未来的郑码/二笔/双拼都按同一 trait 注册 |
 | 排序策略适配 | `Ranker` trait | 衰减参数、阈值、策略可替换 |
-| 渲染适配 | `Frame` 输出与 `xizi-ui` 解耦 | 候选窗只消费帧，不反向依赖引擎 |
+| 渲染适配 | `Frame` 输出与 `heinrich-ui` 解耦 | 候选窗只消费帧，不反向依赖引擎 |
 
 ---
 
@@ -73,7 +74,7 @@
 | D5 | 候选窗 | v1 自绘（DirectWrite + 分层窗口） | 系统默认候选窗（`ITfCandidateListUIElement`）无法画 emoji 与拆字 chip；但 M1 先用系统默认窗跑通上屏，M2 换自绘 |
 | D6 | 排序 | 频次 × 时间衰减 + **晋升阈值** | 见 §5，直击「选一次就置顶」的痛点 |
 | D7 | 混输 | 双解码器并行 + DP 分段裁决 | 同一串按键可能是拼音也可能是五笔码，必须逐段判定，不能整串二选一 |
-| D8 | 依赖纪律 | TSF DLL crate 仅允许 `windows-rs` + `xizi-proto` | 注入型 DLL 的依赖越少越好；core/server 可正常用第三方库 |
+| D8 | 依赖纪律 | TSF DLL crate 仅允许 `windows-rs` + `heinrich-proto` | 注入型 DLL 的依赖越少越好；core/server 可正常用第三方库 |
 | D9 | emoji 映射 | **内置表 + 用户覆盖表**两层，用户可按「词」或按「五笔码」改绑/停用 | 内置表随版本升级可被替换，用户改动不能被升级冲掉；按码改绑支持「一个 emoji 挂多条词」 |
 | D10 | 混输判定 | 长度约束（五笔段 ≤ 4 键）+ **>4 键快速通道**，仍以 DP 分段裁决为兜底 | 任一单条编码长度 ≤ 4（词组恒 4 码、单字全码 3 或 4 码），缓冲区超过 4 键必然是多段；整串能切拼音时直接判拼音可省掉一次 DP，且行为可预测 |
 | D11 | 显式拼音标记 | 组合串末尾 `'` 声明「本段按拼音处理」：只出拼音候选、**隐藏五笔候选**，但保留五笔码与拆字提示；键位可配置 | `'` 在五笔码里无意义，在拼音里本就是音节分隔符（`xi'an`），两种语义天然重合、不打架；同时是自动判定失手时的人工兜底，成本仅一个段级 flag |
@@ -83,6 +84,9 @@
 | D15 | **数据格式：行式 TSV + 极简清单** | 词库 `lexicon.tsv`（`码\t词\t权重\t简码级别`），清单 `scheme.toml` 只允许一层键值；装载器**零第三方依赖**（自带 TSV 与清单解析） | 13.6 万条用 TOML 解析会拖慢 server 冷启动，而 DLL 握手只有 300ms 超时；TSV 体积小一个数量级、`diff` 友好。零依赖同时消除了注入型组件供应链风险，编译也快。文件内不写时间戳 ⇒ 同输入必得同字节 |
 | D16 | **候选集按精确码长匹配，空码才回退前缀** | 输入 n 键取「编码长 n 且相等」的词条；仅当该码无词条且存在更长前缀码时回退前缀，并标注「空码」 | 实测 `v` 前缀展开有 3,459 个候选，排序与翻页失去意义；五笔是定长编码，前缀预测是拼音的行为。空码回退是防「打了死码毫无反馈」 |
 | D17 | **单字全码 3 或 4 码（认知修正）** | 分类规则改为「同一字多条编码中最长者为全码，其余为简码」 | 原假设「码短于 4 即简码」错误：字根不足四个时补末笔识别码，`好 = VBG` 本身就是全码。实测 3 码全码 3,427 字、4 码全码 67,379 字；错分会让 3,427 个常用字被标成「三级简码」，并让候选窗标签失真 |
+| D18 | **按键路径零阻塞** | `OnTestKeyDown`/`OnKeyDown` 只做「更新本地缓冲 + 查本地候选缓存 + 必要时发异步请求」，**绝不等待 IPC 回复**；数字键上屏的文本取自本地缓存；server 连续 3 次无应答则本会话降级为**不消费按键**（宁可不接管，不可半接管） | TSF 在**宿主 UI 线程**上同步调你，这里等一次管道往返，server 冷启动/被杀/被安全软件挂起时宿主直接假死。Weasel 走异步 IPC 正是为此；青简那条「只认最新那次请求」的 commit 也是这套结构异步化后的必然产物。M1.0 用 `server --debug-sleep 5000` 验证 |
+| D19 | **注册走独立安装器 `heinrich-setup.exe`，且必须提权** | COM 键 + `ITfInputProcessorProfileMgr::RegisterProfile` + `ITfCategoryMgr::RegisterCategory` 三件事由安装器完成，不提供 `regsvr32` 手工路径；`hkl` 参数传 `NULL`，不做 HKL 探测 | ① 写 `HKLM\SOFTWARE\Microsoft\CTF\TIP\...` 与 `HKLM\SOFTWARE\Classes\CLSID\...` 绕不过管理员，而 **HKCU 版本是否可用待实测**（T1）② Weasel（`WeaselSetup`）、chewing（`tsfreg`）、WindInput（`wind-installer`）三家都单独做了注册器，没有一家让用户手敲 `regsvr32` ③ 安装期提权与「运行期 asInvoker」不冲突——那是两个阶段 |
+| D20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」；品牌短名「亨利」，语言栏与安装器显示「亨利五笔」 | 全量替换原工作代号（4 个 crate、4 个 exe、目录名、25 个文件的文档与脚本） | 原代号「析字 / Xizi」有三重歧义：① 口述「析字输入法」被听成「写字输入法」；② 拼音打 `xizi` 首屏是「写字」；③ **「析字」不在五笔词库里**，连它自己都得逐字敲。新名「亨利」实测在库里成词、**YBTJ 一词直出**，全名 `YBTJ GGTT` 两词两码。改名必须在 M1 之前——CLSID、`HKLM` 注册表、安装器、`%LOCALAPPDATA%\Heinrich` 此时都还没生成，零清理成本 |
 
 ---
 
@@ -91,17 +95,17 @@
 ### 4.1 进程与数据流
 
 ```
-宿主应用进程                      xizi-server.exe（常驻，用户会话）
+宿主应用进程                      heinrich-server.exe（常驻，用户会话）
 ┌──────────────┐   pipe        ┌────────────────────────────────┐
-│ xizi-win.dll │ ────────────▶ │ 引擎宿主                      │
-│ ├ TSF 管线   │   帧/事件     │ ├ xizi-core（分段/解码/排序） │
-│ └ IPC 客户端 │ ◀──────────── │ ├ xizi-scheme（86 数据）      │
+│ heinrich-win.dll │ ────────────▶ │ 引擎宿主                      │
+│ ├ TSF 管线   │   帧/事件     │ ├ heinrich-core（分段/解码/排序） │
+│ └ IPC 客户端 │ ◀──────────── │ ├ heinrich-scheme（86 数据）      │
 └──────────────┘               │ ├ SQLite 学习库               │
-                               │ └ xizi-ui（候选窗绘制）       │
+                               │ └ heinrich-ui（候选窗绘制）       │
                                └────────────────────────────────┘
 ```
 
-- 通道：命名管道 `\\.\pipe\xizi-<SessionId>`，ACL 限当前用户；消息为长度前缀 + 二进制（`xizi-proto`）。
+- 通道：命名管道 `\\.\pipe\heinrich-<SessionId>`，ACL 限当前用户；消息为长度前缀 + 二进制（`heinrich-proto`）。
 - DLL 断连处理：首次按键时探测 → 冷启动 server → 等待握手（超时 300ms 则本键透传宿主，不阻塞输入）。
 - 协议版本：握手带 `proto_version` 与 `scheme_id`，不匹配即拒绝并提示升级。
 - server 按用户会话单实例（互斥体）；DLL 可被 N 个进程同时加载，各自独立连接。
@@ -114,25 +118,40 @@
 | **Fcitx5（Linux）** | `fcitx5` 守护进程 + 各前端插件（GTK/Qt/X11）走 DBus/socket | 同一思路，只是 IPC 换成 DBus |
 | **搜狗 / QQ 等商业输入法** | 常驻服务/宿主进程 + 云服务独立进程 + 候选窗由独立进程承载 | 商业产品普遍这么拆：一是隔离，二是防注入后被安全软件连坐 |
 | **微软拼音（Win8+）** | 主要逻辑在独立进程（`ChsIME.exe`），应用内只留 TSF 壳 | 连系统自带输入法都走出来了，说明 in-proc 只适合极简逻辑 |
-| **青简 Qingjian（本项目的设计参照）** | Server + Windows DLL / macOS 壳 / Fcitx 插件，DLL 与 Server 之间长连接、断连由 Server 收会话 | 与 D1 同构；其提交里「应用被强杀后 DLL 来不及发 CloseSession，由连接断开兜底」正是这套结构必须处理的场景 |
+| **清风输入法 WindInput（Rust，已发布）** | Rust 核心服务 `wind_input`（引擎 / 词库 / 候选 / UI 渲染 / IPC） + C++ 薄层 `wind_tsf` | **同品类、同架构**：五笔 86 与五笔拼音混输为一等公民，Windows 10/11 有安装包与便携版。比青简更有说服力——它有真实装机与版本历史 |
+| **青简 Qingjian（逻辑参照，非实现参照）** | Server + Windows DLL / macOS 壳 / Fcitx 插件，DLL 与 Server 之间长连接、断连由 Server 收会话 | 与 D1 同构；其提交里「应用被强杀后 DLL 来不及发 CloseSession，由连接断开兜底」正是这套结构必须处理的场景。但它 2026-09 才首发，Windows 壳未经装机检验，只作逻辑参照 |
 | ~~极点五笔等老一代~~ | 单进程 in-proc 完成全部逻辑 | 简单，但引擎或 UI 一出问题直接崩宿主应用，且学习数据多进程写入难保证 |
 
-结论：**server + 薄 DLL 是 Windows 输入法二十年演化出的主流解法**，不是为「好扩展」而发明的自选动作。代价是每个平台需要一个 Shell 与 IPC，收益是宿主应用不会被输入法拖死。
+结论：**server + 薄 DLL 是 Windows 输入法二十年演化出的主流解法**，不是为「好扩展」而发明的自选动作。代价是每个平台需要一个 Shell 与 IPC，收益是宿主应用不会被输入法拖死。候选窗同样不由 DLL 画（Weasel 的 `WeaselUI` 由 `WeaselServer` 加载绘制，DLL 只转发），与 D1 一致。
+
+### 4.1.2 参考实现分级（预研结论，详见 `docs/design/tsf-preflight.md`）
+
+采信顺序固定为：**官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑**。
+
+| 级 | 项目 | 用途 | 不照抄的部分 |
+|---|---|---|---|
+| A | **WindInput 清风输入法**（Rust + C++，GPL-3.0-or-later） | **同品类**：五笔 86 / 混输 / 方案文件 / 安装器 + 便携版 | 它的码表来自极点移植版（权利链存疑），我们已定 `rime-wubi` |
+| A | **Weasel 小狼毫**（C++，GPL） | TSF 每件事都有对应文件：注册、按键、组合、compartment、显示属性 | 代码老、抽象重，不整体照搬 |
+| B | **windows-chewing-tsf**（纯 Rust） | **纯 Rust 写 TSF 的唯一完整证据**：`cdylib` + `#[implement]` + 独立 `tsfreg` 注册器 | 候选窗在 DLL 内自绘（D1 不采用） |
+| B | **ime-rs**（C++ 壳 + 8 个 Rust crate） | FFI 边界怎么切、UTF-16↔UTF-8 怎么传 | 静态链接、无 IPC，不适用我们的运行形态 |
+| C | **青简 qingjian** | 异步竞态的处理、配置回归的意识 | Windows 壳未经装机验证 |
+| C | Microsoft TSF 官方样例 + learn.microsoft.com/tsf | **接口语义的唯一权威** | 停在 Win7 时代，profile 注册需另看 |
+
 
 ### 4.2 Workspace 布局
 
 ```
-Xizi/
+Heinrich/
   Cargo.toml                # workspace 根，统一 workspace.dependencies
   crates/
-    xizi-core/              # 纯逻辑：分段、解码、排序、学习模型。零 OS 依赖、可纯单测
-    xizi-scheme/            # 方案加载与校验（表格式、scheme.toml、一致性检查）
-    xizi-proto/             # DLL ↔ server 协议：事件、帧、版本握手（平台中立）
-    xizi-server/            # 常驻进程：core 宿主、SQLite、IPC 服务端、DLL 注册管理
-    xizi-win/               # TSF DLL（仅 windows-rs + xizi-proto）
-    xizi-ui/                # 候选窗：DirectWrite 排版 + 分层窗口
-    xizi-cli/               # 引擎 REPL、码表校验（M0 验收用）           ← 已实现
-    xizi-gen/               # 数据装配：原始码表 → data/wubi86/ + 校验报告（M0a）  ← 已实现
+    heinrich-core/              # 纯逻辑：分段、解码、排序、学习模型。零 OS 依赖、可纯单测
+    heinrich-scheme/            # 方案加载与校验（表格式、scheme.toml、一致性检查）
+    heinrich-proto/             # DLL ↔ server 协议：事件、帧、版本握手（平台中立）
+    heinrich-server/            # 常驻进程：core 宿主、SQLite、IPC 服务端、DLL 注册管理
+    heinrich-win/               # TSF DLL（仅 windows-rs + heinrich-proto）
+    heinrich-ui/                # 候选窗：DirectWrite 排版 + 分层窗口
+    heinrich-cli/               # 引擎 REPL、码表校验（M0 验收用）           ← 已实现
+    heinrich-gen/               # 数据装配：原始码表 → data/wubi86/ + 校验报告（M0a）  ← 已实现
   data/
     raw/                    # 原始码表与常用字表（不进产物、不进仓库，见 .gitignore）
     wubi86/
@@ -176,7 +195,7 @@ pub trait LearningStore {
 }
 ```
 
-- `xizi-core` **不得** `use std::fs`、不得 `cfg(windows)`；所有 I/O 由调用方注入。
+- `heinrich-core` **不得** `use std::fs`、不得 `cfg(windows)`；所有 I/O 由调用方注入。
 - 每次按键 → `engine.step(event) -> Frame`；`Frame` 是纯数据（候选列表、标注、高亮、光标），UI 只渲染。
 
 ---
@@ -303,7 +322,7 @@ pub trait LearningStore {
 | 层 | 位置 | 说明 |
 |---|---|---|
 | 内置 | `data/emoji.toml`（随版本发布） | v1 覆盖 2000–3000 个高频**词组**（不挂单字） |
-| 用户 | `%APPDATA%\Xizi\emoji.user.toml` | 覆盖层，优先级高；可改绑、可停用 |
+| 用户 | `%APPDATA%\Heinrich\emoji.user.toml` | 覆盖层，优先级高；可改绑、可停用 |
 
 条目支持按**词**或按**五笔码**绑定（二选一或同时给）：
 
@@ -327,8 +346,8 @@ enabled = false      # 停用（回落为不带 emoji）
 - 一个词只显示一个 emoji（避免候选行变宽）；同一个 emoji 可以挂多条词。
 - 用户层条目覆盖同 key 的内置条目；`enabled = false` 等于「吃掉内置值」。
 - 修改**即时生效**：设置程序写完后发 reload 通知；手改 TOML 时 server 监听文件变化。
-- 校验命令 `xizi-cli emoji check`：key 是否存在于码表/词库、emoji 是否为单字符、是否有重复覆盖。
-- 恢复默认：`xizi-cli emoji reset`（备份现有用户层后清空）。
+- 校验命令 `heinrich-cli emoji check`：key 是否存在于码表/词库、emoji 是否为单字符、是否有重复覆盖。
+- 恢复默认：`heinrich-cli emoji reset`（备份现有用户层后清空）。
 - 编辑入口：v1 手改 TOML + CLI 校验；M4 设置窗口提供列表编辑（搜索 / 改绑 / 停用 / 预览）。
 - 默认开启，仅词组候选附加；不做 emoji 搜索、不做表情面板。
 
@@ -362,7 +381,7 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 
 - 触发：候选上按 `Ctrl+Shift+/`（或右键菜单「查五笔码」），对**当前高亮的字**打开默认浏览器。
 - 目标：默认 `https://www.zdic.net/hans/<字>`（汉典，可查五笔码），URL 模板可配置。
-- **联网边界**：这是**用户显式触发的浏览器跳转**，析字自身不发起任何网络请求；`README` 与隐私说明必须写明这一点。
+- **联网边界**：这是**用户显式触发的浏览器跳转**，亨利输入法自身不发起任何网络请求；`README` 与隐私说明必须写明这一点。
 - 若无该字拆解数据，chip 显示 `五笔 VB · 拆解待补`，并提示可按上述快捷键外查——**宁可承认不知道，不给错误拆法**。
 
 ---
@@ -371,11 +390,11 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 
 | 项 | 路径 |
 |---|---|
-| 配置 | `%APPDATA%\Xizi\config.toml`（UTF-8，带注释模板） |
-| 学习库 | `%LOCALAPPDATA%\Xizi\learning.db` |
-| emoji 用户层 | `%APPDATA%\Xizi\emoji.user.toml` |
-| 日志 | `%LOCALAPPDATA%\Xizi\logs\`（默认 info，仅本机，可关闭） |
-| 程序 | `%ProgramFiles%\Xizi\`（server + DLL + data + 设置程序） |
+| 配置 | `%APPDATA%\Heinrich\config.toml`（UTF-8，带注释模板） |
+| 学习库 | `%LOCALAPPDATA%\Heinrich\learning.db` |
+| emoji 用户层 | `%APPDATA%\Heinrich\emoji.user.toml` |
+| 日志 | `%LOCALAPPDATA%\Heinrich\logs\`（默认 info，仅本机，可关闭） |
+| 程序 | `%ProgramFiles%\Heinrich\`（server + DLL + data + 设置程序） |
 
 配置全部 TOML 且**带显式 `config_version`**；旧版本配置必须能被新版本读入（缺键取默认，未知键忽略并记警告），并有历代模板回归测试。
 
@@ -385,10 +404,13 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 
 | 里程碑 | 内容 | 验收（缺一不可） |
 |---|---|---|
-| **M0a** 数据装配 ✅ **已完成** | `xizi-gen`：解析 `wubi86.dict.yaml` → 生成 `data/wubi86/{scheme.toml,lexicon.tsv}`；校验报告见 `out/m0a-report.md` | ① 常用字覆盖 **100%（3498/3498，表内 2 个 `_` 占位已剔除）** ② 报告可复现（两次运行同哈希 `1b5c432c…`）③ 2–3 级简码非全码前缀 **17/4203 = 0.40% ≤ 1%** ④ 一级简码 **25 键、每键 1 条** |
-| **M0b** 引擎 ✅ **已完成** | `xizi-scheme`（编码打包 + TSV 装配 + 索引）+ `xizi-core`（精确查询、§5 排序、组合期锁）+ `xizi-cli`（REPL / check） | ① 26 个单测覆盖排序三档、阈值边界、衰减、精确/回退查询 ② REPL 连打可观测：单次使用升一位、首位受 1.5 倍保护、持续使用可夺位 ③ `xizi-cli check` 全部通过 ④ `clippy -D warnings` + `fmt --check` 干净 |
-| **M1** 能打字 | `xizi-win` TSF DLL + `xizi-server`：注册、激活、按键接管、composition 占位、**用系统默认候选窗先上屏** | ① 记事本/VS Code/Chrome/Edge/资源管理器内均能上屏 ② 断连后能自动拉起 server ③ 卸载注册干净 |
-| **M2** 候选窗 | `xizi-ui` 自绘候选窗（DirectWrite）+ 完整 §5 排序 + 设置里的学习数据查看 | ① 真机连打三天，词序符合预期且不抢位 ② 高分屏/多屏/DPI 切换不错位 ③ 候选窗不遮挡、不抢焦点 |
+| **M0a** 数据装配 ✅ **已完成** | `heinrich-gen`：解析 `wubi86.dict.yaml` → 生成 `data/wubi86/{scheme.toml,lexicon.tsv}`；校验报告见 `out/m0a-report.md` | ① 常用字覆盖 **100%（3498/3498，表内 2 个 `_` 占位已剔除）** ② 报告可复现（两次运行同哈希 `1b5c432c…`）③ 2–3 级简码非全码前缀 **17/4203 = 0.40% ≤ 1%** ④ 一级简码 **25 键、每键 1 条** |
+| **M0b** 引擎 ✅ **已完成** | `heinrich-scheme`（编码打包 + TSV 装配 + 索引）+ `heinrich-core`（精确查询、§5 排序、组合期锁）+ `heinrich-cli`（REPL / check） | ① 26 个单测覆盖排序三档、阈值边界、衰减、精确/回退查询 ② REPL 连打可观测：单次使用升一位、首位受 1.5 倍保护、持续使用可夺位 ③ `heinrich-cli check` 全部通过 ④ `clippy -D warnings` + `fmt --check` 干净 |
+| **M1.0** 键进得来 | `heinrich-win` 只实现 `DllGetClassObject`+`IClassFactory`+`ITfTextInputProcessorEx`+`ITfKeyEventSink`；`OnKeyDown` 只写日志、**不消费按键**；`heinrich-setup --install/--uninstall` 完成三件注册 | ① 语言列表出现「亨利五笔」② 切过去后记事本打字**照常出英文**（正确的中间态）③ 日志见每个 vkey ④ 卸载后列表条目消失、无残留键 |
+| **M1.1** 字上得去 | 缓冲 a–y + 20 条硬编码小码表；空格/回车把命中字经 `ITfEditSession` 上屏 | ① 记事本敲 `vbg` 出「好」② Esc 取消无残留 ③ 切窗口再回来不出乱码 |
+| **M1.2** 组合串 | composition + `ITfDisplayAttributeProvider` 虚线 + 光标跟随（坐标由 `ITfContextView::GetTextExt` 算） | ① 组合串有虚线 ② 候选窗跟光标 ③ 宿主右键改变选择后组合自动终止 |
+| **M1.3** 接 server | 命名管道查真码表 + 本地候选缓存 + 断连重连 + **`--debug-sleep` 零阻塞验证** | ① 13.6 万条下打字无延迟感 ② server 被杀 5 秒内自动重连 ③ server 故意睡 5 秒时**宿主完全不卡**（D18 不过则 D1 不成立） |
+| **M2** 候选窗 | `heinrich-ui` 自绘候选窗（DirectWrite）+ 完整 §5 排序 + 设置里的学习数据查看 | ① 真机连打三天，词序符合预期且不抢位 ② 高分屏/多屏/DPI 切换不错位 ③ 候选窗不遮挡、不抢焦点 |
 | **M3** 混输 | DP 分段裁决 + 折叠规则 + 显式拼音标记（§6.5）+ 码提示 chip + 外链查询（§6.6） | ① 纯拼音/纯五笔/交替输入各 50 例不错判 ② `hao'` 只出拼音候选、不出五笔候选 ③ 拼音段候选带正确五笔码、五笔段不带 ④ 首屏只放当前判定语言 |
 | **M4** 差异化收尾 | emoji 标签与映射编辑界面、设置窗口、`config_version` 兼容、安装包/卸载 | ① 安装包可静默安装 ② 旧配置读入不回退 ③ emoji 改绑后即时生效且升级不丢 ④ 全量回归 |
 | **M5**（含 v1.5 研究项） | 其他平台 Shell / 98 版数据 / 主题 / **字根拆解引擎** | 各自单独立项；拆解的前置条件见 `docs/design/probe-report.md` §5.3 |
@@ -407,6 +429,9 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | R4 | 码表/词库/emoji 数据许可不清 | 高（发布即风险，且会反向锁死代码许可） | **已勘察**：可选码表为 `rime/rime-wubi`（LGPL-3.0）与 `KyleBing/rime-wubi86-jidian`（Apache-2.0，但底层沿用极点码表、权利链存疑）。**⚠️ 陷阱：CHISE 系 IDS 数据为 GPL-2.0（可能 —— 若为 2.0-only 则与 GPL-3 不兼容）⇒ 优先改用 Unihan `kIDS`（Unicode License，宽松）。详见 `docs/design/data-sources.md`** |
 | R5 | 安全软件对注入 DLL 的误报 | 中 | DLL 签名、依赖极简（D8）、不做任何网络与自启动写注册表以外的行为 |
 | R6 | 学习库在多宿主并发写 | 中 | server 单点写 + WAL + 事务（§5.5） |
+| R13 | **32 位宿主应用用不了**（需要独立的 32 位 DLL + WOW6432Node 注册） | 中 | v1 先只出 x64；M1.0 用 32 位程序实测（T3）。若老五笔用户常混用 32 位工具，则追加一次双架构构建（同一份源码、两个 target） |
+| R14 | **提权 / 沙箱应用内的行为未验证**（提权窗口能否加载 DLL、AppContainer 内能否输入） | 中 | M1.0 并行实测（T2/T4）；若提权场景失败，提供「server 提权副本」或文档明确标注不支持 |
+| R15 | **安装必须提权**，与既有「asInvoker 免管理员」约定相冲 | 低 | 只发生在安装/卸载阶段，运行期仍不提权（D19）；在 README 与安装器里明说，不让用户误以为是程序在乱要权限 |
 | R7 | 记忆效应：用户习惯「选过的在前面」，新排序可能被感知为「不听话」 | 中 | K 值与半衰期可配（TOML 手改）；「传统模式（最近优先）」开关**延后到 M4 配置界面**，v1 不提供 |
 | R8 | 码表数据包（LGPL-3.0）的署名与分发边界落实不到位 | 中 | 随包数据独立目录 + `LICENSE` + `NOTICE`；不修改、不并入代码；发布检查清单里逐项打勾 |
 | R9 | ~~简码与词组的生成依赖字频/词频数据，许可未定~~ **已关闭（D14）** | — | 实测码表自带 1/2/3 级简码与 `by_weight` 权重，无需外部字频数据源；`wordfreq`（数据 CC BY-SA 4.0）、常用词表均不再引入 |
@@ -433,7 +458,7 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 
 | # | 决策 |
 |---|---|
-| 1 | 项目名：**析字 / Xizi**，目录 `C:\Users\richard\Develop\Xizi` |
+| 1 | 项目名：**亨利输入法 / HeinrichInput**（短名「亨利」），目录 `C:\Users\richard\Develop\Heinrich` |
 | 2 | 平台：**仅 Windows**，平台与方案钩子按 §2.3 预留 |
 | 3 | 方案：**仅五笔 86 版**，其他版本走数据钩子 |
 | 4 | M1 先用系统默认候选窗跑通、M2 换自绘（D5 两步走） |
@@ -454,11 +479,21 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | 19 | 数据格式：**行式 TSV + 极简清单**，装载器零第三方依赖（D15） |
 | 20 | 候选集：**精确码长匹配**，空码才回退前缀并标注（D16） |
 | 21 | 单字全码 **3 或 4 码**，分类按「最长编码 = 全码」（D17，认知修正） |
-| 22 | 排序公式定稿：`total = w + 0.35 × ln(1+n) × 0.5^(Δt/45d)`（§5.1，实测校准） |
+| 22 | 排序公式定稿：`total = w + 0.35 × ln(1+n) × 0.5^(Δt/45d)`（§5.1，实测校准）；**参数不外露**，保持代码内常量（用户决定，等 M4 配置界面再议） |
+| 23 | **按键路径零阻塞**（D18）：OnKeyDown 不等 IPC，候选来自本地缓存，server 无应答则本会话不接管 |
+| 24 | **注册走独立安装器 `heinrich-setup.exe`**、安装期提权（D19），`hkl` 传 `NULL`；不提供 `regsvr32` 手工路径 |
+| 25 | 参考实现分级（§4.1.2）：A 级 WindInput / Weasel，B 级 chewing-tsf / ime-rs，C 级青简 / 官方样例；**青简降为逻辑参照** |
+| 26 | M1 拆成 **M1.0 键进得来 / M1.1 字上得去 / M1.2 组合串 / M1.3 接 server** 四步验收 |
+| 27 | **定名「亨利输入法 / HeinrichInput」**（D20），品牌短名「亨利」，语言栏显示「亨利五笔」，ASCII 前缀 `heinrich`；原「析字 / Xizi」全部废弃 |
 
 ### 11.2 仍待确认
 
-无。M0（数据 + 引擎）已验收完成，下一步进入 M1（TSF 壳）。
+| # | 项 | 卡在哪 |
+|---|---|---|
+| A | **32 位宿主要不要支持**（R13） | 需要第二套 target 与 WOW6432Node 注册；等 M1.0 用 32 位程序实测（T3）后再定 |
+| B | **HKCU 注册是否可用**（能否免管理员安装，T1） | 需实测；若可用，安装体验会大幅改善 |
+
+其余 TSF 语义问题不阻塞开工，按 `docs/design/tsf-preflight.md` §9 在 M1.0 期间并行实测。
 
 ---
 
@@ -473,3 +508,5 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v0.5 | 2026-10-20 | **M0a 探针跑完，D13 撤销自研、改为数据引用**（一致性 1.19%，见 `docs/design/probe-report.md`）；拆字移出 v1，改为码提示 + 外链查询；M0a 改为「数据装配」、M3 验收改为码提示；R3 关闭、R8/R10 重写；新增探针脚本 `tools/probe/` |
 | v0.6 | 2026-10-20 | 设计收敛：新增 D14（码表源定稿 `rime-wubi`，简码 25/616/7082 与权重随表引入）；§5.1 补「无学习数据时按静态权重的初始序」；R9 关闭（字频不外求）；§11.2 清空；版本号修正（v0.3–v0.5 期间页首漏改） |
 | v0.7 | 2026-10-20 | **M0a + M0b 实施完成**（26 单测、clippy/fmt 干净）。新增 D15（TSV 格式、零依赖装载）、D16（精确码长匹配 + 空码前缀回退）、D17（单字全码 3/4 码的认知修正）；§5.1 公式改为 `total = w + g·learning`、`g` 定为 0.35 并写明校准依据；§5.6 新增查询语义；§6.1 长度前提按实测重写；M0a/M0b 标记完成并写入实测数字；新增 R11（17 处简码与全码不同源）、R12（重码量大）；§4.2 布局更新为实际结构 |
+| v0.8 | 2026-10-20 | **TSF 落地预研完成**（新文档 `docs/design/tsf-preflight.md`）。§4.1.1 增列 WindInput（同品类、同架构、已发布），青简降为逻辑参照；新增 §4.1.2 参考实现分级与固定采信顺序；新增 D18（按键路径零阻塞：OnKeyDown 不等 IPC、候选走本地缓存、无应答则不接管）与 D19（独立安装器 + 安装期提权 + `hkl` 传 NULL）；M1 拆为 M1.0–M1.3 四步验收；新增 R13（32 位宿主）/R14（提权与沙箱未验证）/R15（安装需提权）；§11.2 恢复两项待实测 |
+| v0.9 | 2026-10-20 | **项目定名**：中文「亨利输入法」/ 英文「HeinrichInput」，品牌短名「亨利」，语言栏显示「亨利五笔」（D20 / §11.1 #27）。原代号「析字 / Xizi」因三重歧义废弃；全量替换 4 crate、4 exe、目录名与 25 个文件的文档脚本（177 处引用），数据重新生成 |

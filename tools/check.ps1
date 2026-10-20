@@ -32,7 +32,7 @@ function Invoke-Step([string]$Name, [scriptblock]$Action) {
 Invoke-Step 'cargo fmt --check' { & cargo fmt --all -- --check }
 Invoke-Step 'cargo clippy' { & cargo clippy --all-targets -- -D warnings }
 Invoke-Step 'cargo test' { & cargo test --all }
-Invoke-Step '方案数据校验' { & cargo run --release -q -p xizi-cli -- check --data $DataDir }
+Invoke-Step '方案数据校验' { & cargo run --release -q -p heinrich-cli -- check --data $DataDir }
 
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

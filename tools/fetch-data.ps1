@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    拉取析字的原始数据到 data/raw/（不进仓库、不进产物）。
+    拉取亨利输入法的原始数据到 data/raw/（不进仓库、不进产物）。
 
 .DESCRIPTION
     需要的两份数据：

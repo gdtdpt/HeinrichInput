@@ -5,9 +5,9 @@
 
 .DESCRIPTION
     当前（M0）只有两个可执行：
-      xizi-cli.exe  —— 引擎 REPL 与方案校验
-      xizi-gen.exe  —— 数据装配（发版时不需要随包）
-    M1 之后会加入 xizi-server.exe / xizi-win.dll。
+      heinrich-cli.exe  —— 引擎 REPL 与方案校验
+      heinrich-gen.exe  —— 数据装配（发版时不需要随包）
+    M1 之后会加入 heinrich-server.exe / heinrich-win.dll。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
@@ -30,7 +30,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-foreach ($name in @('xizi-cli.exe', 'xizi-gen.exe')) {
+foreach ($name in @('heinrich-cli.exe', 'heinrich-gen.exe')) {
     $src = Join-Path $root "target\release\$name"
     if (Test-Path $src) {
         Copy-Item $src -Destination $DistDir -Force

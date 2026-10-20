@@ -1,4 +1,4 @@
-# 析字 / Xizi —— 五笔 86 词库（生成物，请勿手改；重新生成用 tools/gen.ps1）
+# 亨利 / Heinrich —— 五笔 86 词库（生成物，请勿手改；重新生成用 tools/gen.ps1）
 # source: rime/rime-wubi wubi86.dict.yaml (LGPL-3.0)
 # format: code<TAB>word<TAB>weight<TAB>short   (short: 0=全码, 1/2/3=简码级别)
 a	工	99454797	1

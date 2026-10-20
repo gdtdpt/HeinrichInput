@@ -2,8 +2,8 @@
 //!
 //! 全部用固定时间戳，不读系统时钟，因此断言完全可复现。
 
-use xizi_core::{lookup, LookupMode, MemoryStore, RankingConfig, Tier, UsageStore};
-use xizi_scheme::Scheme;
+use heinrich_core::{lookup, LookupMode, MemoryStore, RankingConfig, Tier, UsageStore};
+use heinrich_scheme::Scheme;
 
 const NOW: i64 = 1_700_000_000;
 
@@ -12,7 +12,7 @@ fn scheme() -> Scheme {
     Scheme::load(&dir).expect("fixture 应可装载")
 }
 
-fn words(cands: &[xizi_core::Candidate]) -> Vec<String> {
+fn words(cands: &[heinrich_core::Candidate]) -> Vec<String> {
     cands.iter().map(|c| c.word.clone()).collect()
 }
 
@@ -150,13 +150,13 @@ fn pinned_leads_and_suppressed_disappears() {
 #[test]
 fn exact_code_lookup_does_not_leak_longer_codes() {
     let s = scheme();
-    let vb = xizi_scheme::Code::parse("vb").unwrap();
+    let vb = heinrich_scheme::Code::parse("vb").unwrap();
     let hits = s.exact_indices(&vb);
     assert_eq!(hits.len(), 1);
     assert_eq!(s.entry(hits[0]).word, "好");
     assert_eq!(s.entry(hits[0]).kind.short_level(), 2);
 
-    let v = xizi_scheme::Code::parse("v").unwrap();
+    let v = heinrich_scheme::Code::parse("v").unwrap();
     let hits = s.exact_indices(&v);
     assert_eq!(hits.len(), 1);
     assert_eq!(s.entry(hits[0]).word, "发");

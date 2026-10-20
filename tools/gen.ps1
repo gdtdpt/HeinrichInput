@@ -31,7 +31,7 @@ if (-not (Test-Path (Join-Path $RawDir 'wubi86.dict.yaml'))) {
     throw "缺少 $RawDir\wubi86.dict.yaml，先跑 tools\fetch-data.ps1"
 }
 
-& cargo run --release -p xizi-gen -- --raw $RawDir --out $OutDir --report $Report
+& cargo run --release -p heinrich-gen -- --raw $RawDir --out $OutDir --report $Report
 if ($LASTEXITCODE -ne 0) {
     Write-Host "装配未通过验收（退出码 $LASTEXITCODE），详见 $Report" -ForegroundColor Yellow
     exit $LASTEXITCODE
