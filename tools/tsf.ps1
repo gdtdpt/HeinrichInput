@@ -21,19 +21,24 @@
     # 打开逐键 debug 日志（改完要重启宿主程序才生效）
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug off
+
+.EXAMPLE
+    # 看常驻 server 的状态 / 手动起停 / 看它的日志
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server stop
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'uninstall', 'status', 'log', 'debug')]
+    [ValidateSet('install', 'uninstall', 'status', 'log', 'debug', 'server')]
     [string]$Action = 'status',
 
-    # 只给 debug 用：`tsf.ps1 debug on` / `tsf.ps1 debug off`。
+    # 第二段子命令：`tsf.ps1 debug on` / `tsf.ps1 server stop`。
     # 位置必须显式声明：PowerShell 按声明顺序分配位置参数，不写 Position 的话
     # `debug on` 里的 `on` 会落到下一个按顺序排列的参数上。
     [Parameter(Position = 1)]
-    [ValidateSet('on', 'off', '')]
-    [string]$Switch = '',
+    [ValidateSet('', 'on', 'off', 'status', 'start', 'stop')]
+    [string]$Sub = '',
 
     [Parameter(Position = 2)]
     [string]$DistDir,
@@ -51,8 +56,10 @@ $ErrorActionPreference = 'Stop'
 if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 
 $setup = Join-Path $DistDir 'heinrich-setup.exe'
+$serverExe = Join-Path $DistDir 'heinrich-server.exe'
 $logDir = Join-Path $env:LOCALAPPDATA 'Heinrich'
 $logPath = Join-Path $logDir 'logs\tsf.log'
+$serverLogPath = Join-Path $logDir 'logs\server.log'
 $debugMarker = Join-Path $logDir 'debug.on'
 
 function Test-Elevated {
@@ -103,13 +110,80 @@ function Set-DebugSwitch {
     }
 }
 
+function Invoke-ServerAction {
+    param([string]$Value)
+
+    $procs = @(Get-Process -Name 'heinrich-server' -ErrorAction SilentlyContinue)
+
+    switch ($Value) {
+        'start' {
+            if (-not (Test-Path $serverExe)) {
+                Write-Host "找不到 $serverExe" -ForegroundColor Red
+                Write-Host '先跑 tools\build.ps1。'
+                return
+            }
+            if ($procs.Count -gt 0) {
+                Write-Host "已经在跑（pid $($procs[0].Id)），不重复启动。" -ForegroundColor Yellow
+                return
+            }
+            Start-Process -FilePath $serverExe -WindowStyle Hidden | Out-Null
+            Start-Sleep -Milliseconds 600
+            Write-Host '已启动。注意：正常使用时**不需要手动启动**——DLL 会在切到输入框时自己拉起。' -ForegroundColor Green
+        }
+        'stop' {
+            if ($procs.Count -eq 0) {
+                Write-Host '没有在运行的 server。' -ForegroundColor DarkGray
+                return
+            }
+            $procs | ForEach-Object {
+                Write-Host "结束 pid $($_.Id)…" -ForegroundColor Yellow
+                $_ | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host '已结束。下一次按键会自动重连（会重新拉起一个新 server）。' -ForegroundColor Green
+        }
+        default {
+            if ($procs.Count -eq 0) {
+                Write-Host 'server：未运行' -ForegroundColor Yellow
+                Write-Host '  这一般是正常的——server 是惰性拉起的，没在用输入法时它可能已经空闲退出。' -ForegroundColor DarkGray
+            }
+            else {
+                foreach ($p in $procs) {
+                    Write-Host ("server：运行中 pid {0}，启动于 {1:HH:mm:ss}，内存 {2:N0} KB" -f `
+                            $p.Id, $p.StartTime, ($p.WorkingSet64 / 1KB)) -ForegroundColor Green
+                }
+            }
+            # 管道是「连没连上」最直接的证据：名字里带会话 id。
+            $pipes = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'heinrich' })
+            if ($pipes.Count -gt 0) {
+                Write-Host ('管道：' + ($pipes -join ', ')) -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host '管道：无' -ForegroundColor DarkGray
+            }
+            if (Test-Path $serverLogPath) {
+                Write-Host ''
+                Write-Host ("== server 日志（最后 10 行，{0}）" -f $serverLogPath) -ForegroundColor Cyan
+                Get-Content $serverLogPath -Tail 10 -Encoding UTF8
+            }
+            else {
+                Write-Host "server 日志还没生成：$serverLogPath" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
 if ($Action -eq 'debug') {
-    Set-DebugSwitch -Value $Switch
+    Set-DebugSwitch -Value $Sub
     exit 0
 }
 
 if ($Action -eq 'log') {
     Show-Log
+    exit 0
+}
+
+if ($Action -eq 'server') {
+    Invoke-ServerAction -Value $Sub
     exit 0
 }
 

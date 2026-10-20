@@ -44,6 +44,9 @@ Invoke-Step 'cargo fmt --check' { & cargo fmt --all -- --check }
 Invoke-Step 'cargo clippy' { & cargo clippy --all-targets -- -D warnings }
 Invoke-Step 'cargo test' { & cargo test --all }
 Invoke-Step '方案数据校验' { & cargo run --release -q -p heinrich-cli -- check --data $DataDir }
+# server 自测要真装载 13.6 万条词库并跑几条查询：能过说明「装得进、查得对」，
+# 这一步不需要真的开管道客户端，所以在 CI/提交前就能跑。
+Invoke-Step 'server 自测' { & cargo run --release -q -p heinrich-server -- --selftest --scheme-dir $DataDir }
 
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

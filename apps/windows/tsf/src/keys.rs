@@ -41,6 +41,8 @@ pub enum Action {
     Cancel,
     /// 吃掉并退回一个字符。
     Backspace,
+    /// 吃掉，把缓冲（有的话）上屏后紧跟这个全角标点。
+    Punct(char),
 }
 
 /// 五笔 86 的字根键：`a`–`y`，共 25 个。
@@ -72,6 +74,47 @@ pub fn wubi_letter(vk: u16) -> Option<char> {
     }
 }
 
+/// 中文模式下要接管的标点：`vkey + 是否按住 Shift` → 全角字符。
+///
+/// ## 为什么标点必须由我们吃掉
+///
+/// 放行给宿主的后果是**丢字**：宿主在组合串中间插入半角符号会终止组合串，
+/// 我们那串 `vbg` 就被 `OnCompositionTerminated` 当残留删掉了——用户敲了标点，
+/// 想打的字没了。而「先上屏再让宿主出标点」在 TSF 里表达不出来：
+/// `OnTestKeyDown` 必须在不知道后果的时候就回答吃不吃，吃了就收不到 `OnKeyDown`
+/// 的后续机会（dev-guide 踩坑 #12）。所以只能整个吃掉、自己把标点补出来。
+///
+/// ## 为什么是表驱动而不是 `ToUnicodeEx`
+///
+/// `ToUnicodeEx` 能跟随键盘布局，但它有副作用：碰到死键（`^`、`` ` `` 之类）会
+/// **改掉进程的死键状态**，而我们会在 `OnTestKeyDown` 与 `OnKeyDown` 里各调一次，
+/// 等于把死键吃掉两遍。表驱动的另一个好处是本模块保持纯函数、可在任意平台单测。
+/// 代价是非 US 布局的 OEM 键位置不同——记在待验证项里，中国市场的默认布局是 US。
+pub fn punct_text(vk: u16, shift: bool) -> Option<char> {
+    match (vk, shift) {
+        // 逗号 / 句号
+        (0xBC, false) => Some('，'),
+        (0xBC, true) => Some('《'),
+        (0xBE, false) => Some('。'),
+        (0xBE, true) => Some('》'),
+        // 分号 / 冒号
+        (0xBA, false) => Some('；'),
+        (0xBA, true) => Some('：'),
+        // 斜杠 → 顿号（中文输入法的惯例）/ 问号
+        (0xBF, false) => Some('、'),
+        (0xBF, true) => Some('？'),
+        // Shift + 数字：叹号与圆括号
+        (0x31, true) => Some('！'),
+        (0x39, true) => Some('（'),
+        (0x30, true) => Some('）'),
+        // 单引号（0xDE）**故意不接管**：它是 §6.5 的显式拼音标记键（D11），
+        // M3 要用它表示「这段按拼音解析」。现在先吃掉会在 M3 时产生行为变更。
+        // 其余 OEM 键（`=` `-` `[` `]` `\` `` ` `` `<` `>` `|` `~`）在多数字体下
+        // 用户要的是半角原文（写代码、写路径），一律放行。
+        _ => None,
+    }
+}
+
 /// 判定一个按键该不该被接管。
 ///
 /// 参数全部来自本进程：`mode` 与 `buffer_len` 是实例状态，`mods` 由调用方从
@@ -95,6 +138,12 @@ pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
             return Action::Pass;
         }
         return Action::Buffer(ch);
+    }
+
+    // 标点：中文模式下由我们接手，保证「字 + 标点」一起出、不丢编码。
+    // 放在字母之后、编辑键之前——两组 vkey 不重叠，顺序只影响可读性。
+    if let Some(p) = punct_text(vk, mods.shift) {
+        return Action::Punct(p);
     }
 
     match vk {
@@ -267,6 +316,81 @@ mod tests {
         for vk in [V, Z, SPACE, ENTER, ESC, BACK, SHIFT] {
             assert_eq!(decide(Mode::English, 2, vk, m()), Action::Pass);
         }
+    }
+
+    // ---------------------------------------------------------------
+    // 标点（D33）
+    // ---------------------------------------------------------------
+
+    const COMMA: u16 = 0xBC;
+    const PERIOD: u16 = 0xBE;
+    const SEMI: u16 = 0xBA;
+    const SLASH: u16 = 0xBF;
+
+    #[test]
+    fn punctuation_becomes_fullwidth() {
+        assert_eq!(decide(Mode::Chinese, 0, COMMA, m()), Action::Punct('，'));
+        assert_eq!(decide(Mode::Chinese, 0, PERIOD, m()), Action::Punct('。'));
+        assert_eq!(decide(Mode::Chinese, 0, SEMI, m()), Action::Punct('；'));
+        assert_eq!(decide(Mode::Chinese, 0, SLASH, m()), Action::Punct('、'));
+    }
+
+    /// 缓冲里有编码时标点照样吃掉：上屏字 + 标点由 `text_service` 一次写完。
+    #[test]
+    fn punctuation_is_consumed_mid_composition() {
+        assert_eq!(decide(Mode::Chinese, 3, COMMA, m()), Action::Punct('，'));
+        assert_eq!(decide(Mode::Chinese, 1, SLASH, m()), Action::Punct('、'));
+    }
+
+    #[test]
+    fn shift_punctuation_maps_to_its_pair() {
+        let s = Mods {
+            ctrl: false,
+            alt: false,
+            shift: true,
+        };
+        assert_eq!(decide(Mode::Chinese, 0, SEMI, s), Action::Punct('：'));
+        assert_eq!(decide(Mode::Chinese, 0, SLASH, s), Action::Punct('？'));
+        assert_eq!(decide(Mode::Chinese, 0, COMMA, s), Action::Punct('《'));
+        assert_eq!(decide(Mode::Chinese, 0, PERIOD, s), Action::Punct('》'));
+        assert_eq!(decide(Mode::Chinese, 0, 0x31, s), Action::Punct('！'));
+        assert_eq!(decide(Mode::Chinese, 0, 0x39, s), Action::Punct('（'));
+        assert_eq!(decide(Mode::Chinese, 0, 0x30, s), Action::Punct('）'));
+    }
+
+    /// 表里没有的键一律放行——写代码、写路径要的是半角原文。
+    #[test]
+    fn untabled_keys_pass_through() {
+        for vk in [0xBB, 0xBD, 0xDB, 0xDD, 0xDC, 0xC0, 0xDE, 0xE2] {
+            assert_eq!(
+                decide(Mode::Chinese, 0, vk, m()),
+                Action::Pass,
+                "{vk:#04x} 不该被吃掉"
+            );
+        }
+        // 单引号留给 §6.5 的显式拼音标记（D11）
+        assert_eq!(decide(Mode::Chinese, 2, 0xDE, m()), Action::Pass);
+        // 不带 Shift 的数字键永远是数字
+        for vk in 0x30..=0x39 {
+            assert_eq!(decide(Mode::Chinese, 0, vk, m()), Action::Pass, "{vk:#04x}");
+        }
+    }
+
+    #[test]
+    fn punctuation_passes_in_english_mode() {
+        assert_eq!(decide(Mode::English, 0, COMMA, m()), Action::Pass);
+        assert_eq!(decide(Mode::English, 3, PERIOD, m()), Action::Pass);
+    }
+
+    /// Ctrl/Alt + 标点必须放行：`Ctrl+,` 之类是宿主的功能键。
+    #[test]
+    fn punctuation_with_ctrl_passes() {
+        let c = Mods {
+            ctrl: true,
+            alt: false,
+            shift: false,
+        };
+        assert_eq!(decide(Mode::Chinese, 3, COMMA, c), Action::Pass);
     }
 
     /// Shift 键本身永远不被吃掉——它是修饰键，吃了会用不了大写和符号。

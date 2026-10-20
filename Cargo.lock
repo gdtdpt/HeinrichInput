@@ -25,8 +25,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "heinrich-proto"
+version = "0.1.0"
+
+[[package]]
 name = "heinrich-scheme"
 version = "0.1.0"
+
+[[package]]
+name = "heinrich-server"
+version = "0.1.0"
+dependencies = [
+ "heinrich-core",
+ "heinrich-proto",
+ "windows",
+]
 
 [[package]]
 name = "heinrich-setup"
@@ -44,6 +57,7 @@ version = "0.1.0"
 name = "heinrich-win"
 version = "0.1.0"
 dependencies = [
+ "heinrich-proto",
  "heinrich-tip-id",
  "windows",
  "windows-core",

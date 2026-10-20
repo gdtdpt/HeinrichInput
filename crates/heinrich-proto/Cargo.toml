@@ -1,0 +1,7 @@
+[package]
+name = "heinrich-proto"
+description = "亨利输入法：DLL ↔ server 的帧协议（零依赖，手写编解码）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true

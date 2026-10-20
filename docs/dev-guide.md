@@ -56,11 +56,13 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 后续（M1.3+）：`heinrich-proto`（DLL↔server 帧）、`heinrich-server`（常驻进程）、`heinrich-ui`（候选窗）。
 
+**已实现**：`heinrich-proto` 与 `heinrich-server`（M1.3）。`heinrich-ui` 仍待 M2。
+
 **边界纪律**：`heinrich-core` 里出现 `cfg(windows)`、`std::fs`、`SystemTime::now()` 就说明分层错了。时间一律由调用方作为 Unix 秒传入——这是排序行为可测的前提。
 
 **`heinrich-win` 的依赖纪律（D8）**：只允许 `windows` + `heinrich-tip-id`。它被注入到每个宿主进程，加一个库等于让 chrome 的每个 tab 都多背一份。
 
-## 4. TSF 壳（M1.0 – M1.2）
+## 4. TSF 壳（M1.0 – M1.3）
 
 「薄壳」指的是**不含引擎、词库、SQLite、UI 绘制**，不是行数少。TSF 管线本身是重活：WindInput 的 C++ 壳约 1 MB 源码（`TextService.cpp` 385 KB、`KeyEventSink.cpp` 184 KB、`IPCClient.cpp` 114 KB、`LangBarItemButton.cpp` 60 KB），这些代码全部在 D8 的依赖纪律下活着。`heinrich-win` 到 M2 长到几千行是正常的，别拿行数当验收标准。
 
@@ -70,8 +72,11 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 |---|---|
 | `crates/heinrich-tip-id/src/lib.rs` | CLSID / Profile GUID / 描述串。**发布后不可改**，值由 `uuid5` 生成 |
 | `apps/windows/tsf/src/lib.rs` | `DllMain` / `DllGetClassObject` / `DllCanUnloadNow` / `IClassFactory` / `HeinrichTsfAbiVersion` |
-| `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action` + `ShiftTap`。不碰 Windows API，可在任意平台单测 |
-| `apps/windows/tsf/src/tinydict.rs` | 20 条硬编码小码表。**M1.3 接 server 后整个删除** |
+| `apps/windows/tsf/src/keys.rs` | **纯逻辑**：`decide(mode, buffer_len, vk, mods) -> Action` + `ShiftTap` + `punct_text`。不碰 Windows API，可在任意平台单测 |
+| `apps/windows/tsf/src/ipc.rs` | 命名管道客户端：重叠 I/O + 50 ms 硬上限、后台重连线程、候选缓存（D32） |
+| `crates/heinrich-proto/src/lib.rs` | 帧协议：`u32 长度 + u16 类型 + 载荷`，7 条消息，手写编解码、零依赖 |
+| `crates/heinrich-server/src/host.rs` | 平台中立的一半：收帧 → 查词库 → 回帧（可单测） |
+| `crates/heinrich-server/src/pipe.rs` | 命名管道服务端：按会话单实例、一连接一线程、空闲退出 |
 | `apps/windows/tsf/src/preedit.rs` | 组合串：`Show` / `Finish(Some)` / `Finish(None)` 三个动作的编辑会话，以及没有组合串时的直接插入降级 |
 | `apps/windows/tsf/src/text_service.rs` | TSF 接口实现，只做搬运；`OnTestKey*` 只回答、`OnKey*` 才执行 |
 | `apps/windows/tsf/src/log.rs` | 文件日志（多进程安全，见 D23） |
@@ -152,6 +157,49 @@ OnKeyDown ─────┘                            └→ 其余  → 返�
 `ITfCompositionSink::OnCompositionTerminated(ecwrite, comp)` 通知我们，我们趁 `ecwrite`
 还有效把残留文字删掉——否则文档里会永久留一串 `vbg`。**自己 `EndComposition` 不会
 触发它**，而且删之前会比对句柄身份，双保险。
+
+### 4.1.4 IPC 与 server（M1.3）
+
+13.6 万条词库装载约 300 ms，DLL 却会在**每个宿主进程**里加载——所以词库只在
+`heinrich-server.exe` 里装一份，DLL 通过命名管道问它。
+
+| 项 | 值 |
+|---|---|
+| 管道名 | `\\.\pipe\heinrich-<SessionId>`（按登录会话隔离） |
+| 单实例互斥体 | `Local\HeinrichServer-<SessionId>` |
+| 帧格式 | `u32 载荷长度（含类型）` + `u16 消息类型` + 载荷，小端 |
+| 消息 | `Hello` / `Welcome` / `Query` / `Result` / `SetMode` / `Mode` / `Bye` |
+| 谁拉起 server | DLL 在 `Activate` 时，同一目录下的 `heinrich-server.exe`（`CREATE_NO_WINDOW`） |
+| 何时退出 | 无连接空闲 30 分钟（`--idle-exit`，0 = 不退） |
+
+**50 ms 铁律**（D32）：按键回调里每次往返都有硬上限，超时就丢掉整条连接、把编码
+原样上屏。连接/重连/拉起全在后台线程（`ipc::warm_up`），键路径只 `try_lock`。
+
+降级行为一张表，排查时先对照这个：
+
+| 情况 | 用户看到 |
+|---|---|
+| 正常 | 上屏汉字 |
+| 那个码没有词条 | 上屏原样字母（D27） |
+| server 未连上 / 超时 | 上屏原样字母，下一次按键后台重连 |
+| 中英模式在英文 | 什么都不接管，宿主自己出字母 |
+
+手工验证的四个动作：
+
+```powershell
+# 1) 看 server 在不在、管道有没有、日志尾部
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server
+
+# 2) 验零阻塞：让 server 每次查询前睡 5 秒，此时打字必须完全不卡（D18）
+dist\heinrich-server.exe --debug-sleep 5000 --idle-exit 0
+# 打完字记得结束它，否则后续几秒内的上屏都会变成原样字母
+
+# 3) 验自动重连：杀掉后随便打个字，再跑一次 tsf.ps1 server 应看到新 pid
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server stop
+
+# 4) 无管道也能验「装得进、查得对」
+dist\heinrich-server.exe --selftest
+```
 
 ### 4.2 上手
 
@@ -288,6 +336,10 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     - **写完必须 `SetSelection` 把光标收到 preedit 末尾**，否则光标停在组合串起点，看起来像「字往左边长」。
     另外组合串可能被**别人**终止（换焦点 / 文档关闭 / 别的 TIP 抢走），要实现的不是自己再 end 一次，而是 `ITfCompositionSink::OnCompositionTerminated` 里用给的 `ecwrite` 把残留删掉；删之前比对句柄身份，避免把自己刚提交的字也删了。
 18. **`#[implement]` 生成的 `as_interface_ref()` 是泛型方法。** 直接 `self.as_interface_ref().cast::<T>()` 会报 `type annotations needed`，得写成 `ComObjectInterface::<IUnknown>::as_interface_ref(self)`；要一份能长期持有的引用再加 `.to_owned()`（它会 AddRef）。相关：`ITfContextComposition::StartComposition` 的 sink 参数是 `Param<ITfCompositionSink>`，`&Option<T>` **不满足**，要传 `Option<&T>`（`self.sink.as_ref()`）。
+19. **`windows-core` 的 `Error::code()` 是 `HRESULT`，不是 Win32 错误码。** 它被 `HRESULT_FROM_WIN32` 包过（`0x8007_0000 | code`），拿它直接跟 `ERROR_FILE_NOT_FOUND`（2）比永远不相等——表现是「管道还不存在」这种正常路径被当成真错误刷进日志，或者反过来的「该重连的时候不重连」。取低 16 位（`code.0 as u32 & 0xFFFF`）再比。另外 0.62 没有 `Error::message()` 和 `HRESULT_FROM_WIN32`，要看文案就 `format!("{e}")`。
+20. **重叠 I/O 超时后必须放弃整条连接，而且 `OVERLAPPED` 要放堆上。** 超时那一刻内核可能仍然引用着那块 `OVERLAPPED`（`CancelIoEx` 只是发起取消，不保证同步完成），栈上的对象随函数返回就被复用了，等于让内核往别人的栈帧里写。做法：`Box<OVERLAPPED>`，丢弃 `mem::forget`（每次超时泄漏 40 字节，换「不写坏内存」）。同理，超时后管道里可能还剩半个响应，继续复用会读到错位的帧——直接关句柄、重连，比「猜着读」可靠得多。
+21. **常驻进程会锁住自己的 exe。** `heinrich-server.exe` 在跑时 `Copy-Item` 覆盖 `dist` 里的同名文件必然失败，表现与 DLL 被宿主映射一模一样（`os error 32`）。`build.ps1` 在复制前先结束它——它是我们自己的进程、没有用户数据，DLL 下一次按键会自动拉起新版。
+22. **命名管道的 `CreateNamedPipeW` / `ConnectNamedPipe` 在 `Win32::System::Pipes`，而 `CreateFileW` 在 `Win32::Storage::FileSystem`。** 而且 `CreateFileW` / `CreateEventW` 因为形参里有 `SECURITY_ATTRIBUTES`，**必须**同时开 `Win32_Security` feature，否则整个函数会被 cfg 掉，报错是「no `CreateFileW` in `Win32::Storage::FileSystem`」——看起来像 API 不存在，其实只是 feature 没开。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -311,7 +363,8 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.0 键进得来 | ✅ 已验收（注册 / 激活 / 按键只记录不消费 / 状态检查；`Get-WinUserLanguageList` 里已出现该 TIP） |
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
-| M1.3 接 server | 命名管道 + 本地候选缓存 + `--debug-sleep` 零阻塞验证 |
+| M1.3 接 server | 🟡 代码完成，待真机验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式；候选窗 / SQLite / 数字键选词仍不做） |
+| M2 候选窗 | 分层窗口 + DirectWrite 排版 + 光标跟随（`ITfContextView::GetTextExt`）+ 数字键选词 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

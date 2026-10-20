@@ -14,6 +14,8 @@ members = [
     "crates/heinrich-tip-id",
     "crates/heinrich-scheme",
     "crates/heinrich-core",
+    "crates/heinrich-proto",
+    "crates/heinrich-server",
     "crates/heinrich-gen",
     "crates/heinrich-cli",
     "apps/windows/tsf",
@@ -30,6 +32,8 @@ license = "GPL-3.0-or-later"
 heinrich-tip-id = { path = "crates/heinrich-tip-id", version = "0.1.0" }
 heinrich-scheme = { path = "crates/heinrich-scheme", version = "0.1.0" }
 heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
+heinrich-proto = { path = "crates/heinrich-proto", version = "0.1.0" }
+heinrich-server = { path = "crates/heinrich-server", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

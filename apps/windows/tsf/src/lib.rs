@@ -17,16 +17,16 @@
 //! 只允许 `windows` 与 `heinrich-tip-id`。想加别的库之前先问一句：
 //! 它值得让每个宿主进程都多背一份吗。
 //!
-//! ## M1.2 的边界
+//! ## M1.3 的边界
 //!
-//! 缓冲 `a`–`y`，编码以**组合串**的形式显示在文档里（`vbg` 边走边出现在光标处），
-//! 空格 / 回车把命中字原地替换上去；Esc 取消；单击 Shift 切中英。
-//! 候选窗、显示属性（虚线）、IPC 全部留到后续阶段。
+//! 缓冲 `a`–`y` + 中文标点，编码以**组合串**显示在文档里，空格 / 回车 / 标点
+//! 把命中字（+ 标点）原地替换上去；Esc 取消；单击 Shift 切中英。
+//! 候选查询走命名管道问 `heinrich-server`；候选窗、显示属性（虚线）留到 M2。
 //!
 //! 模块分工：
 //!
 //! - [`keys`]：**纯逻辑**，不碰 Windows API。「吃不吃这个键」只在这里回答一次。
-//! - [`tinydict`]：20 条硬编码小码表，M1.3 接 server 后删除。
+//! - [`ipc`]：命名管道客户端。键路径上**永远不超过 50 ms**，重连全在后台线程。
 //! - [`preedit`]：组合串（显示 / 提交 / 取消）的编辑会话。
 //! - [`text_service`]：TSF 接口实现，只做搬运。
 
@@ -34,10 +34,10 @@
 #[macro_use]
 mod log;
 
+mod ipc;
 mod keys;
 mod preedit;
 mod text_service;
-mod tinydict;
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -160,6 +160,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 #[no_mangle]
 pub extern "system" fn HeinrichTsfAbiVersion() -> u32 {
     // 1 = M1.0（观测按键）；2 = M1.1（缓冲 + 上屏 + 中英切换）；
-    // 3 = M1.2（组合串）。改动导出的语义时递增。
-    3
+    // 3 = M1.2（组合串）；4 = M1.3（接 server + 中文标点 + 全局中英模式）。
+    // 改动导出的语义时递增。
+    4
 }

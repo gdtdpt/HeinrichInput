@@ -55,9 +55,9 @@ use windows::Win32::UI::TextServices::{
     TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
 
+use crate::ipc;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap, MAX_CODE_LEN};
 use crate::preedit::{CompSlot, Goal, PreeditSession};
-use crate::tinydict;
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
 static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -171,6 +171,9 @@ impl TextService {
             Mode::English => Mode::Chinese,
         };
         self.mode.set(next);
+        // 上报给 server：模式是**全局**状态（D34）。本地先改是为了让本进程立刻生效，
+        // 上报走队列——切模式发生在 Shift 松开的那一刻，那是键路径，不能等 IPC。
+        ipc::set_mode(next == Mode::Chinese);
         // 切模式时丢掉半截编码：留着它会让下次输入莫名其妙多出几个字母。
         // 组合串也要跟着撤——否则那串字母会留在文档里，而缓冲已经空了。
         let dropped = self.buffer.borrow().clone();
@@ -215,6 +218,18 @@ impl TextService {
                 self.sync_preedit(context);
             }
             Action::Commit => self.commit(context),
+            Action::Punct(p) => {
+                // 标点把「当前编码 + 标点」一起写成最终文字。缓冲为空时只写标点。
+                let code = self.clear_buffer();
+                let mut text = if code.is_empty() {
+                    String::new()
+                } else {
+                    self.resolve(&code)
+                };
+                text.push(p);
+                tsf_info!("#{} 标点 {p}，一次写入 {text:?}", self.seq);
+                self.run_preedit(context, Goal::Finish(Some(text)));
+            }
             Action::Cancel => {
                 let dropped = self.clear_buffer();
                 tsf_info!("#{} 取消，丢弃编码 {dropped:?}", self.seq);
@@ -240,20 +255,37 @@ impl TextService {
         if code.is_empty() {
             return;
         }
-        let text = match tinydict::lookup(&code) {
-            Some(word) => {
+        let text = self.resolve(&code);
+        self.run_preedit(context, Goal::Finish(Some(text)));
+    }
+
+    /// 编码 → 上屏文字。**任何路径都必须返回一段文字**。
+    ///
+    /// 三种情况：
+    ///
+    /// | 情况 | 结果 |
+    /// |---|---|
+    /// | 命中 | 首候选（M1.3 没有候选窗，第 2 个及以后的候选还选不了） |
+    /// | 查到了但没这个词 | 编码原样上屏（D27：吃掉的键必须变成输出） |
+    /// | server 不可用 / 超时 | 同样原样上屏——比丢字好，也比卡住好 |
+    ///
+    /// 最后一行是 D18 的落地形态：**宁可这一次降级成英文，绝不冻住宿主**。
+    fn resolve(&self, code: &str) -> String {
+        match ipc::query(code) {
+            Some(entries) if !entries.is_empty() => {
+                let word = entries[0].word.clone();
                 tsf_info!("#{} 提交 {code} → {word}", self.seq);
-                word.to_string()
+                word
+            }
+            Some(_) => {
+                tsf_info!("#{} 无命中 {code}，原样上屏", self.seq);
+                code.to_string()
             }
             None => {
-                // 没命中也必须出字。吃掉了 4 个键却什么都不写，在严格宿主里
-                // 那几个字母就永久消失了（踩坑 #12）。原样上屏同时给了用户
-                // 逃生口：打错了就重新打。
-                tsf_info!("#{} 无命中 {code}，原样上屏", self.seq);
-                code
+                tsf_info!("#{} server 不可用（{code}），原样上屏", self.seq);
+                code.to_string()
             }
-        };
-        self.run_preedit(context, Goal::Finish(Some(text)));
+        }
     }
 
     /// 请求一次同步编辑会话，把组合串推到目标状态。
@@ -350,8 +382,20 @@ impl TextService_Impl {
             *self.thread_mgr.borrow_mut() = Some(thread_mgr.clone());
         }
 
+        // IPC：启动后台连接线程（幂等），并趁机把 server 上的全局模式取回来。
+        // 这两件事都发生在 `Activate`——切到某个输入框的瞬间，离真正落键还有
+        // 几百毫秒，冷启动 server 与首次握手正好挤在这段空隙里完成。
+        ipc::warm_up();
+        if let Some(chinese) = ipc::current_mode() {
+            self.mode.set(if chinese {
+                Mode::Chinese
+            } else {
+                Mode::English
+            });
+        }
+
         tsf_info!(
-            "#{} Activate tid={} pid={} —— 按键 sink 与焦点 sink 已挂（{}）",
+            "#{} Activate tid={} pid={} —— 按键 sink 与焦点 sink 已挂（{}，IPC {}）",
             self.seq,
             tid,
             std::process::id(),
@@ -359,6 +403,11 @@ impl TextService_Impl {
                 "中文"
             } else {
                 "英文"
+            },
+            if ipc::is_connected() {
+                "已连接"
+            } else {
+                "未连接"
             }
         );
         Ok(())
@@ -652,6 +701,7 @@ fn action_name(action: Action) -> &'static str {
         Action::Commit => "commit",
         Action::Cancel => "cancel",
         Action::Backspace => "backspace",
+        Action::Punct(_) => "punct",
     }
 }
 
