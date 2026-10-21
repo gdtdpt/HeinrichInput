@@ -1,0 +1,11 @@
+# 拼音测试夹具（生成物）
+# format: pinyin<TAB>word<TAB>weight
+hao	好	5000
+hao	号	3000
+hao	浩	1000
+haochi	好吃	600
+haoping	好评	800
+ni	你	2000
+nihao	你好	900
+xian	先	1500
+xian	西安	700

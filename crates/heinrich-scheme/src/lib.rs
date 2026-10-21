@@ -12,9 +12,11 @@
 mod code;
 mod hash;
 mod manifest;
+mod pinyin;
 mod scheme;
 
 pub use code::{pack, prefix_bounds, Code, MAX_CODE_LEN};
 pub use hash::sha256_hex;
 pub use manifest::{Manifest, ManifestError};
+pub use pinyin::{PinyinEntry, PinyinLexicon};
 pub use scheme::{CodeKind, Entry, LoadError, Scheme, SchemeMeta, SchemeStats};

@@ -532,6 +532,75 @@ taskkill /im heinrich-server.exe /f
 都不出」。所以 `heinrich-setup.exe install` 的第一步（`[0/5]`）就是结束**本会话**的
 `heinrich-server.exe`，下一次按键由 DLL 惰性拉起新版本。
 
+### 4.10 混输：拼音数据与裁决（M3.1 / M3.2）
+
+```
+按键 → 组合串（一串字母，不区分语言）
+        │
+   sync_preedit + ipc::query(buffer)
+        │
+   ┌────┴─────────────────────────────┐
+   │ core::pinyin::query              │
+   │  五笔侧：lookup(scheme)            │ 精确命中 → 质量 1.0
+   │  拼音侧：lex.match_indices        │ 可切分 → 1.0；仅前缀 → 0.5
+   │  比质量：同分判拼音（§6.1）         │
+   │  primary = 判定的那侧              │
+   │  folded  = 另一侧（§6.2 折叠）      │
+   └──────────────────────────────────┘
+```
+
+**数据从哪来**：`rime/rime-pinyin-simp`（**Apache-2.0**）→ `tools/fetch-data.ps1` → `tools/gen.ps1 -Kind pinyin`
+→ `data/pinyin/`（`lexicon.tsv` + `syllables.txt` + `scheme.toml`）。
+
+| 产物 | 内容 |
+|---|---|
+| `lexicon.tsv` | `拼音<TAB>词<TAB>权重`，拼音是**去掉音节空格的连续小写串**（`haoping`），65,125 条 |
+| `syllables.txt` | 415 个音节，供切分判定与合法性校验 |
+| `scheme.toml` | 清单 + 词库哈希（装载时校验，与五笔同一套 `Manifest`） |
+
+**四条容易写错的**：
+
+1. **词条里不存音节空格。** 用户敲的是连续字母，要求他打 `hao ping` 违背所有拼音输入法的
+   肌肉记忆。去掉空格后查询退化成一次前缀匹配：`hao` 命中「好」，`haop` 命中「好评」，
+   正好对上 §6.1 的「完全匹配 / 前缀匹配」。代价是丢掉边界（`xian` = 先 / 西安），
+   但那本来就是同一组候选——需要边界的地方（判断一段字母能不能切成音节）用
+   `syllables.txt` 现场算可达性 DP，不靠词条自带的分隔。
+
+2. **拼音词典归 `heinrich-scheme`，不归 `heinrich-core`。** core 的硬约束是「不得有文件 I/O、
+   不得读时钟」，而装载要读三个文件。放 `heinrich-scheme` 后它与 `Scheme` 并列、
+   共用同一套清单解析与哈希校验；core 只拿 `&PinyinLexicon` 做纯逻辑。
+
+3. **排序必须复用 `rank_inputs`，但精确区与前缀区要分开排。** 复用是为了让拼音和五笔
+   共享同一份学习数据（拼音下打惯的字，切回五笔也该靠前）。而**分开排**是因为混排的
+   实测后果很难看：`hao` 会出「好、号、好吧、好不好、好啊、好不容易、浩、豪…」——
+   词组的语料权重高于同音字，把用户真正想打的字挤到了后面。分开后是
+   「好、号、浩、豪、耗、郝…」再跟前缀词组。
+
+4. **判定不能只看「有没有候选」。** 拼音的「可切分」与「有候选」是两件事：
+   `zhuang` 可切分（质量 1.0）；`zhuangx` 不可切分但仍有以它开头的词组（质量 0.5）。
+   若把两者都算 1.0，`hao` 这类「既是五笔码又是拼音」的输入会与「打了一半的拼音」
+   同分，`vbg` 反而可能被误判。质量分是 §6.1 段质量在单段上的落点。
+
+**当前只做单段。** 真正的多段输入（`haovb` = 拼音段 + 五笔段，组合出「好我」）需要
+各段候选做笛卡尔积，而它的实际频率极低——用户要么在打五笔、要么在打拼音。单段判定
+已覆盖纯拼音、纯五笔与 `hao` 这类歧义。多段留到 §6.1 的完整 DP。
+
+**怎么验**（不需要 TSF 壳，CLI 就够）：
+
+```powershell
+# 交互：打 hao / haoping / vbg / nihao，看判定与折叠分界
+cargo run -p heinrich-cli -- repl --data data/wubi86 --pinyin data/pinyin
+
+# 数据校验（check.ps1 会跑这一步）
+cargo run -p heinrich-cli -- check-pinyin --data data/pinyin
+```
+
+日志/输出对照：
+
+- `判定 拼音 · 61 个候选` + `以下是五笔候选（折叠区）` → 判定与折叠都生效
+- `判定 五笔` → 该串切不成音节（`vbg` 里的 `v` 不是音节起始）
+- `` `zzz` 没有候选 `` → 两边都没命中，符合 D45（不出窗）
+
 ## 5. 数据管线
 
 ```
@@ -623,6 +692,9 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M2.2 候选窗窗口 | ✅ 已验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
 | M2.3 接进 TSF | ✅ 自测通过（记事本 / Notepad++ / Chrome）（逐键查询 D37 + `GetTextExt` 三级兜底 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；`cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
 | M2.4 学习落库 | 🟡 代码完成 + 自测通过，待验收（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9） |
+| M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
+| M3.2 混输裁决 | 🟡 代码完成 + 自测通过，待验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。见 §4.10） |
+| M3.3–M3.5 | 未开始（接进 TSF / 码提示 chip + 外链 / 显式 `'` 标记 + `z` 学习键） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

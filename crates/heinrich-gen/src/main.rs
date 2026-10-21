@@ -19,30 +19,68 @@ use std::process::ExitCode;
 
 use heinrich_scheme::{sha256_hex, Code, MAX_CODE_LEN};
 
+mod pinyin;
+
+/// 装配哪一套词库。两套的输入格式、校验项、产物都不同，共用入口只是为了
+/// 让 `tools/gen.ps1` 只有一个 `cargo run`。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Wubi,
+    Pinyin,
+}
+
 struct Args {
+    kind: Kind,
     raw: PathBuf,
-    out: PathBuf,
-    report: PathBuf,
+    /// `None` 表示按 `kind` 取默认值（`--kind` 可能出现在任何位置，
+    /// 所以默认值不能在参数解析前就定下来）。
+    out: Option<PathBuf>,
+    report: Option<PathBuf>,
 }
 
 impl Args {
     fn parse() -> Result<Self, String> {
-        let mut args = Self {
-            raw: PathBuf::from("data/raw"),
-            out: PathBuf::from("data/wubi86"),
-            report: PathBuf::from("out/m0a-report.md"),
-        };
+        let mut kind = Kind::Wubi;
+        let mut raw = PathBuf::from("data/raw");
+        let mut out = None;
+        let mut report = None;
         let mut it = std::env::args().skip(1);
         while let Some(flag) = it.next() {
             let value = it.next().ok_or_else(|| format!("`{flag}` 缺少取值"))?;
             match flag.as_str() {
-                "--raw" => args.raw = PathBuf::from(value),
-                "--out" => args.out = PathBuf::from(value),
-                "--report" => args.report = PathBuf::from(value),
+                "--kind" => {
+                    kind = match value.as_str() {
+                        "wubi" => Kind::Wubi,
+                        "pinyin" => Kind::Pinyin,
+                        other => return Err(format!("未知的 --kind `{other}`（wubi | pinyin）")),
+                    }
+                }
+                "--raw" => raw = PathBuf::from(value),
+                "--out" => out = Some(PathBuf::from(value)),
+                "--report" => report = Some(PathBuf::from(value)),
                 other => return Err(format!("未知参数 `{other}`")),
             }
         }
-        Ok(args)
+        Ok(Args {
+            kind,
+            raw,
+            out,
+            report,
+        })
+    }
+
+    fn out(&self) -> PathBuf {
+        self.out.clone().unwrap_or_else(|| match self.kind {
+            Kind::Wubi => PathBuf::from("data/wubi86"),
+            Kind::Pinyin => PathBuf::from("data/pinyin"),
+        })
+    }
+
+    fn report(&self) -> PathBuf {
+        self.report.clone().unwrap_or_else(|| match self.kind {
+            Kind::Wubi => PathBuf::from("out/m0a-report.md"),
+            Kind::Pinyin => PathBuf::from("out/m3-pinyin-report.md"),
+        })
     }
 }
 
@@ -69,8 +107,17 @@ fn main() -> ExitCode {
 
 fn run() -> Result<bool, String> {
     let args = Args::parse()?;
-    let rows = parse_dict(&args.raw.join("wubi86.dict.yaml"))?;
-    let common = parse_common(&args.raw.join("common3500.csv"))?;
+    let out = args.out();
+    let report = args.report();
+    match args.kind {
+        Kind::Pinyin => pinyin::run(&args.raw, &out, &report),
+        Kind::Wubi => run_wubi(&args.raw, &out, &report),
+    }
+}
+
+fn run_wubi(raw_dir: &Path, out_dir: &Path, report_path: &Path) -> Result<bool, String> {
+    let rows = parse_dict(&raw_dir.join("wubi86.dict.yaml"))?;
+    let common = parse_common(&raw_dir.join("common3500.csv"))?;
     if rows.is_empty() {
         return Err("码表解析结果为空，请检查原始文件格式".into());
     }
@@ -149,8 +196,8 @@ fn run() -> Result<bool, String> {
         text.push_str(&level.to_string());
         text.push('\n');
     }
-    fs::create_dir_all(&args.out).map_err(|e| format!("创建输出目录失败：{e}"))?;
-    let lexicon_path = args.out.join("lexicon.tsv");
+    fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败：{e}"))?;
+    let lexicon_path = out_dir.join("lexicon.tsv");
     fs::write(&lexicon_path, &text).map_err(|e| format!("写入词库失败：{e}"))?;
     let digest = sha256_hex(text.as_bytes());
 
@@ -167,19 +214,19 @@ fn run() -> Result<bool, String> {
          lexicon_sha256 = \"{digest}\"\n",
         count = lexicon.len()
     );
-    fs::write(args.out.join("scheme.toml"), manifest).map_err(|e| format!("写入清单失败：{e}"))?;
+    fs::write(out_dir.join("scheme.toml"), manifest).map_err(|e| format!("写入清单失败：{e}"))?;
 
     // ---- 统计与验收 ----
     let stats = Stats::compute(&lexicon, &common);
-    let report = render_report(&stats, &anomalies, &malformed, &digest, &args);
-    if let Some(parent) = args.report.parent() {
+    let report = render_report(&stats, &anomalies, &malformed, &digest, out_dir);
+    if let Some(parent) = report_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建报告目录失败：{e}"))?;
     }
-    fs::write(&args.report, report).map_err(|e| format!("写入报告失败：{e}"))?;
+    fs::write(report_path, report).map_err(|e| format!("写入报告失败：{e}"))?;
 
     println!("词库：{} 条 → {}", lexicon.len(), lexicon_path.display());
     println!("哈希：{digest}");
-    println!("报告：{}", args.report.display());
+    println!("报告：{}", report_path.display());
     for (name, ok, detail) in stats.verdicts() {
         println!("[{}] {name}：{detail}", if ok { "通过" } else { "未通过" });
     }
@@ -372,7 +419,7 @@ fn render_report(
     anomalies: &[String],
     malformed: &[String],
     digest: &str,
-    args: &Args,
+    out: &Path,
 ) -> String {
     let mut r = String::new();
     r.push_str("# M0a 数据装配校验报告\n\n");
@@ -381,11 +428,11 @@ fn render_report(
     r.push_str("## 1. 产物\n\n| 项 | 值 |\n|---|---|\n");
     r.push_str(&format!(
         "| 词库 | `{}` |\n",
-        args.out.join("lexicon.tsv").display()
+        out.join("lexicon.tsv").display()
     ));
     r.push_str(&format!(
         "| 清单 | `{}` |\n",
-        args.out.join("scheme.toml").display()
+        out.join("scheme.toml").display()
     ));
     r.push_str(&format!("| 词条数 | {} |\n", s.total));
     r.push_str(&format!("| 词库 SHA-256 | `{digest}` |\n\n"));
@@ -495,7 +542,7 @@ fn render_report(
 }
 
 /// 读文本并剥掉 UTF-8 BOM（Windows 编辑器常给中文文本加 BOM）。
-fn read_text(path: &Path) -> Result<String, String> {
+pub(crate) fn read_text(path: &Path) -> Result<String, String> {
     let text = fs::read_to_string(path).map_err(|e| {
         format!(
             "读取 {} 失败：{e}（先跑 tools/fetch-data.ps1）",
@@ -548,7 +595,7 @@ fn parse_dict(path: &Path) -> Result<Vec<RawRow>, String> {
 ///
 /// 表里有若干 `_` 占位行（原数据集的缺失标记），不是汉字，统计前剔除，
 /// 否则覆盖率会被两个无关字符拖下水。
-fn parse_common(path: &Path) -> Result<Vec<char>, String> {
+pub(crate) fn parse_common(path: &Path) -> Result<Vec<char>, String> {
     let text = read_text(path)?;
     let mut out = Vec::with_capacity(3500);
     for (idx, line) in text.lines().enumerate() {
@@ -566,6 +613,6 @@ fn parse_common(path: &Path) -> Result<Vec<char>, String> {
     Ok(out)
 }
 
-fn is_han(c: char) -> bool {
+pub(crate) fn is_han(c: char) -> bool {
     matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
 }

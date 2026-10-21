@@ -1,21 +1,31 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    装配方案数据：data/raw/ → data/wubi86/，并输出 M0a 校验报告。
+    装配方案数据：data/raw/ → data/wubi86/ 与 data/pinyin/，并输出校验报告。
 
 .DESCRIPTION
-    生成 lexicon.tsv（码/词/权重/简码级别）与 scheme.toml（清单 + 词库哈希），
-    报告写到 out/m0a-report.md。产物不含时间戳，同输入必得同字节、同哈希。
+    两套词库，流程与校验项完全不同，用 -Kind 选择：
 
-    任一验收项不通过时脚本返回非零退出码：
-      ① 常用字覆盖 ≥ 99%   ③ 2–3 级简码必须是全码前缀（例外 ≤ 1%）
-      ④ 一级简码 25 键、每键至多 1 条
+      wubi   → data/wubi86/lexicon.tsv（码/词/权重/简码级别）+ scheme.toml
+               报告 out/m0a-report.md
+               验收：① 常用字覆盖 ≥ 99%  ③ 2–3 级简码必须是全码前缀（例外 ≤ 1%）
+                     ④ 一级简码 25 键、每键至多 1 条
+
+      pinyin → data/pinyin/lexicon.tsv（无分隔拼音/词/权重）+ syllables.txt + scheme.toml
+               报告 out/m3-pinyin-report.md
+               验收：① 常用字覆盖必须 100%  ② 拼音串只含 a-z  ③ 音节 ≤ 6 字母
+
+    产物不含时间戳、不依赖哈希表遍历顺序，同输入必得同字节、同哈希。
+    任一验收项不通过时脚本返回非零退出码。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\gen.ps1
+    powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind pinyin
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('all', 'wubi', 'pinyin')]
+    [string]$Kind = 'all',
     [string]$RawDir,
     [string]$OutDir,
     [string]$Report
@@ -31,17 +41,43 @@ Set-Location $root
 # `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串，
 # `Join-Path` 会直接抛「无法将参数绑定到参数 Path，因为该参数为空字符串」。
 if (-not $RawDir) { $RawDir = Join-Path $PSScriptRoot '..\data\raw' }
-if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot '..\data\wubi86' }
-if (-not $Report) { $Report = Join-Path $PSScriptRoot '..\out\m0a-report.md' }
 
-if (-not (Test-Path (Join-Path $RawDir 'wubi86.dict.yaml'))) {
-    throw "缺少 $RawDir\wubi86.dict.yaml，先跑 tools\fetch-data.ps1"
+# -Kind all 时两套产物落在不同目录，显式给 -OutDir / -Report 只会让另一套无处可去。
+if ($Kind -eq 'all' -and ($OutDir -or $Report)) {
+    throw "-Kind all 时不能指定 -OutDir / -Report（两套产物默认落在 data\wubi86 与 data\pinyin）"
 }
 
-& cargo run --release -p heinrich-gen -- --raw $RawDir --out $OutDir --report $Report
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "装配未通过验收（退出码 $LASTEXITCODE），详见 $Report" -ForegroundColor Yellow
-    exit $LASTEXITCODE
-}
+$jobs = if ($Kind -eq 'all') { @('wubi', 'pinyin') } else { @($Kind) }
 
-Write-Host "完成：$Report" -ForegroundColor Green
+foreach ($k in $jobs) {
+    if ($k -eq 'wubi') {
+        $input = 'wubi86.dict.yaml'
+        $defaultOut = '..\data\wubi86'
+        $defaultReport = '..\out\m0a-report.md'
+    } else {
+        $input = 'pinyin_simp.dict.yaml'
+        $defaultOut = '..\data\pinyin'
+        $defaultReport = '..\out\m3-pinyin-report.md'
+    }
+
+    if (-not (Test-Path (Join-Path $RawDir $input))) {
+        throw "缺少 $RawDir\$input，先跑 tools\fetch-data.ps1"
+    }
+
+    $o = if ($OutDir) { $OutDir } else { Join-Path $PSScriptRoot $defaultOut }
+    $r = if ($Report) { $Report } else { Join-Path $PSScriptRoot $defaultReport }
+
+    Write-Host "== 装配 $k" -ForegroundColor Cyan
+    # Windows PowerShell 5.1 会把原生程序写到 stderr 的每一行包成 NativeCommandError，
+    # 配合 $ErrorActionPreference='Stop' 会在 cargo 打印进度时直接中断——看起来像
+    # 「装配失败」，其实只是编译器说了句话。成败只看 $LASTEXITCODE。
+    $ErrorActionPreference = 'Continue'
+    & cargo run --release -p heinrich-gen -- --kind $k --raw $RawDir --out $o --report $r
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($code -ne 0) {
+        Write-Host "装配 $k 未通过验收（退出码 $code），详见 $r" -ForegroundColor Yellow
+        exit $code
+    }
+    Write-Host "完成：$r" -ForegroundColor Green
+}

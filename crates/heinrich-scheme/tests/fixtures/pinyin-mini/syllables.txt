@@ -1,0 +1,9 @@
+# 音节表（生成物）
+a
+an
+chi
+hao
+ni
+ping
+xi
+xian

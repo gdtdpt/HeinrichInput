@@ -3,19 +3,34 @@
 //! 为什么需要锁定：候选是按综合分实时算的，若某次选择立刻改变分数，同一串
 //! 按键在翻页过程中会「跳位」，用户的手指会落到错的候选上。因此同一缓冲区
 //! 的排序结果被缓存，直到缓冲区变化或组合结束才重算。
+//!
+//! M3 起这里还承担**混输判定**：同一个缓冲区要么判五笔、要么判拼音，判定结果
+//! 与候选一起被锁定。否则用户看到的候选会在「拼音区」和「五笔区」之间跳，
+//! 比不锁定更糟。
 
-use heinrich_scheme::Scheme;
+use heinrich_scheme::{PinyinLexicon, Scheme};
 
-use crate::rank::{lookup, Candidate, LookupMode, RankingConfig};
+use crate::pinyin::{self, Mixed, Source};
+use crate::rank::{Candidate, LookupMode, RankingConfig};
 use crate::usage::{Tier, UsageStore};
 
-/// 输入法引擎：持有一份方案、一份学习数据与排序参数。
+/// 一个缓冲区的查询结果快照。
+struct Cached {
+    buffer: String,
+    mixed: Mixed,
+    /// `primary` + `folded` 的扁平副本。留一份是为了让既有调用方
+    /// （server / TSF 的「按序号取候选」）不必关心折叠区的存在——
+    /// 它们拿到的仍是「第 n 条候选」这个一维序列。
+    flat: Vec<Candidate>,
+}
+
+/// 输入法引擎：持有一份方案（可选一份拼音词库）、一份学习数据与排序参数。
 pub struct Engine<S: UsageStore> {
     scheme: Scheme,
+    pinyin: Option<PinyinLexicon>,
     store: S,
     cfg: RankingConfig,
-    /// (缓冲区, 上次排序结果, 来源)：组合期顺序锁定
-    cache: Option<(String, Vec<Candidate>, LookupMode)>,
+    cache: Option<Cached>,
     /// 本次组合是否已经产生过候选（用于统计「首屏」等场景）
     composed: bool,
 }
@@ -24,6 +39,7 @@ impl<S: UsageStore> Engine<S> {
     pub fn new(scheme: Scheme, store: S, cfg: RankingConfig) -> Self {
         Self {
             scheme,
+            pinyin: None,
             store,
             cfg,
             cache: None,
@@ -31,35 +47,82 @@ impl<S: UsageStore> Engine<S> {
         }
     }
 
+    /// 挂上拼音词库，此后查询走混输判定（§6.1）。
+    ///
+    /// 做成装配式而不是 `new` 的参数：没有拼音数据的场合（既有单测、只装五笔的
+    /// 环境）应当原样工作，不该被迫构造一个空词库。
+    pub fn with_pinyin(mut self, lex: PinyinLexicon) -> Self {
+        self.pinyin = Some(lex);
+        self.cache = None;
+        self
+    }
+
     pub fn scheme(&self) -> &Scheme {
         &self.scheme
+    }
+
+    pub fn pinyin(&self) -> Option<&PinyinLexicon> {
+        self.pinyin.as_ref()
     }
 
     pub fn store(&self) -> &S {
         &self.store
     }
 
-    /// 取当前缓冲区的候选；同一缓冲区重复调用返回同一顺序（顺序锁定）。
-    pub fn candidates(&mut self, buffer: &str, now: i64) -> &[Candidate] {
-        let hit = matches!(&self.cache, Some((cached, _, _)) if cached == buffer);
-        if !hit {
-            let (list, mode) = if buffer.is_empty() {
-                (Vec::new(), LookupMode::Exact)
-            } else {
-                lookup(&self.scheme, buffer, &self.store, now, &self.cfg)
-            };
-            self.cache = Some((buffer.to_string(), list, mode));
+    fn ensure(&mut self, buffer: &str, now: i64) {
+        let hit = matches!(&self.cache, Some(c) if c.buffer == buffer);
+        if hit {
+            return;
         }
+        let mixed = pinyin::query(
+            &self.scheme,
+            self.pinyin.as_ref(),
+            buffer,
+            &self.store,
+            now,
+            &self.cfg,
+        );
+        let mut flat = Vec::with_capacity(mixed.primary.len() + mixed.folded.len());
+        flat.extend(mixed.primary.iter().cloned());
+        flat.extend(mixed.folded.iter().cloned());
+        self.cache = Some(Cached {
+            buffer: buffer.to_string(),
+            mixed,
+            flat,
+        });
         self.composed |= !buffer.is_empty();
+    }
+
+    /// 取当前缓冲区的候选；同一缓冲区重复调用返回同一顺序（顺序锁定）。
+    ///
+    /// 返回值是「首屏 + 折叠区」的一维序列——需要区分两种语言的调用方用
+    /// [`Self::mixed`]。
+    pub fn candidates(&mut self, buffer: &str, now: i64) -> &[Candidate] {
+        self.ensure(buffer, now);
         self.cache
             .as_ref()
-            .map(|(_, l, _)| l.as_slice())
+            .map(|c| c.flat.as_slice())
             .unwrap_or(&[])
     }
 
+    /// 取完整的混输结果（含判定来源与折叠区）。
+    pub fn mixed(&mut self, buffer: &str, now: i64) -> &Mixed {
+        self.ensure(buffer, now);
+        // `ensure` 之后 cache 必然存在
+        &self.cache.as_ref().expect("ensure 已填充缓存").mixed
+    }
+
+    /// 当前候选集的判定来源。
+    pub fn source(&self) -> Option<Source> {
+        self.cache.as_ref().map(|c| c.mixed.source)
+    }
+
     /// 当前候选集的来源（精确命中 / 空码回退前缀）。
+    ///
+    /// 混输下这个值不再有决策作用（D45 已取消五笔前缀兜底），保留是为了让
+    /// 既有调用方与新调用方共用同一个入口。
     pub fn lookup_mode(&self) -> Option<LookupMode> {
-        self.cache.as_ref().map(|(_, _, m)| *m)
+        self.cache.as_ref().map(|_| LookupMode::Exact)
     }
 
     /// 选中第 `idx` 个候选并记一次上屏；返回被选中的候选。
@@ -109,9 +172,20 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mini")
     }
 
+    fn pinyin_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../heinrich-scheme/tests/fixtures/pinyin-mini")
+    }
+
     fn engine() -> Engine<MemoryStore> {
         let scheme = Scheme::load(&fixture()).expect("fixture 应可装载");
         Engine::new(scheme, MemoryStore::new(), RankingConfig::default())
+    }
+
+    fn mixed_engine() -> Engine<MemoryStore> {
+        let scheme = Scheme::load(&fixture()).expect("fixture 应可装载");
+        let lex = PinyinLexicon::load(&pinyin_fixture()).expect("拼音夹具应可装载");
+        Engine::new(scheme, MemoryStore::new(), RankingConfig::default()).with_pinyin(lex)
     }
 
     #[test]
@@ -176,5 +250,43 @@ mod tests {
         eng.set_tier(&target, Tier::Pinned);
         let ranked = eng.candidates("vbgd", 1_000);
         assert_eq!(ranked[0].word, target, "固顶词必须排首位");
+    }
+
+    #[test]
+    fn mixed_engine_routes_pinyin_and_keeps_decision_stable() {
+        let mut eng = mixed_engine();
+        assert_eq!(eng.mixed("hao", 1_000).source, Source::Pinyin);
+        assert_eq!(
+            eng.mixed("hao", 1_000)
+                .primary
+                .first()
+                .map(|c| c.word.as_str()),
+            Some("好")
+        );
+        // 判定结果在缓冲区内锁定：换个时刻问，来源不变
+        assert_eq!(eng.source(), Some(Source::Pinyin));
+        // 五笔码仍走五笔
+        assert_eq!(eng.mixed("vbgd", 1_000).source, Source::Wubi);
+    }
+
+    #[test]
+    fn mixed_engine_candidates_are_flat_primary_then_folded() {
+        let mut eng = mixed_engine();
+        let m = eng.mixed("hao", 1_000);
+        let primary: Vec<String> = m.primary.iter().map(|c| c.word.clone()).collect();
+        let folded: Vec<String> = m.folded.iter().map(|c| c.word.clone()).collect();
+        let flat = eng.candidates("hao", 1_000);
+        let mut want = primary;
+        want.extend(folded);
+        let got: Vec<String> = flat.iter().map(|c| c.word.clone()).collect();
+        assert_eq!(got, want, "扁平序列必须是首屏在前、折叠区在后");
+    }
+
+    #[test]
+    fn empty_buffer_has_no_source() {
+        let mut eng = mixed_engine();
+        assert!(eng.candidates("", 1_000).is_empty());
+        // 空缓冲区仍会建立缓存条目，来源退化到五笔，但候选为空
+        assert_eq!(eng.mixed("", 1_000).source, Source::Wubi);
     }
 }

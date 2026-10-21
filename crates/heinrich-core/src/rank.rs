@@ -136,6 +136,20 @@ pub fn lookup<S: UsageStore + ?Sized>(
     )
 }
 
+/// 排序的输入：一条候选的身份与静态权重。
+///
+/// 抽出来是为了让**五笔词库与拼音词库共用同一套排序**——学习分、首位保护、
+/// 抑制与固顶都是按「词」而不是按「哪个词典查出来的」生效的。用户在拼音下
+/// 多打了几次某个字，切回五笔时它同样更靠前，这才是符合直觉的行为。
+pub struct RankInput<'a> {
+    pub word: &'a str,
+    /// 五笔是编码，拼音是拼音串——它只用于同分时稳定次序与 `throne` 的身份判定
+    pub code: &'a str,
+    /// 归一化静态权重
+    pub w_norm: f32,
+    pub kind_label: &'static str,
+}
+
 /// 对给定的词条下标集合排序（固顶 → 学习区，首位受阈值保护）。
 pub fn rank_indices<S: UsageStore + ?Sized>(
     scheme: &Scheme,
@@ -144,29 +158,50 @@ pub fn rank_indices<S: UsageStore + ?Sized>(
     now: i64,
     cfg: &RankingConfig,
 ) -> Vec<Candidate> {
+    let inputs: Vec<RankInput<'_>> = indices
+        .iter()
+        .map(|&idx| {
+            let entry = scheme.entry(idx);
+            RankInput {
+                word: &entry.word,
+                code: entry.code.as_str(),
+                w_norm: entry.w_norm,
+                kind_label: entry.kind.label(),
+            }
+        })
+        .collect();
+    rank_inputs(&inputs, store, now, cfg)
+}
+
+/// 排序核心：与词库来源无关。
+pub fn rank_inputs<S: UsageStore + ?Sized>(
+    inputs: &[RankInput<'_>],
+    store: &S,
+    now: i64,
+    cfg: &RankingConfig,
+) -> Vec<Candidate> {
     let cfg = cfg.sanitized();
     let mut pinned: Vec<Candidate> = Vec::new();
     let mut learn: Vec<Candidate> = Vec::new();
 
-    for &idx in indices {
-        let entry = scheme.entry(idx);
-        let tier = store.tier(&entry.word);
+    for item in inputs {
+        let tier = store.tier(item.word);
         if tier == Tier::Suppressed {
             continue;
         }
-        let usage: Usage = store.usage(&entry.word);
+        let usage: Usage = store.usage(item.word);
         let days_since = days_between(usage.last_used, now);
         let learning = learning_score(usage.n, days_since, &cfg);
         let total = if usage.n == 0 {
-            entry.w_norm as f64
+            item.w_norm as f64
         } else {
-            entry.w_norm as f64 + cfg.learning_gain * learning
+            item.w_norm as f64 + cfg.learning_gain * learning
         };
         let cand = Candidate {
-            word: entry.word.clone(),
-            code: entry.code.to_string(),
-            kind_label: entry.kind.label(),
-            w_norm: entry.w_norm,
+            word: item.word.to_string(),
+            code: item.code.to_string(),
+            kind_label: item.kind_label,
+            w_norm: item.w_norm,
             learning,
             total,
             n: usage.n,

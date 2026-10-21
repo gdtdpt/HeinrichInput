@@ -1,0 +1,11 @@
+# 拼音测试夹具清单
+id = "pinyin"
+name = "拼音夹具"
+version = "1.0"
+alphabet = "abcdefghijklmnopqrstuvwxyz"
+max_code_len = 0
+source = "test fixture"
+license = "Apache-2.0"
+entry_count = 9
+syllable_count = 8
+lexicon_sha256 = "87cac55fbedd401861a8849ea17093ccd2e6b30d26a0284fd03b7a48f8628373"

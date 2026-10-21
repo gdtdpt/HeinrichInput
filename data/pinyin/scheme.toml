@@ -1,0 +1,13 @@
+# 亨利拼音方案清单（由 heinrich-gen 生成，请勿手改）
+id = "pinyin"
+name = "拼音"
+version = "1.0"
+alphabet = "abcdefghijklmnopqrstuvwxyz"
+# 0 = 不限。拼音词条长短完全取决于词组，没有「码长」这个概念；
+# 单音节最长 6（shuang/zhuang/chuang），实测最长音节 6
+max_code_len = 0
+source = "rime/rime-pinyin-simp pinyin_simp.dict.yaml"
+license = "Apache-2.0"
+entry_count = 65125
+syllable_count = 415
+lexicon_sha256 = "0e0a741b5be2b113f1e485dddd8e42f451f0e9a35724204acf7a0fbcd06b56a7"

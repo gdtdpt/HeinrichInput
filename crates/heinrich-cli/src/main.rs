@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use heinrich_core::{Engine, LookupMode, MemoryStore, RankingConfig, Tier};
-use heinrich_scheme::{Code, Scheme};
+use heinrich_core::{Engine, MemoryStore, Mixed, RankingConfig, Source, Tier};
+use heinrich_scheme::{Code, PinyinLexicon, Scheme};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -19,7 +19,14 @@ fn main() -> ExitCode {
         Some((c, r)) => (c.as_str(), r),
         None => ("repl", &[][..]),
     };
-    let data = take_data(rest).unwrap_or_else(|| PathBuf::from("data/wubi86"));
+    // 默认目录按子命令区分：`check-pinyin` 看的是拼音词库，其余看五笔词库。
+    let default_data = if cmd == "check-pinyin" {
+        PathBuf::from("data/pinyin")
+    } else {
+        PathBuf::from("data/wubi86")
+    };
+    let data = take_arg(rest, "--data").unwrap_or(default_data);
+    let pinyin_dir = take_arg(rest, "--pinyin");
 
     match cmd {
         "repl" => match Scheme::load(&data) {
@@ -33,11 +40,25 @@ fn main() -> ExitCode {
                     lic = scheme.meta.license
                 );
                 println!("{text}");
-                repl(Engine::new(
-                    scheme,
-                    MemoryStore::new(),
-                    RankingConfig::default(),
-                ));
+                let mut eng = Engine::new(scheme, MemoryStore::new(), RankingConfig::default());
+                if let Some(dir) = &pinyin_dir {
+                    match PinyinLexicon::load(dir) {
+                        Ok(lex) => {
+                            println!(
+                                "混输已启用 · 拼音 {} 条词条 / {} 个音节 · 数据来自 {}（Apache-2.0）",
+                                lex.entry_count,
+                                lex.syllable_count,
+                                dir.display()
+                            );
+                            eng = eng.with_pinyin(lex);
+                        }
+                        Err(e) => {
+                            eprintln!("拼音词库装载失败（{}）：{e}", dir.display());
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                repl(eng);
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -53,9 +74,17 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "check-pinyin" => match check_pinyin(&data) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl  [--data <目录>]   交互打字（默认）\n  heinrich-cli check [--data <目录>]   方案完整性校验"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
             );
             ExitCode::SUCCESS
         }
@@ -66,10 +95,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn take_data(args: &[String]) -> Option<PathBuf> {
+fn take_arg(args: &[String], flag: &str) -> Option<PathBuf> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--data" {
+        if a == flag {
             return it.next().map(PathBuf::from);
         }
     }
@@ -130,23 +159,26 @@ fn repl(mut eng: Engine<MemoryStore>) {
         if line.chars().all(|c| c.is_ascii_lowercase() || c == '\'') {
             buffer.clear();
             eng.reset();
+            // 有拼音词库时缓冲区的长度不受五笔码长约束——`haoping` 有 7 个字母。
+            let mixed = eng.pinyin().is_some();
             for ch in line.chars() {
                 if ch == '\'' {
                     if buffer.is_empty() {
-                        println!("  （空缓冲区时 ' 输出标点 ，不进入编码）");
+                        println!("  （空缓冲区时 ' 输出标点「‘」，不进入编码）");
                         continue;
                     }
-                    println!("  「'」标记：本段强制按拼音处理（M3 生效，M0 暂无拼音引擎）");
+                    println!("  「'」显式拼音标记将在 M3 后续生效，本次忽略");
                     continue;
                 }
                 buffer.push(ch);
-                if Code::parse(&buffer).is_none() {
+                if !mixed && Code::parse(&buffer).is_none() {
                     println!("  编码 `{buffer}` 含非法字符或超长（五笔码只含 a–y，最长 4）");
                     buffer.pop();
                 }
             }
             last = eng.candidates(&buffer, now_unix()).to_vec();
-            print_candidates(&buffer, &last, eng.lookup_mode());
+            let m = eng.mixed(&buffer, now_unix());
+            print_candidates(&buffer, m);
             continue;
         }
 
@@ -287,36 +319,126 @@ fn command(
     Flow::Continue
 }
 
-fn print_candidates(buffer: &str, cands: &[heinrich_core::Candidate], mode: Option<LookupMode>) {
+const PRINT_LIMIT: usize = 12;
+
+fn print_candidates(buffer: &str, m: &Mixed) {
     if buffer.is_empty() {
         println!("  （空缓冲区）");
         return;
     }
-    if cands.is_empty() {
-        println!("  `{buffer}` 没有候选");
+    let total = m.primary.len() + m.folded.len();
+    if total == 0 {
+        println!("  `{buffer}` 没有候选（既不是五笔码，也切不成拼音音节）");
         return;
     }
-    let hint = match mode {
-        Some(LookupMode::PrefixFallback) => {
-            "（该码本身无词条，以下为前缀候选 · 仅 CLI 调试，真机不显示，见 D45）"
-        }
-        _ => "",
-    };
-    println!("  `{buffer}` → {} 个候选{hint}", cands.len());
-    for (i, c) in cands.iter().take(12).enumerate() {
+    println!(
+        "  `{buffer}` → 判定 {} · {} 个候选",
+        m.source.label(),
+        total
+    );
+    let mut shown = 0usize;
+    for c in m.primary.iter().take(PRINT_LIMIT) {
+        shown += 1;
         let marker = if c.throne_held { " ←" } else { "" };
         println!(
-            "   {}. {:<6} {:<5} {}{}",
-            i + 1,
-            c.word,
-            c.code,
-            c.kind_label,
-            marker
+            "   {}. {:<6} {:<12} {}{}",
+            shown, c.word, c.code, c.kind_label, marker
         );
     }
-    if cands.len() > 12 {
-        println!("   … 另有 {} 个", cands.len() - 12);
+    if !m.folded.is_empty() {
+        let other = match m.source {
+            Source::Pinyin => "五笔",
+            Source::Wubi => "拼音",
+        };
+        println!("   ── 以下是{other}候选（折叠区，不占首屏）──");
+        for c in m.folded.iter().take(PRINT_LIMIT.saturating_sub(shown)) {
+            shown += 1;
+            println!(
+                "   {}. {:<6} {:<12} {}",
+                shown, c.word, c.code, c.kind_label
+            );
+        }
     }
+    if total > shown {
+        println!("   … 另有 {} 个", total - shown);
+    }
+}
+
+/// 拼音词库校验：`check.ps1` 用，不依赖 TSF 壳。
+///
+/// 只校验「数据本身能用」，不校验排序——排序的正确性由 `heinrich-core` 的单测覆盖，
+/// 这里重复一遍只会让两处慢慢分叉。
+fn check_pinyin(dir: &Path) -> Result<bool, String> {
+    let lex = PinyinLexicon::load(dir).map_err(|e| format!("装载失败：{e}"))?;
+    println!(
+        "拼音词库：{} 条（{} 个音节）",
+        lex.entry_count, lex.syllable_count
+    );
+    println!("来源：{}（Apache-2.0）", dir.display());
+
+    let mut ok = true;
+    let mut line = |name: &str, pass: bool, detail: String| {
+        println!(
+            "[{}] {name}：{detail}",
+            if pass { "通过" } else { "未通过" }
+        );
+        if !pass {
+            ok = false;
+        }
+    };
+
+    line(
+        "音节表规模",
+        lex.syllable_count >= 400,
+        format!("{} 个", lex.syllable_count),
+    );
+
+    // 精确命中：`hao` 的第一条必须是「好」
+    let hao = lex.match_indices("hao", 5);
+    let first = hao.first().map(|&(i, _)| lex.entry(i).word.clone());
+    line(
+        "精确命中（hao → 好）",
+        first.as_deref() == Some("好"),
+        format!("实得 {:?}", first.unwrap_or_default()),
+    );
+
+    // 前缀命中：`haop` 未打完，必须能命中「好评」这类更长的词
+    let haop = lex.match_indices("haop", 20);
+    let has = haop.iter().any(|&(i, _)| lex.entry(i).word == "好评");
+    line(
+        "未打完的前缀（haop → 好评）",
+        has,
+        format!("{} 条", haop.len()),
+    );
+
+    // 切分判定：五笔码不该被判成拼音，否则真机里纯五笔输入会全落到拼音侧
+    let vbg_is_pinyin = lex.can_split("vbg");
+    line(
+        "vbg 不是拼音",
+        !vbg_is_pinyin,
+        if vbg_is_pinyin {
+            "v 被当成了音节起始 —— 音节表有问题".to_string()
+        } else {
+            "切分失败，符合预期".to_string()
+        },
+    );
+
+    // 多音节与歧义切分
+    line(
+        "zhuang 可切分",
+        lex.can_split("zhuang"),
+        "最长音节".to_string(),
+    );
+    line(
+        "xian 可切分",
+        lex.can_split("xian"),
+        "xi+an 或 xian".to_string(),
+    );
+
+    if ok {
+        println!("拼音词库校验通过");
+    }
+    Ok(ok)
 }
 
 fn check(dir: &Path) -> Result<bool, String> {

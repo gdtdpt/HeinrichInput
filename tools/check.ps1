@@ -11,7 +11,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$DataDir
+    [string]$DataDir,
+    [string]$PinyinDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,7 @@ Set-Location $root
 # 默认路径必须在这里算，不能写成 param 的默认值：带 [CmdletBinding()] 的脚本用
 # `powershell -File` 调用时，参数绑定早于脚本作用域建立，$PSScriptRoot 还是空串。
 if (-not $DataDir) { $DataDir = Join-Path $PSScriptRoot '..\data\wubi86' }
+if (-not $PinyinDir) { $PinyinDir = Join-Path $PSScriptRoot '..\data\pinyin' }
 
 function Invoke-Step([string]$Name, [scriptblock]$Action) {
     Write-Host "== $Name" -ForegroundColor Cyan
@@ -44,6 +46,9 @@ Invoke-Step 'cargo fmt --check' { & cargo fmt --all -- --check }
 Invoke-Step 'cargo clippy' { & cargo clippy --all-targets -- -D warnings }
 Invoke-Step 'cargo test' { & cargo test --all }
 Invoke-Step '方案数据校验' { & cargo run --release -q -p heinrich-cli -- check --data $DataDir }
+# 拼音词库与五笔词库是两份独立的产物，各有各的验收项（拼音那条要求常用字 100%）。
+# 缺了这一步，「拼音数据装错了」要等到真机打拼音时才发现。
+Invoke-Step '拼音数据校验' { & cargo run --release -q -p heinrich-cli -- check-pinyin --data $PinyinDir }
 # server 自测要真装载 13.6 万条词库并跑几条查询：能过说明「装得进、查得对」，
 # 这一步不需要真的开管道客户端，所以在 CI/提交前就能跑。
 Invoke-Step 'server 自测' { & cargo run --release -q -p heinrich-server -- --selftest --scheme-dir $DataDir }
