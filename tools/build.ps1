@@ -4,12 +4,13 @@
     构建 release 产物并归集到 dist/。
 
 .DESCRIPTION
-    当前（M1.3）产物：
+    当前（M2.2）产物：
       heinrich-cli.exe    —— 引擎 REPL 与方案校验
       heinrich-gen.exe    —— 数据装配（发版时不需要随包）
       heinrich-setup.exe  —— TSF 注册器
       heinrich_win.dll    —— TSF 前端（必须与 setup 同目录）
       heinrich-server.exe —— 常驻引擎宿主（必须与 DLL 同目录：DLL 靠「同目录」找它）
+      heinrich-cand-preview.exe —— 候选窗预览器（验收工具，发版时不需要随包）
 
     注意 DLL 的文件名是下划线：Cargo 对 cdylib 会把 crate 名里的连字符换成下划线。
 
@@ -39,7 +40,7 @@ if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 # M5 加入 apps/macos、apps/linux 之后，--workspace 会去编别的平台的壳、必然失败；
 # 现在就这么写，届时不用户回头改（PROJECT.md D24）。
 $ErrorActionPreference = 'Continue'
-& cargo build --release -p heinrich-cli -p heinrich-gen -p heinrich-win -p heinrich-setup -p heinrich-server 2>&1 | ForEach-Object { Write-Host $_ }
+& cargo build --release -p heinrich-cli -p heinrich-gen -p heinrich-win -p heinrich-setup -p heinrich-server -p heinrich-cand-preview 2>&1 | ForEach-Object { Write-Host $_ }
 $buildExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($buildExit -ne 0) {
@@ -57,7 +58,7 @@ Get-Process -Name 'heinrich-server' -ErrorAction SilentlyContinue |
     }
 Start-Sleep -Milliseconds 200
 
-foreach ($name in @('heinrich-cli.exe', 'heinrich-gen.exe', 'heinrich-setup.exe', 'heinrich_win.dll', 'heinrich-server.exe')) {
+foreach ($name in @('heinrich-cli.exe', 'heinrich-gen.exe', 'heinrich-setup.exe', 'heinrich_win.dll', 'heinrich-server.exe', 'heinrich-cand-preview.exe')) {
     $src = Join-Path $root "target\release\$name"
     if (-not (Test-Path $src)) {
         Write-Host "  缺少 $name" -ForegroundColor Red

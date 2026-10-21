@@ -1,0 +1,31 @@
+[package]
+name = "heinrich-win-ui"
+description = "亨利输入法：Windows 候选窗（分层窗口 + Direct2D/DirectWrite 自绘）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# 几何层：本 crate **不自己算矩形**，只把 layout() 的结果画出来。
+# 这条边界就是 D36——算错看不出来的部分必须可单测，所以留在平台中立的 crate 里。
+heinrich-ui.workspace = true
+
+[dependencies.windows-core]
+version = "0.62"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+]

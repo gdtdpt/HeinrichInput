@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "heinrich-cand-preview"
+version = "0.1.0"
+dependencies = [
+ "heinrich-ui",
+ "heinrich-win-ui",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "heinrich-cli"
 version = "0.1.0"
 dependencies = [
@@ -63,6 +73,15 @@ version = "0.1.0"
 dependencies = [
  "heinrich-proto",
  "heinrich-tip-id",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
+name = "heinrich-win-ui"
+version = "0.1.0"
+dependencies = [
+ "heinrich-ui",
  "windows",
  "windows-core",
 ]

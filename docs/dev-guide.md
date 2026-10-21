@@ -50,8 +50,8 @@ crates/              平台中立：换平台不该改这里，两个 target 都
 apps/windows/        平台专属产物：调 Windows API，或产物是注入件 / 注册器
   tsf/               TSF DLL，只依赖 windows + heinrich-tip-id + heinrich-proto（D8）
   setup/             注册器，依赖 windows + heinrich-tip-id
-  ui/                候选窗：HWND + 分层窗口 + D2D/DWrite          （M2.2）
-  cand-preview/      候选窗预览器：假候选直接弹窗                   （M2.2）
+  ui/                候选窗：HWND + 分层窗口 + D2D/DWrite（crate 名 heinrich-win-ui）
+  cand-preview/      候选窗预览器：假候选直接弹窗 + --selftest     （验收工具，不进产品）
 ```
 
 **这个两层划分是硬约定，不是目录洁癖**。判据只有两条：调某个平台的系统 API，或产物是 `.dll` / `.ime` 这类注入件、平台注册器 ⇒ 进 `apps/<platform>/`；其余一律进 `crates/`。新增 crate 前先问「它在另一个平台上编得过吗」，答否就是走错了层。
@@ -60,7 +60,8 @@ apps/windows/        平台专属产物：调 Windows API，或产物是注入�
 
 **M5 加平台时只新增平级的 `apps/macos/`、`apps/linux/`，`crates/` 不动**。届时构建脚本必须用 `-p` 显式指定产物——`cargo build --workspace` 会去编别的平台的壳、必然失败。
 
-**已实现**：`heinrich-proto` 与 `heinrich-server`（M1.3），`heinrich-ui` 的几何部分（M2.1）。
+**已实现**：`heinrich-proto` 与 `heinrich-server`（M1.3）、`heinrich-ui` 的几何部分（M2.1）、
+`apps/windows/ui` 与 `apps/windows/cand-preview`（M2.2）。
 `heinrich-ui` 的边界见 §4.6：它只算矩形，字形量测与绘制在 `apps/windows/ui`。
 
 **边界纪律**：`heinrich-core` 里出现 `cfg(windows)`、`std::fs`、`SystemTime::now()` 就说明分层错了。时间一律由调用方作为 Unix 秒传入——这是排序行为可测的前提。
@@ -326,6 +327,60 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 server slow     # 默认�
 cargo run -q -p heinrich-ui --example geometry > dist\candidate-geometry.svg
 ```
 
+### 4.7 候选窗的窗口层（M2.2）
+
+`apps/windows/ui`（crate 名 `heinrich-win-ui`）只有三件事：**建窗口、量字、画**。几何一律来自
+`crates/heinrich-ui`，这里不重算任何矩形——D36 的边界。
+
+**窗口样式，四条缺一条都会出问题：**
+
+| 样式 | 作用 | 少写会怎样 |
+|---|---|---|
+| `WS_POPUP｜WS_CLIPSIBLINGS` + `WS_EX_LAYERED` | 圆角外真透明 | 圆角变成白角，盖住底下的字 |
+| `WS_EX_NOACTIVATE` | 显示时不抢前台 | 组合串被终止，打一半的编码消失 |
+| `WM_MOUSEACTIVATE` → `MA_NOACTIVATE` | **点它也不抢前台** | 点候选 = 切焦点 = 组合串丢失 |
+| `WS_EX_TOOLWINDOW` | 不进 Alt+Tab、不进任务栏 | 每敲一个字多一个幽灵窗口 |
+
+第三条最容易漏：`WS_EX_NOACTIVATE` 只管「显示」那一步，鼠标点上来仍会走激活流程。
+所以命中测试与点击都在本 crate 内完成，通过 `Event::Click(Hit)` 把**全局候选序号**交回调用方。
+
+**绘制路线**：`ID2D1DCRenderTarget` 绑一块 `CreateDIBSection` 出来的 BGRA 内存位图，画完拿去
+`UpdateLayeredWindow`（`ULW_ALPHA` + `AC_SRC_ALPHA`，位图必须是**预乘** alpha）。
+
+- 不走 GDI：`TextOut` 画出来是 1 位 alpha，文字毛刺且背景发实，圆角也没法做。
+- 不走 GDI+：`gdiplus.dll` 是 C++ 类接口，windows-rs 没封装，只能自己写 vtable。
+- D2D 的 DC 渲染目标既给抗锯齿又能落在我们自己的位图上，是这条路的标准解法。
+
+**三个坑，都踩过：**
+
+1. **渲染目标的 DPI 固定 96。** `Metrics.font_size` 已经是物理像素，一旦把渲染目标的 DPI
+   也设成 `96 × scale`，D2D 会把 DIP 再乘一次缩放，字号变成平方。比例只允许出现在一个地方。
+2. **文字宽度必须与绘制同源。** 量字和画字用的是**同一批** `IDWriteTextFormat`（`text.rs` 缓存
+   三个：词 / 序号 / 箭头）。换字体或字号只改一处，几何与字形就会错位，而且错得很微妙。
+3. **DPI 感知不能由 DLL 设置。** `SetProcessDpiAwarenessContext` 是**进程级**的，DLL 跑在宿主
+   里，改它等于替宿主做决定。DLL 只问 `GetDpiForMonitor(光标所在屏)`；只有独立 exe
+   （`cand-preview`）才调 `heinrich_win_ui::enable_per_monitor_dpi()`。
+
+**验收：自己截图，不用找人代拍**
+
+```powershell
+# 1) 行为自测（不抢前台、命中、窗口尺寸、点箭头不选词），不需要人看
+cargo run --release -q -p heinrich-cand-preview -- --selftest
+
+# 2) 真窗口看一眼：先弹出来，再从屏幕抓图
+Start-Process .\dist\heinrich-cand-preview.exe -ArgumentList '--hold','8000','--dpi','1.5','--page','1'
+python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-150-p2.png --margin 8
+python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-100-zoom.png --zoom 4   # 放大看像素
+```
+
+`--dpi` 只是**指定缩放比**，不需要真有 150% 的显示器：位图按物理像素生成，`--dpi 1.0` 在
+200% 屏上抓到的就是 100% 屏的一比一像素。
+
+`tools/shot-window.py` 是从**屏幕**做 `BitBlt`，不是 `PrintWindow`：分层窗口的内容在 DWM
+合成层里，`PrintWindow` 往往拿到空图。它自己会先 `SetProcessDpiAwarenessContext`——
+**python.exe 默认 DPI 不感知**，不声明的话 200% 屏上抓到的图会先被虚拟化一半再放大，
+字全是糊的，窗口坐标也会差一倍（这个坑很隐蔽：只抓到「正确的窗口的一角」，看起来像布局错了）。
+
 ## 5. 数据管线
 
 ```
@@ -413,8 +468,8 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.1 字上得去 | ✅ 已验收（缓冲 + 小码表 + `ITfEditSession` 上屏 + 单击 Shift 切中英；`vbg`→好、`q`→我、`vbgf`→好玩、Esc 取消、无命中原样上屏） |
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
 | M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
-| M2.1 候选窗几何 | 🟡 代码完成，待验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中测试 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
-| M2.2 候选窗窗口 | 分层窗口 + D2D/DWrite + `cand-preview.exe`（自截图验收） |
+| M2.1 候选窗几何 | ✅ 已验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
+| M2.2 候选窗窗口 | 🟡 代码完成，待真机验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
 | M2.3 接进 TSF | 逐键查询 + `ITfContextView::GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页（D37/D38） |
 | M2.4 学习落库 | SQLite `usage` 表 + 上屏回报 + 完整 §5 打分 |
 

@@ -21,6 +21,8 @@ members = [
     "crates/heinrich-cli",
     "apps/windows/tsf",
     "apps/windows/setup",
+    "apps/windows/ui",
+    "apps/windows/cand-preview",
 ]
 
 [workspace.package]
@@ -36,6 +38,7 @@ heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
 heinrich-proto = { path = "crates/heinrich-proto", version = "0.1.0" }
 heinrich-server = { path = "crates/heinrich-server", version = "0.1.0" }
 heinrich-ui = { path = "crates/heinrich-ui", version = "0.1.0" }
+heinrich-win-ui = { path = "apps/windows/ui", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

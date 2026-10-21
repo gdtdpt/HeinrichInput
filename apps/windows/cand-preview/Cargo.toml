@@ -1,0 +1,24 @@
+[package]
+name = "heinrich-cand-preview"
+description = "亨利输入法：候选窗预览器（假候选直接弹窗，用于自截图与 DPI 验收）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+heinrich-ui.workspace = true
+heinrich-win-ui.workspace = true
+
+[dependencies.windows-core]
+version = "0.62"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+]
