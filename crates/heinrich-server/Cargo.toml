@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 heinrich-proto.workspace = true
 heinrich-core.workspace = true
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 # 传输层是 Windows 命名管道，所以这个 crate 只有 Windows 形态。
 # 但它仍然归 crates/：它不是注入件、产物是普通 exe，M5 换平台时只需换 pipe.rs

@@ -476,6 +476,62 @@ python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-live.png --margi
 是虚拟化的、而 `GetDpiForMonitor` 给的是真 DPI，副屏上会错位；记事本 / Notepad++ /
 Chrome 都是 DPI 感知的，v1 不为老宿主做补偿。
 
+### 4.9 学习数据落库（M2.4）
+
+```
+按键 → 上屏（空格 / 数字键 / 点选）
+      └─ ipc::record(code, word)      入队 + 丢掉该码的本地缓存（微秒级，不等网络）
+            │
+      [后台线程 200 ms 一次]          flush_pending_records()
+            └─ 单向 Frame::Record ──▶ server：store.record(word, at_unix)
+                                          └─ 一个事务：n+1、last_used_at=MAX(旧,新)
+```
+
+**库在哪**：`%LOCALAPPDATA%\Heinrich\learn.db`（`--db <file>` 可改，`--memory-db` 不落盘）。
+**不放 dist**：dist 可能装在只读目录，升级时整个被替换，用户攒的词序不能跟着一起没。
+
+**表**：
+
+| 表 | 列 | 说明 |
+|---|---|---|
+| `usage` | `key`（词）、`n`、`last_used_at`、`tier` | `tier`：0 学习 / 1 固顶 / 2 抑制，**显式映射**，不依赖枚举顺序 |
+| `user_words` | `code`、`word`、`weight`、`created_at` | 自造词，M5 才写，先把 schema 定下来 |
+| `meta` | `k`、`v` | `schema` 版本；比程序新就**拒绝启动学习库**（降级成内存），不硬写 |
+
+**四条容易写错的**：
+
+1. **只能有一个写者。** 库归 server（D1）。放进 DLL 就是每个宿主进程各写一份，
+   SQLite 的锁会变成宿主的卡顿来源，而且 WAL 也救不了「两个进程抢同一个页」。
+2. **`last_used_at` 取 `MAX(旧, 新)`。** server 被杀时 DLL 会积压记录、重连后成批
+   补发；多个宿主各有一份队列，补发顺序不保证全局单调。直接覆盖会让晚到的旧记录
+   把时间往回拨，`0.5^(Δt/H)` 的衰减就算反了。
+3. **上报必须是单向帧。** 用 `exchange` 会一直等一条永远不会来的应答，把预算耗光
+   并误判成连接坏了。DLL 侧用 `write_all` 只写不读。
+4. **上屏之后要丢本地缓存。** `ipc::query` 有 64 条进程内缓存；不清掉的话，
+   「学了半天不涨」——要等这条缓存被别的码挤掉才重新问 server。
+
+**上报什么、不上报什么**：只有「用户真的选了一个词」才报——空格提交、数字键、
+点选。三条路径**不报**：无命中、server 不可用（这两种吐的是编码字母）、
+Shift 切模式吐字母。它们不是选择，报了只会把 `n` 灌成噪声。
+
+**怎么验**：
+
+```powershell
+# 1) 打几个字，然后直接看库（python 自带 sqlite3，不用装东西）
+python -c "import sqlite3,os;c=sqlite3.connect(os.path.join(os.environ['LOCALAPPDATA'],'Heinrich','learn.db'));print(c.execute('select key,n,last_used_at,tier from usage order by n desc').fetchall())"
+
+# 2) 强杀 server，再打一次，等 6 秒后重查：n 应该 +1（记录在队列里，重连后补发）
+taskkill /im heinrich-server.exe /f
+
+# 3) 想看「学习有没有真的改顺序」：把某个次候选连打 20 次，再打同一个码
+#    注意首位仍不会被抢走——§5.2 的 K=1.5 就是干这个的
+```
+
+**升级注意**：`PROTO_VERSION` 变了以后，旧 server 还在跑会让新 DLL 握手直接吃
+`Bye`，而 DLL 不停重连又把空闲计数刷新掉 ⇒ 旧 server 永不退出，表现为「一个候选
+都不出」。所以 `heinrich-setup.exe install` 的第一步（`[0/5]`）就是结束**本会话**的
+`heinrich-server.exe`，下一次按键由 DLL 惰性拉起新版本。
+
 ## 5. 数据管线
 
 ```
@@ -565,8 +621,8 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
 | M2.1 候选窗几何 | ✅ 已验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
 | M2.2 候选窗窗口 | ✅ 已验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
-| M2.3 接进 TSF | 🟡 代码完成，待真机验收（逐键查询 D37 + `GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；新增 `cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
-| M2.4 学习落库 | SQLite `usage` 表 + 上屏回报 + 完整 §5 打分 |
+| M2.3 接进 TSF | ✅ 自测通过（记事本 / Notepad++ / Chrome）（逐键查询 D37 + `GetTextExt` 三级兜底 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；`cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
+| M2.4 学习落库 | 🟡 代码完成 + 自测通过，待验收（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

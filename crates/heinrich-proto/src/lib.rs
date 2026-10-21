@@ -9,7 +9,7 @@
 //!
 //! 小端、定长前缀、无对齐要求。**不引 serde / bincode**：这个 crate 会被编进
 //! 注入型 DLL（D8 只允许 `windows` + `heinrich-tip-id` + 本 crate），每个宿主进程
-//! 都要多背一份；而协议只有 7 条消息，手写编解码比引依赖便宜。
+//! 都要多背一份；而协议只有 8 条消息，手写编解码比引依赖便宜。
 //!
 //! ## 为什么带长度前缀而不是定界符
 //!
@@ -26,7 +26,12 @@ use std::fmt;
 
 /// 协议版本。与 `HeinrichTsfAbiVersion` 是两件事：那是 DLL 的导出契约，
 /// 这是线上的字节契约。
-pub const PROTO_VERSION: u16 = 1;
+///
+/// - v1：M1.3 的首版（Hello / Query / Result / SetMode / Mode / Bye）
+/// - v2：M2.4 加入 [`Frame::Record`]（上屏回报）。**只加了一条单向消息**，
+///   旧客户端连上来会被 `Bye` 挡掉——版本号是对称的，宁可握手失败也不要
+///   让 server 收到自己解释不了的帧。
+pub const PROTO_VERSION: u16 = 2;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -89,6 +94,17 @@ pub enum Frame {
     SetMode { mode: Mode },
     /// 当前模式。
     Mode { mode: Mode },
+    /// 上屏回报：某个码上屏了哪个词。**单向**，server 不回帧。
+    ///
+    /// `at_unix` 是 DLL **提交那一刻**的时间，不是 server 收到的时间。两者通常只差
+    /// 几毫秒，但 server 被强杀时 DLL 会把这批记录积压在进程里，等重连后一起冲上来
+    /// ——那时用收到的时间算「距上次使用多久」会把一次刚发生的选择算成几分钟前的，
+    /// 学习分的衰减就跟着错。时间戳由提交方给，这件事就没得商量。
+    Record {
+        code: String,
+        word: String,
+        at_unix: i64,
+    },
     /// server 拒绝服务或要断开。
     Bye { reason: String },
 }
@@ -101,6 +117,7 @@ mod kind {
     pub const SET_MODE: u16 = 5;
     pub const MODE: u16 = 6;
     pub const BYE: u16 = 7;
+    pub const RECORD: u16 = 8;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -143,6 +160,7 @@ impl Frame {
             Frame::Result { .. } => kind::RESULT,
             Frame::SetMode { .. } => kind::SET_MODE,
             Frame::Mode { .. } => kind::MODE,
+            Frame::Record { .. } => kind::RECORD,
             Frame::Bye { .. } => kind::BYE,
         }
     }
@@ -181,6 +199,15 @@ impl Frame {
             }
             Frame::SetMode { mode } => body.push(mode.as_u8()),
             Frame::Mode { mode } => body.push(mode.as_u8()),
+            Frame::Record {
+                code,
+                word,
+                at_unix,
+            } => {
+                put_str(&mut body, code);
+                put_str(&mut body, word);
+                body.extend_from_slice(&at_unix.to_le_bytes());
+            }
             Frame::Bye { reason } => put_str(&mut body, reason),
         }
         let mut out = Vec::with_capacity(body.len() + 4);
@@ -265,6 +292,11 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
         }
         kind::SET_MODE => Frame::SetMode { mode: r.mode()? },
         kind::MODE => Frame::Mode { mode: r.mode()? },
+        kind::RECORD => Frame::Record {
+            code: r.string()?,
+            word: r.string()?,
+            at_unix: r.i64()?,
+        },
         kind::BYE => Frame::Bye {
             reason: r.string()?,
         },
@@ -320,6 +352,13 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    fn i64(&mut self) -> Result<i64, DecodeError> {
+        let b = self.take(8)?;
+        let mut a = [0u8; 8];
+        a.copy_from_slice(b);
+        Ok(i64::from_le_bytes(a))
+    }
+
     fn string(&mut self) -> Result<String, DecodeError> {
         let n = self.u16()? as usize;
         let b = self.take(n)?;
@@ -373,6 +412,11 @@ mod tests {
         });
         roundtrip(Frame::Mode {
             mode: Mode::English,
+        });
+        roundtrip(Frame::Record {
+            code: "vbg".into(),
+            word: "好".into(),
+            at_unix: 1_766_000_000,
         });
         roundtrip(Frame::Bye {
             reason: "协议版本不匹配".into(),

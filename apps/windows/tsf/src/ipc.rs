@@ -20,11 +20,11 @@
 //! 错位的连接比没有连接难查得多。直接把句柄关掉：server 那边看到断开，
 //! 后台线程在 200 ms 内重连。代价是这一键降级成「原样上屏」。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
@@ -66,6 +66,19 @@ const SPAWN_BACKOFF: Duration = Duration::from_secs(5);
 /// 不需要 LRU 的精确性。
 const CACHE_CAP: usize = 64;
 
+/// 待上报的上屏记录条数上限。
+///
+/// 溢出丢**最旧**的：学习数据丢几条不影响打字，但让它无限涨会拖死宿主进程
+/// （server 被杀一整天、用户又一直在打字，就是这个场景）。512 条足够覆盖
+/// 「server 挂了几分钟」的典型情况。
+const RECORD_QUEUE_CAP: usize = 512;
+
+/// 一次最多发多少条上屏记录，避免一次占用连接太久挡住查询。
+const RECORD_BATCH: usize = 64;
+
+/// 上报单条记录的写入预算。后台线程，给得比键路径宽松。
+const RECORD_BUDGET: Duration = Duration::from_millis(500);
+
 /// 方案 id。M1.3 只有一档；握手时拿它比对，防止「装的是别的方案」这种错位。
 const SCHEME_ID: &str = "wubi86";
 
@@ -89,8 +102,16 @@ impl Drop for Conn {
 static CONN: Mutex<Option<Conn>> = Mutex::new(None);
 static CACHE: Mutex<Option<HashMap<String, Vec<Entry>>>> = Mutex::new(None);
 static PENDING_MODE: Mutex<Option<Mode>> = Mutex::new(None);
+/// 待上报的上屏记录：`(编码, 词, 提交时刻)`。
+///
+/// 为什么要排队而不是「打完直接发」：上屏发生在键路径上（D18 一行都不能等），
+/// 而 server 可能正被杀掉、正在冷启动、管道正忙。排队 + 后台重试让这两件事解耦；
+/// server 起来后这批记录会整批补上（对应 M2.4 验收项 ②「强杀 server 不丢记录」）。
+static PENDING_RECORDS: Mutex<VecDeque<(String, String, i64)>> = Mutex::new(VecDeque::new());
 static WORKER: Once = Once::new();
 static SPAWN_FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
+/// 因队列满被丢弃的记录条数（只用于日志，不需要精确）。
+static RECORDS_DROPPED: AtomicU32 = AtomicU32::new(0);
 
 /// 启动后台连接线程。幂等，`Activate` 每次都可以调。
 ///
@@ -160,6 +181,32 @@ pub fn set_mode(chinese: bool) {
             Mode::English
         });
     }
+}
+
+/// 上报一次上屏（§5.1：**只统计上屏，不统计翻页经过、不统计预览**）。
+///
+/// 三步都是微秒级、都不等网络：入队 → 丢掉该码的本地缓存 → 返回。真正的发送在
+/// 后台线程（[`flush_pending_records`]）。这条函数会被键路径直接调用，所以
+/// **绝不能**在这里做任何可能阻塞的事（D18）。
+///
+/// 调用方只在「真的上屏了一个候选词」时调它：原样吐字母（无命中 / server 不可用 /
+/// Shift 切模式）不算，那些不是用户的选择，记进去会把 n 灌成噪声。
+pub fn record(code: &str, word: &str) {
+    let at = unix_now();
+    if let Ok(mut q) = PENDING_RECORDS.lock() {
+        if q.len() >= RECORD_QUEUE_CAP {
+            q.pop_front();
+            RECORDS_DROPPED.fetch_add(1, Ordering::Relaxed);
+            // 只在第一次丢时记一条，避免 server 长时间不在时刷满日志。
+            if RECORDS_DROPPED.load(Ordering::Relaxed) == 1 {
+                tsf_error!("上屏记录队列已满（{RECORD_QUEUE_CAP} 条），开始丢最旧的");
+            }
+        }
+        q.push_back((code.to_string(), word.to_string(), at));
+    }
+    // 本地缓存里这一份已经过时：同码下次查必须重新问 server，否则学习排序
+    // 要等缓存被别的码挤掉才生效（用户会觉得「学了半天不涨」）。
+    cache_drop(code);
 }
 
 fn request(frame: &Frame, budget: Duration) -> Option<Frame> {
@@ -301,6 +348,8 @@ fn worker() {
     loop {
         ensure_connected(&mut last_spawn);
         flush_pending_mode();
+        // 连上之后同 tick 就试着补发：server 刚起来时那批积压最该尽快落地。
+        flush_pending_records();
         std::thread::sleep(WORKER_TICK);
     }
 }
@@ -429,6 +478,82 @@ fn flush_pending_mode() {
     }
 }
 
+/// 把待上报的上屏记录冲给 server。
+///
+/// `Frame::Record` 是**单向**帧（server 不回），所以这里只写不读——用 `exchange`
+/// 会一直等一条永远不会来的应答，把 500 ms 预算耗光并误判成「连接坏了」。
+fn flush_pending_records() {
+    let batch: Vec<(String, String, i64)> = match PENDING_RECORDS.try_lock() {
+        Ok(mut q) => {
+            let n = q.len().min(RECORD_BATCH);
+            q.drain(..n).collect()
+        }
+        // 键路径正拿着锁（说明刚有人上屏），下一 tick 再说。
+        Err(_) => return,
+    };
+    if batch.is_empty() {
+        return;
+    }
+
+    let mut guard = match CONN.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            requeue(batch);
+            return;
+        }
+    };
+    let Some(conn) = guard.as_ref() else {
+        // 没连上：整批留着，等 server 起来再发。**这是「不丢记录」的关键一步。**
+        requeue(batch);
+        return;
+    };
+
+    let deadline = Instant::now() + RECORD_BUDGET;
+    for (i, (code, word, at)) in batch.iter().enumerate() {
+        let frame = Frame::Record {
+            code: code.clone(),
+            word: word.clone(),
+            at_unix: *at,
+        };
+        if let Err(e) = write_all(conn, &frame.encode(), deadline) {
+            // 写了一半就断：管道里可能留着半个帧，复用会读到错位数据。
+            // 丢掉整条连接（后台会重连），剩下的记录放回队列。
+            tsf_debug!(
+                "上报上屏记录失败（{e}），剩下 {} 条留待重试",
+                batch.len() - i
+            );
+            requeue(batch[i..].to_vec());
+            *guard = None;
+            return;
+        }
+    }
+    tsf_debug!("已上报 {} 条上屏记录", batch.len());
+}
+
+/// 把记录放回队首（保持原来的先后顺序）。
+fn requeue(items: Vec<(String, String, i64)>) {
+    if items.is_empty() {
+        return;
+    }
+    if let Ok(mut q) = PENDING_RECORDS.lock() {
+        for it in items.into_iter().rev() {
+            if q.len() >= RECORD_QUEUE_CAP {
+                // 已经满了：放不回去的只能丢，记一笔。
+                RECORDS_DROPPED.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            q.push_front(it);
+        }
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// 拉起同目录下的 `heinrich-server.exe`。
 ///
 /// **不读注册表**：setup 已经保证 dist 里 `heinrich_win.dll` 与
@@ -522,6 +647,16 @@ fn cache_put(code: &str, entries: &[Entry]) {
             map.clear();
         }
         map.insert(code.to_string(), entries.to_vec());
+    }
+}
+
+/// 丢掉某个码的缓存条目。上屏之后必须调——否则用户「学了」却看不到效果，
+/// 要等这条缓存被别的码挤掉（最多 64 个码）才重新查。
+fn cache_drop(code: &str) {
+    if let Ok(mut g) = CACHE.lock() {
+        if let Some(map) = g.as_mut() {
+            map.remove(code);
+        }
     }
 }
 

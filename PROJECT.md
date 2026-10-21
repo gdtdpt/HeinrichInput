@@ -1,7 +1,7 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.14
-> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D42）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）代码完成且自测通过（记事本 / Notepad++ / Chrome），等待你验收**
+> **版本**：v1.15
+> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，等待你验收**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
 > **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
@@ -111,6 +111,7 @@
 | D40 | **候选窗接进 TSF：位置走三级兜底 + 首键预取、建窗懒且失败即永久降级、点击走 `Weak<Core>` 且路径全程不重入** | ① 定位：`ITfContextView::GetTextExt` 要 cookie ⇒ 每次显示都开一次 `TF_ES_READ｜TF_ES_SYNC` 会话；按 选区 → 组合串右下角（同一请求连问两次）→ `GetGUIThreadInfo` 插入符 三级兜底，每级只记日志不返错；缓冲为空时**另在动手前量一次**作为回退位置。② 建窗：`CandidateWindow::new` 推迟到第一次真要显示，成功后一生只建一次，失败则记一次错误并**永久降级为无窗打字**（M1.3 行为）。③ 点击：窗口过程不在任何 TSF 回调栈上，把状态搬进 `Rc<Core>` 后由回调持 `Weak<Core>` 提交；所有对 `Cands` 的借用都是瞬时借或 `try_borrow`，借用失败就丢弃这次事件 | 三条都是「不做就会静默坏掉」的：① 拿不到 cookie 就没有坐标，`GetTextExt` 直接失败 ⇒ 窗口一个都不显示；且**只问一种来源不够**——Chromium 在组合串刚建立、排版未就绪时对本会话的 `GetTextExt` 一律回 `TF_E_NOLAYOUT (0x80040206)`（记事本 / Notepad++ 不会），第一版这里用 `?` 抛出错误，兜底路径直接成了死代码，Chrome 里一个窗口都不出；改为三级兜底 + 连问两次 + 首键预取后，首键靠预取、后续键靠连问两次全部命中；② 在每次按键里建窗、失败再重试，会在老系统上每敲一个字刷一次错误日志并卡一下；③ 窗口过程里一旦二次 `borrow_mut` 同一个 `RefCell`，panic 跨出 `extern "system"` 就是**宿主进程 abort**（用户正在写的文档全丢）。另外「空格提交=高亮那条」让数字键、点选、空格三条路径共用 `Cands::current()`，不存在「按 2 出来的字和点第 2 条不一样」 |
 | D41 | **单击 Shift 切模式时，缓冲里的编码「原样上屏成字母」，不丢也不换成候选** | `sync_shift` 判定为单击后，先 `flush_codes_as_letters`：把缓冲（如 `vbg`）走 `Goal::Finish(Some(code))` 写进文档，再切模式、撤窗。**不走 `resolve`**，这条路径不查 server | 旧行为是 `Finish(None)` + 清缓冲 = 已输入内容直接消失。而走进这条路的几乎只有一种情形：用户以为在英文模式，敲了几个字母才看到中文候选，于是单击 Shift 切英文 ⇒ 他要的是**自己刚按的那几个键**，替他上汉字等于替他做了他没做的决定。对误触 Shift 也更宽容：留下的仍是他敲的东西。切模式发生在 Shift 松手那一瞬，属于键路径，所以这里绝不能等 IPC（D18） |
 | D42 | **`z` 在组合态内吃掉但什么都不做；空缓冲与 `Shift+z` 放行** | `keys::decide` 里 `vk == VK_Z && buffer_len > 0 && !shift` ⇒ `Action::Noop`。真学习键（`vbz` 列出全部 `vb` 开头的字并给五笔码）推迟到 M3 与码提示一起做 | 原先按「吃掉一个键却不出字是不可接受的」放行 `z`，实际后果是**打断输入**：宿主在组合串中间插入 `z` ⇒ TSF 终止组合串 ⇒ `OnCompositionTerminated` 把已打的编码当残留删掉，用户看到的就是「按 z 直接把内容弄没了 / 直接上屏了」。组合态内「吃掉没反应」远比「打的字被打断」轻，而且缓冲与候选窗原样留着，用户可以接着打下一个字母或按空格提交。空缓冲时没有组合串可打断，`Shift+z` 是临时英文要出大写，两者都放行 |
+| D43 | **学习数据落在 server 的 SQLite 里；打不开就降级成内存，绝不挡住打字** | ① 位置与职责：`crates/heinrich-server/src/store.rs` 实现 core 的 `UsageStore`，`Host` 用一层 `Store` 枚举转发（SQLite / 内存）。core 保持「无文件 I/O」，不引 rusqlite。② 落盘：`%LOCALAPPDATA%\Heinrich\learn.db`，WAL + `synchronous=NORMAL` + `busy_timeout=2s`；`usage(key, n, last_used_at, tier)` / `user_words` / `meta`（schema 版本）；每次上屏一个事务，`last_used_at` 取 `MAX(旧, 新)`；每 60 秒与退出时 `wal_checkpoint(TRUNCATE)`。③ 上报：协议加单向 `Frame::Record { code, word, at_unix }`（`PROTO_VERSION` 1→2），DLL 侧进有界队列（512 条，溢出丢最旧），后台线程补发、失败整批放回队首；上屏后丢掉该码的本地缓存。④ 安装器 `[0/5]` 先结束本会话的旧 server | 四条都是「不做就会以别的方式坏掉」：① 学习库放 DLL 等于每个宿主进程各写一份、互相覆盖（§5.5 的历史教训）；放 core 会把文件 I/O 塞进「纯逻辑」层，单测与跨平台立刻变质。② 事务与 WAL 是「一次上屏要么整条记上、要么完全没记」的前提；`MAX(旧,新)` 是因为 server 被强杀时 DLL 会积压记录、重连后成批补发，直接覆盖会让晚到的旧记录把时间往回拨、衰减算反。③ 上屏发生在键路径上（D18 一行都不能等），所以只能排队；时间戳由**提交方**给，否则补发的记录会按「收到时刻」算 Δt。④ 协议升级后旧 server 还在跑会让新 DLL 每次握手吃 `Bye`，而 DLL 不断重连又把空闲计数刷新掉 ⇒ 旧 server 永不退出，用户看到的是「一个候选都不出」 |
 
 
 ## 4. 架构
@@ -293,9 +294,22 @@ pub trait LearningStore {
 
 ### 5.5 存储
 
-- 表 `usage(key, n, last_used_at, tier)` + `user_words(code, word, weight, created_at)`。
+- 表 `usage(key, n, last_used_at, tier)` + `user_words(code, word, weight, created_at)` + `meta(k, v)`（`schema` 版本）。
 - 写入策略：**每次上屏一个事务**；退出与每 60 秒 checkpoint；`WAL` 模式。
 - 不做「多进程追加写文件」（历史教训：追加式日志在多写者下互相覆盖）。
+
+**M2.4 落地细节**（D43）：
+
+| 项 | 实际值 | 理由 |
+|---|---|---|
+| 文件 | `%LOCALAPPDATA%\Heinrich\learn.db`（`--db` 可改，`--memory-db` 不落盘） | 与日志同目录；**不放 dist**——dist 可能装在只读目录，升级时整个被替换，用户的词序不能跟着没了 |
+| 实现 | `crates/heinrich-server/src/store.rs`（`rusqlite` + `bundled`） | SQLite 编进 exe，目标机不需要装任何东西、也不碰系统 DLL。代价：`heinrich-server.exe` 373 KB → 2.1 MB（D8 只约束 TSF DLL，server 不受影响） |
+| PRAGMA | `journal_mode=WAL`、`synchronous=NORMAL`、`busy_timeout=2000` | 写不阻塞读；掉电最多丢最后一两条学习记录，绝不为此牺牲按键延迟 |
+| `tier` 列 | `0` 学习 / `1` 固顶 / `2` 抑制 | **显式映射**，不依赖枚举声明顺序 |
+| `last_used_at` | `MAX(旧值, 新值)` | server 被强杀时 DLL 会积压记录、重连后成批补发；直接覆盖会让晚到的旧记录把时间往回拨，衰减算反 |
+| 上报 | `Frame::Record { code, word, at_unix }`，单向 | 上屏在键路径上（D18），只能入队；时间戳由**提交方**给 |
+| 降级 | 打不开就换内存实现，记一条 error | 「学习库坏了」不该升级成「打不了字」 |
+| 自测 | `--selftest` 用内存库 | `check.ps1` 每次都跑，不能往用户真实的库里灌假数据 |
 
 ### 5.6 查询语义（M0b 新增，D16）
 
@@ -460,7 +474,7 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | **M2.1** 候选窗几何 ✅ **2026-10-21 验收通过** | 新增 `crates/heinrich-ui`：单行布局（序号 + 词 + 两端翻页箭头 + 命中矩形）、分页（`page_count` / `page_slice` / `page_nav`）、超宽按比例压窄、`place` 定位（贴光标下沿 / 越下翻上方 / 夹进工作区 / 整数坐标）；视觉参数只有一个自由变量（字号），DPI 靠 `scaled()`；`examples/geometry.rs` 把布局画成 SVG。验收时按 D39 去掉页码、改为两端箭头 | ① 27 个单测覆盖布局、分页、翻页箭头、命中、定位、DPI、负坐标副屏 ② 几何图里箭头不压候选、150% DPI 不错位、单页时不画箭头 ③ 不做窗口，不碰 Windows API |
 | **M2.2** 候选窗窗口 ✅ **2026-10-21 验收通过** | 新增 `apps/windows/ui`（`heinrich-win-ui`）：`WS_POPUP｜WS_CLIPSIBLINGS` + `WS_EX_LAYERED｜TOOLWINDOW｜TOPMOST｜NOACTIVATE` 的窗口、`WM_MOUSEACTIVATE → MA_NOACTIVATE`、D2D 的 **DC 渲染目标**绑 32 位预乘 alpha 的 DIB、`UpdateLayeredWindow` 上屏；文字由 DirectWrite 量、`Metrics` 按光标所在屏的 DPI 缩放；**几何完全来自 `heinrich-ui`，本层不重算任何矩形**。新增 `apps/windows/cand-preview`（假候选弹窗 + `--selftest`）与 `tools/shot-window.py`（自截图） | ① 圆角、5 候选、高亮、两端箭头肉眼正确 ② 窗口实际尺寸 = 布局尺寸（`--selftest` 断言）③ 点选与显示都不抢前台（`--selftest` 断言）④ 100%/150%/200% 下矩形与 `layout()` 输出一致 ⑤ 内边距与缝隙不误命中 |
 | **M2.3** 接进 TSF 🟡 **代码完成 + 自测通过，待你验收** | DLL 里新增 `cand.rs`（候选集 + 页码 + 懒建窗口）与 `caret.rs`（`GetTextExt` 的只读编辑会话，三级兜底）；`TextService` 的状态搬进 `Rc<Core>` 以便窗口过程的点击回调也能提交；每个字母键查一次候选（D37，超时保留上一帧）、窗口贴光标显示、空格/回车提交当前高亮、数字键 1–9 与点选提交**同一份数据**、`←/→` 与 PgUp/PgDn 翻页而 `↑/↓` 吃掉不动（D38）、失焦/取消/提交一律关窗（D40） | ① 记事本 + Notepad++ + Chrome 三处定位准 **✅ 自测通过** ② 数字键与点选选中的是同一个候选 **✅ 记事本 13 项全绿** ③ 失焦/切窗口零残留 **✅** ④ 逐键查询下无可感延迟 **✅ 日志实测每键 3–4 ms（查询 + 量字 + 上窗）** |
-| **M2.4** 学习落库 | server 加 SQLite（`usage` 表 + WAL）、上屏回报、完整 §5 打分与 1.5 倍晋升阈值、组合内锁序 | ① 连打三天词序符合预期、首位不被偶用抢走 ② 强杀 server 不丢已上屏记录 |
+| **M2.4** 学习落库 🟡 **代码完成 + 自测通过，待你验收** | server 加 SQLite（`store.rs`：`usage` / `user_words` / `meta` + WAL + 每 60 秒 checkpoint）、协议加单向 `Frame::Record`（`PROTO_VERSION` 1→2）、DLL 侧有界队列 + 后台补发 + 上屏后丢本地缓存、§5 打分与 1.5 倍晋升阈值（M0b 已实现，这里接上真库）、安装器先收旧 server（D43） | ① 连打三天词序符合预期、首位不被偶用抢走 **✅ 规则与落库已自测（一次偶用不移位 / 连用 20 次仍不夺首位）；「三天」要你实际用** ② 强杀 server 不丢已上屏记录 **✅ 真机验过：杀进程后再打一次，重连后记录补上** |
 | **M3** 混输 | DP 分段裁决 + 折叠规则 + 显式拼音标记（§6.5）+ 码提示 chip + 外链查询（§6.6） | ① 纯拼音/纯五笔/交替输入各 50 例不错判 ② `hao'` 只出拼音候选、不出五笔候选 ③ 拼音段候选带正确五笔码、五笔段不带 ④ 首屏只放当前判定语言 |
 | **M4** 差异化收尾 | emoji 标签与映射编辑界面、设置窗口（含 §5 学习数据查看，从 M2 移来）、`config_version` 兼容、安装包/卸载 | ① 安装包可静默安装 ② 旧配置读入不回退 ③ emoji 改绑后即时生效且升级不丢 ④ 全量回归 |
 | **M5**（含 v1.5 研究项） | 其他平台 Shell / 98 版数据 / 主题 / **字根拆解引擎** | 各自单独立项；拆解的前置条件见 `docs/design/probe-report.md` §5.3 |
@@ -588,3 +602,4 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v1.12 | 2026-10-21 | **M2.3 候选窗接进 TSF**：`crates/heinrich-ui` 新增 `Pager`（页码 / 本页区间 / 两端箭头 / 翻页夹紧，7 单测）；`keys` 的 `decide` 改为吃 `Input { mode, buffer_len, page_len }`，新增 `Select(usize)` / `PagePrev` / `PageNext` / `Noop` 四个动作——数字键 1–9 只在本页有对应候选时生效，`←/→` 与 PgUp/PgDn 翻页、`↑/↓` 吃掉不动、Home/End 仍取消（D38 落地），新增 6 个单测；DLL 新增 `cand.rs`（候选集 + `Pager` + 懒建窗口 + 建窗失败永久降级）与 `caret.rs`（`GetTextExt` 的 `TF_ES_READ｜TF_ES_SYNC` 会话，先问选区、退化到组合串右下角）；`TextService` 的全部状态搬进 `Rc<Core>`（Deref 透传）以便窗口过程的点击回调持 `Weak<Core>` 提交，点击路径全程瞬时借 / `try_borrow`；每个字母键查一次候选（超时保留上一帧）、空格提交 `Cands::current()`、数字键 / 点选 / 空格共用同一份候选数据、提交/取消/失焦/组合串被外部终止/Deactivate 一律关窗；`HeinrichTsfAbiVersion` 4→5；新增 D40；`tsf/Cargo.toml` 引入 `heinrich-ui` 与 `heinrich-win-ui`（D8 清单同步）；102 单测 |
 | v1.13 | 2026-10-21 | **M2.3 真机自测后的两处修正**：① `caret.rs` 改三级兜底（选区 → 组合串右下角**同一请求连问两次** → `GetGUIThreadInfo` 插入符），每级只记日志不返错——第一版用 `?` 把 `TF_E_NOLAYOUT (0x80040206)` 抛出，组合串兜底成了死代码，Chrome 里一个候选窗都不显示；② 缓冲为空时在动手**之前**先量一次光标（此时组合串未建、排版干净，选区那条必然成功）作为首键的回退位置，`show_candidates` 分三支记录坐标来源；D40 补记该实测成因与对策，`docs/dev-guide.md` §4.8 补「五条不做就静默坏掉」、日志对照表与三宿主实测表；新增 `tools/smoke-ime.py`（`SendInput` 注入按键 / 点击、查候选窗类名、按 pid 抢前台，纯 stdlib）；104 单测 + `check.ps1` 全绿 |
 | v1.14 | 2026-10-21 | **两处按键行为修正**：① 单击 Shift 切模式时把缓冲里的编码**原样上屏成字母**（新增 `flush_codes_as_letters`，走 `Goal::Finish(Some(code))`，不查 server；旧的 `Finish(None)` + 清缓冲会让已输入内容直接消失），新增 D41；② `z` 在组合态内改为 `Action::Noop`（吃掉不动，缓冲与候选窗保留），空缓冲与 `Shift+z` 仍放行，新增 D42；`keys` 新增 `VK_Z` 常量，`z_is_not_consumed` 换成 `z_is_eaten_inside_a_composition_only`（覆盖组合态 / 空缓冲 / `Shift+z` / 英文模式四种情形）；用记事本真机冒烟逐条验证（`Shift` 上屏 `vbg`、切英文后字母直通、`vb`+`z` 窗口不撤且文档不变、`z` 之后空格仍能提交） |
+| v1.15 | 2026-10-21 | **M2.4 学习落库**：新增 `crates/heinrich-server/src/store.rs`（`SqliteStore`：`usage` / `user_words` / `meta(schema)`、WAL、`synchronous=NORMAL`、`busy_timeout`、每次上屏一个事务、`last_used_at` 取 `MAX(旧,新)`、`wal_checkpoint(TRUNCATE)`），打开失败自动降级成内存实现；`heinrich-server` 引 `rusqlite`（`bundled`，exe 373 KB → 2.1 MB）；`Host` 加 `Store` 枚举转发、`Frame::Record` 分支、每 60 秒 checkpoint、`shutdown()`（空闲退出前由 `pipe::spawn_monitor` 调用）、`--db` / `--memory-db` 参数；协议加单向 `Frame::Record { code, word, at_unix }`，`PROTO_VERSION` 1→2，`Reader::i64`；DLL 侧 `ipc::record()`（入队即返回，512 条上限溢出丢最旧）+ 后台 `flush_pending_records`（单向只写不读，失败整批放回队首并丢连接）+ `cache_drop()`，`resolve` 的两个真候选分支与 `select` 上报（无命中 / server 不可用 / Shift 吐字母三条路径不报）；安装器新增 `proc::kill_server_in_this_session()`并在 `install` 里作为 `[0/5]` 执行，避免协议升级后旧 server 把新 DLL 一直挡在 `Bye` 外面；`selftest` 改用内存库并新增三条学习断言；新增 D43；113 测试 + 真机验过「强杀 server 不丢记录」 |

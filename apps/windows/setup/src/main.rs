@@ -36,6 +36,8 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
+mod proc;
+
 fn main() {
     // 控制台默认是系统代码页（中文 Windows 上是 936），直接打 UTF-8 会成乱码。
     unsafe {
@@ -207,6 +209,24 @@ fn install() -> i32 {
         }
     };
     let dll_str = dll.to_string_lossy().to_string();
+
+    // [0/5] 先把旧的 server 收掉：它和新 DLL 的协议版本对不上，留着会让新版本
+    // 每次握手都吃一个 `Bye`，而它自己又因为「总有人来连」永远退不出去。
+    print!("[0/5] 结束旧的 server … ");
+    let killed = proc::kill_server_in_this_session();
+    if killed.is_empty() {
+        println!("没有在跑的");
+    } else {
+        println!(
+            "已结束 {} 个（pid {}）",
+            killed.len(),
+            killed
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
     if let Err(e) = com_init() {
         eprintln!("✗ COM 初始化失败：{e}");

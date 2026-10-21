@@ -430,6 +430,7 @@ impl Core {
         match word {
             Some(word) => {
                 tsf_info!("#{} 数字键选第 {} 条 {code} → {word}", self.seq, nth + 1);
+                ipc::record(&code, &word);
                 self.finish(context, word);
             }
             None => {
@@ -536,18 +537,23 @@ impl Core {
     /// | server 不可用 / 超时 | 同样原样上屏——比丢字好，也比卡住好 |
     ///
     /// 最后一行是 D18 的落地形态：**宁可这一次降级成英文，绝不冻住宿主**。
+    ///
+    /// 只有**前两行**会 `ipc::record` 上报学习数据（§5.1：只统计上屏，而且必须是
+    /// 用户真的选了一个词）。后两行吐的是编码字母，那不是选择，记进去只会把 n 灌成噪声。
     fn resolve(&self, code: &str) -> String {
         // 先问窗口：它手里那批候选正是用户刚刚看着的那一屏，用它才谈得上
         // 「所见即所得」。取完立刻离开借用，后面的 IPC 可能慢。
         let shown = self.cands.borrow().current();
         if let Some(word) = shown {
             tsf_info!("#{} 提交 {code} → {word}（候选窗）", self.seq);
+            ipc::record(code, &word);
             return word;
         }
         match ipc::query(code) {
             Some(entries) if !entries.is_empty() => {
                 let word = entries[0].word.clone();
                 tsf_info!("#{} 提交 {code} → {word}", self.seq);
+                ipc::record(code, &word);
                 word
             }
             Some(_) => {

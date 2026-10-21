@@ -123,7 +123,7 @@ pub fn run(host: Host, cfg: Config) -> i32 {
     activity.touch();
 
     if !cfg.idle_exit.is_zero() {
-        spawn_monitor(Arc::clone(&activity), cfg.idle_exit);
+        spawn_monitor(Arc::clone(&activity), cfg.idle_exit, Arc::clone(&shared));
     }
 
     let debug_sleep = cfg.debug_sleep;
@@ -292,7 +292,7 @@ fn is_disconnect(e: &std::io::Error) -> bool {
     )
 }
 
-fn spawn_monitor(activity: Arc<Activity>, idle_exit: Duration) {
+fn spawn_monitor(activity: Arc<Activity>, idle_exit: Duration, shared: Arc<Mutex<Host>>) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(2));
         if activity.live.load(Ordering::Relaxed) != 0 {
@@ -301,6 +301,12 @@ fn spawn_monitor(activity: Arc<Activity>, idle_exit: Duration) {
         let idle = activity.idle_ms();
         if idle >= idle_exit.as_millis() as u64 {
             srv_info!("空闲 {idle} ms，退出");
+            // 退出前把 WAL 落干净（§5.5）。这一步要在 `process::exit` **之前**做完：
+            // exit 不走析构，SQLite 连接不会自己 close。
+            match shared.lock() {
+                Ok(mut h) => h.shutdown(),
+                Err(p) => p.into_inner().shutdown(),
+            }
             std::process::exit(0);
         }
     });

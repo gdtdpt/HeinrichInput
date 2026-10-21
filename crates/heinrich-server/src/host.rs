@@ -12,18 +12,90 @@
 //! 由 DLL 原样上屏（D27）。
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use heinrich_core::scheme::Scheme;
-use heinrich_core::{lookup, LookupMode, MemoryStore, RankingConfig};
+use heinrich_core::{lookup, LookupMode, MemoryStore, RankingConfig, Tier, Usage, UsageStore};
 use heinrich_proto::{Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION};
+
+use crate::store::SqliteStore;
+
+/// 两次 `wal_checkpoint` 之间的最小间隔（§5.5）。
+const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
+
+/// 学习数据的两种落地形态。
+///
+/// 上层（`Host` / `lookup`）只认 `UsageStore`，这里做一层枚举转发：SQLite 是常态，
+/// 内存实现留给两种情况——单测（不想碰磁盘）、以及**学习库打不开时的降级**
+/// （目录只读、库文件被别的版本占着、磁盘满了……）。降级后输入法照常工作，
+/// 只是不记学习数据；这比「因为学习库坏了导致打不了字」正确得多。
+pub enum Store {
+    Sqlite(Box<SqliteStore>),
+    Memory(MemoryStore),
+}
+
+impl Store {
+    /// 一句话说明当前形态，启动日志用。
+    pub fn describe(&self) -> String {
+        match self {
+            Store::Sqlite(s) => format!(
+                "SQLite（{}，已记录 {} 个词）",
+                s.path().display(),
+                s.known_words()
+            ),
+            Store::Memory(_) => "内存（不落盘，重启即丢）".to_string(),
+        }
+    }
+
+    fn checkpoint(&self) {
+        if let Store::Sqlite(s) = self {
+            s.checkpoint();
+        }
+    }
+}
+
+impl UsageStore for Store {
+    fn usage(&self, word: &str) -> Usage {
+        match self {
+            Store::Sqlite(s) => s.usage(word),
+            Store::Memory(m) => m.usage(word),
+        }
+    }
+
+    fn tier(&self, word: &str) -> Tier {
+        match self {
+            Store::Sqlite(s) => s.tier(word),
+            Store::Memory(m) => m.tier(word),
+        }
+    }
+
+    fn record(&mut self, word: &str, at_unix: i64) {
+        match self {
+            Store::Sqlite(s) => s.record(word, at_unix),
+            Store::Memory(m) => m.record(word, at_unix),
+        }
+    }
+
+    fn set_tier(&mut self, word: &str, tier: Tier) {
+        match self {
+            Store::Sqlite(s) => s.set_tier(word, tier),
+            Store::Memory(m) => m.set_tier(word, tier),
+        }
+    }
+}
 
 pub struct Host {
     scheme: Scheme,
-    store: MemoryStore,
+    store: Store,
     cfg: RankingConfig,
     /// 中英模式。**这是权威副本**：DLL 每个宿主进程各有一份实例，
     /// 模式若存在实例里，A 应用切英文、B 应用仍是中文（M1.1 的既有缺陷）。
     mode: Mode,
+    /// 上次 checkpoint 的时刻。放在 `handle` 里按时间触发，不额外开线程——
+    /// checkpoint 要独占连接，单独开线程只会和查询抢锁。
+    last_checkpoint: Instant,
+    /// 本次运行累计收到的上屏回报条数（日志里看「学习有没有在动」）。
+    recorded: u64,
 }
 
 impl Host {
@@ -31,14 +103,35 @@ impl Host {
     ///
     /// 136,239 条约 300 ms，**只该在一个进程里发生一次**——这是 server 存在的
     /// 全部理由：DLL 被注入到每个宿主进程，在那里装载等于每个 tab 卡 300 ms。
+    ///
+    /// `db` 为 `None` 时用内存实现（单测 / `--selftest`）；给路径则落盘，
+    /// **打不开就降级成内存**并记一条错误，绝不让学习库的问题挡住打字。
+    #[cfg(test)]
     pub fn load(dir: &Path) -> Result<Self, String> {
+        Self::open(dir, None)
+    }
+
+    pub fn open(dir: &Path, db: Option<&Path>) -> Result<Self, String> {
         let scheme =
             Scheme::load(dir).map_err(|e| format!("装载方案 {} 失败：{e}", dir.display()))?;
+        let store = match db {
+            None => Store::Memory(MemoryStore::new()),
+            Some(path) => match SqliteStore::open(path) {
+                Ok(s) => Store::Sqlite(Box::new(s)),
+                Err(e) => {
+                    srv_error!("{e}；本次运行不记学习数据");
+                    Store::Memory(MemoryStore::new())
+                }
+            },
+        };
+        srv_info!("学习库：{}", store.describe());
         Ok(Self {
             scheme,
-            store: MemoryStore::new(),
+            store,
             cfg: RankingConfig::default(),
             mode: Mode::Chinese,
+            last_checkpoint: Instant::now(),
+            recorded: 0,
         })
     }
 
@@ -54,8 +147,14 @@ impl Host {
         self.mode
     }
 
+    /// 本次运行收到的上屏回报条数。
+    pub fn recorded(&self) -> u64 {
+        self.recorded
+    }
+
     /// 处理一条请求，返回要回给对方的帧（`None` 表示不回）。
     pub fn handle(&mut self, frame: Frame) -> Option<Frame> {
+        self.maybe_checkpoint();
         match frame {
             Frame::Hello { proto, scheme_id } => {
                 if proto != PROTO_VERSION {
@@ -86,6 +185,17 @@ impl Host {
                 self.mode = mode;
                 Some(Frame::Mode { mode })
             }
+            // 上屏回报：单向，不回帧。DLL 那边不等应答，回一条反而会让它读错位。
+            Frame::Record {
+                code,
+                word,
+                at_unix,
+            } => {
+                self.store.record(&word, at_unix);
+                self.recorded += 1;
+                srv_debug!("上屏 {code} → {word}（第 {} 条）", self.recorded);
+                None
+            }
             // Welcome / Result / Mode / Bye 是**服务端发出去的**方向，
             // 收到它们只能说明对端把方向搞反了，不理。
             Frame::Welcome { .. }
@@ -93,6 +203,25 @@ impl Host {
             | Frame::Mode { .. }
             | Frame::Bye { .. } => None,
         }
+    }
+
+    /// 到点就把 WAL 合并一次。这是在 `handle` 里顺手做的，代价是一次时间比较。
+    fn maybe_checkpoint(&mut self) {
+        if self.last_checkpoint.elapsed() >= CHECKPOINT_EVERY {
+            self.last_checkpoint = Instant::now();
+            self.store.checkpoint();
+            srv_debug!("wal_checkpoint 完成，累计上屏回报 {} 条", self.recorded);
+        }
+    }
+
+    /// 退出前调一次，把 WAL 落干净。
+    pub fn shutdown(&mut self) {
+        self.store.checkpoint();
+        srv_info!(
+            "退出：本次运行收到 {} 条上屏回报，学习库 {}",
+            self.recorded,
+            self.store.describe()
+        );
     }
 
     /// 精确查询。`limit` 上限见 [`MAX_ENTRIES`]。
@@ -253,5 +382,97 @@ mod tests {
             Some(Frame::Welcome { mode, .. }) => assert_eq!(mode, Mode::English),
             other => panic!("期望 Welcome，得到 {other:?}"),
         }
+    }
+
+    /// 上屏时间必须**贴近现在**：`query` 用的是真实时钟，`Δt` 一大，
+    /// 学习分就被半衰期衰减到 0（`0.5^(Δt/45天)`），测出来的就是「没排序」。
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    fn words(h: &mut Host, code: &str) -> Vec<String> {
+        h.query(code, 9).into_iter().map(|e| e.word).collect()
+    }
+
+    /// 上屏回报要真的进排序：用一次「蒿」之后它越过「呵」，但抢不走「号」的首位。
+    ///
+    /// 这就是 M2.4 验收项 ① 的自动化版本——「偶用一次抢不走首位」不是靠人盯三天，
+    /// 而是靠 §5.2 的 K=1.5 门槛；这里验的就是那条规则真的接在 server 上了。
+    #[test]
+    fn record_reorders_but_keeps_the_throne() {
+        let mut h = host();
+        assert_eq!(words(&mut h, "vbgd"), ["号", "豪", "呵", "蒿"]);
+
+        h.handle(Frame::Record {
+            code: "vbgd".into(),
+            word: "蒿".into(),
+            at_unix: now(),
+        });
+
+        let after = words(&mut h, "vbgd");
+        assert_eq!(after[0], "号", "偶用一次不许抢首位");
+        assert_eq!(after, ["号", "豪", "蒿", "呵"], "蒿应上浮一位");
+        assert_eq!(h.recorded(), 1);
+    }
+
+    /// 上屏回报是**单向**帧：不该回任何东西（回了会让 DLL 读到错位的帧）。
+    #[test]
+    fn record_gets_no_reply() {
+        let mut h = host();
+        let reply = h.handle(Frame::Record {
+            code: "vbg".into(),
+            word: "好".into(),
+            at_unix: 1,
+        });
+        assert!(reply.is_none());
+    }
+
+    /// 学习数据落盘：换一个 `Host` 打开同一个库，词序应该已经是学过的样子。
+    #[test]
+    fn learning_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("heinrich-host-db-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = dir.join("learn.db");
+
+        {
+            let mut h = Host::open(&fixture(), Some(&db)).expect("应能打开");
+            for _ in 0..20 {
+                h.handle(Frame::Record {
+                    code: "vbgd".into(),
+                    word: "蒿".into(),
+                    at_unix: now(),
+                });
+            }
+            h.shutdown();
+        }
+
+        let mut h2 = Host::open(&fixture(), Some(&db)).expect("应能重开");
+        assert_eq!(
+            words(&mut h2, "vbgd")[0],
+            "蒿",
+            "连用 20 次后重开应还排在第一"
+        );
+        assert_eq!(h2.recorded(), 0, "新进程的计数从零开始");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 学习库打不开时必须降级成内存实现，而不是让 server 起不来。
+    #[test]
+    fn broken_db_falls_back_to_memory() {
+        // 拿一个目录当库文件路径：open 一定失败。
+        let dir = std::env::temp_dir().join(format!("heinrich-bad-db-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut h = Host::open(&fixture(), Some(&dir)).expect("降级后仍应能启动");
+        assert!(words(&mut h, "vbg").contains(&"好".to_string()));
+        h.handle(Frame::Record {
+            code: "vbg".into(),
+            word: "好".into(),
+            at_unix: 1,
+        });
+        assert_eq!(h.recorded(), 1, "降级后仍照常接收回报，只是不落盘");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
