@@ -106,10 +106,15 @@ impl Input {
 
 /// 五笔 86 的字根键：`a`–`y`，共 25 个。
 ///
-/// `z` 不在其中——86 版的 `z` 是「万能学习键」，查任意位置的字根，
-/// M1.1 不实现。**吃掉一个键却不出字是不可接受的**，所以 `z` 直接放行。
+/// `z` 不在其中——86 版的 `z` 是「万能学习键」，查任意位置的字根（计划在 M3 与
+/// 码提示一起做）。它的**暂定归属**见 `decide` 里那一支：组合态内吃掉不动，
+/// 空缓冲时放行。放行会让宿主在组合串中间插一个 `z` 并终止组合串，等于把用户
+/// 已经打出的编码按残留删掉——「吃掉没反应」远比「打的字被打断」轻（D42）。
 pub const VK_A: u16 = 0x41;
 pub const VK_Y: u16 = 0x59;
+
+/// 万能学习键，见 `VK_A` 上面的说明。
+pub const VK_Z: u16 = 0x5A;
 
 /// 单字全码最长 4 码（D15：3 或 4 码，不足四字根补末笔识别码）。
 pub const MAX_CODE_LEN: usize = 4;
@@ -203,6 +208,20 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
             return Action::Pass;
         }
         return Action::Buffer(ch);
+    }
+
+    // `z`：万能学习键，v1 还没做（M3 与码提示一起）。
+    //
+    // **组合态内必须吃掉**。放行给宿主的实际后果是打断输入：宿主在组合串中间
+    // 插入 `z`，TSF 随即终止组合串，`OnCompositionTerminated` 把已经打出的编码
+    // 当残留删掉——用户看到的是「按 z 直接把内容弄没了 / 直接上屏了」。
+    // 吃掉但不动，缓冲与候选窗都原样留着，用户可以接着打下一个字母或按空格提交；
+    // 代价只是这一下没反馈，日志里记一行说明（D42）。
+    //
+    // 两个例外都放行：`Shift+z` 是临时英文（要输出大写 `Z`），空缓冲时没有组合串
+    // 可打断，`z` 就是个普通字母。
+    if vk == VK_Z && !empty && !mods.shift {
+        return Action::Noop;
     }
 
     // 标点：中文模式下由我们接手，保证「字 + 标点」一起出、不丢编码。
@@ -353,11 +372,16 @@ mod tests {
         }
     }
 
-    /// z 是万能学习键，M1.1 不实现，必须放行而不是吃掉。
+    /// `z` 是万能学习键，暂时只做到「不打断输入」：组合态内吃掉不动，空缓冲与
+    /// `Shift+z` 放行（D42）。
     #[test]
-    fn z_is_not_consumed() {
+    fn z_is_eaten_inside_a_composition_only() {
         assert_eq!(decide(zh(0), Z, m()), Action::Pass);
-        assert_eq!(decide(zh(3), Z, m()), Action::Pass);
+        assert_eq!(decide(zh(3), Z, m()), Action::Noop);
+        // Shift+z 是临时英文，要出大写 Z。
+        assert_eq!(decide(zh(3), Z, shift()), Action::Pass);
+        // 英文模式下 z 是普通字母。
+        assert_eq!(decide(en(0), Z, m()), Action::Pass);
     }
 
     #[test]

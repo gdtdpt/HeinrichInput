@@ -231,15 +231,7 @@ impl Core {
         // 上报给 server：模式是**全局**状态（D34）。本地先改是为了让本进程立刻生效，
         // 上报走队列——切模式发生在 Shift 松开的那一刻，那是键路径，不能等 IPC。
         ipc::set_mode(next == Mode::Chinese);
-        // 切模式时丢掉半截编码：留着它会让下次输入莫名其妙多出几个字母。
-        // 组合串也要跟着撤——否则那串字母会留在文档里，而缓冲已经空了。
-        let dropped = self.buffer.borrow().clone();
-        if !dropped.is_empty() {
-            if let Ok(ctx) = pic.ok() {
-                self.run_preedit(ctx, Goal::Finish(None));
-            }
-        }
-        self.clear_buffer();
+        let flushed = self.flush_codes_as_letters(pic);
         // 窗口跟着撤：切到英文模式后还挂着一屏中文候选，等于骗用户按空格。
         self.cands.borrow_mut().clear();
         tsf_info!(
@@ -250,13 +242,44 @@ impl Core {
             } else {
                 "英文"
             },
-            if dropped.is_empty() {
-                String::new()
-            } else {
-                format!("（丢弃编码 {dropped:?}）")
+            match &flushed {
+                Some(code) => format!("（缓冲 {code:?} 原样上屏）"),
+                None => String::new(),
             }
         );
         true
+    }
+
+    /// 切模式时把半截编码**原样**写进文档，返回写进去的内容。
+    ///
+    /// 为什么吐字母而不是吐候选（D41）：走进这条路的几乎只有一种情形——用户以为
+    /// 自己在英文模式，敲了几个字母才看到中文候选，于是单击 Shift 切英文。他要的
+    /// 是「我刚按的那几个键」，替他上汉字等于替他做了他没做的决定。对误触 Shift
+    /// 也更宽容：留在文档里的至少是他自己敲的东西。
+    ///
+    /// 不走 `resolve`，所以也不会去查 server：这条路径上任何 IPC 都在 Shift 松手
+    /// 的那一瞬，等它不值得。
+    fn flush_codes_as_letters(&self, pic: &Ref<ITfContext>) -> Option<String> {
+        let code = self.clear_buffer();
+        if code.is_empty() {
+            return None;
+        }
+        match pic.ok() {
+            // 走 `finish`：先撤窗再写文档，与空格/点选同一条出口。
+            Ok(context) => {
+                self.finish(context, code.clone());
+                Some(code)
+            }
+            // 宿主已经切走、拿不到 context：只能丢，但记 error 而不是 info，
+            // 否则「明明打了字却不见了」在日志里查不到。
+            Err(e) => {
+                tsf_error!(
+                    "#{} 切模式时拿不到 context（{e}），缓冲 {code:?} 丢失",
+                    self.seq
+                );
+                None
+            }
+        }
     }
 
     /// 执行判定结果。**只有 `OnKey*` 会调它**，`OnTestKey*` 绝不调。
