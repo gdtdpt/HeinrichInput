@@ -1,4 +1,4 @@
-# 测试用迷你方案清单（非产品数据）
+﻿# 测试用迷你方案清单（非产品数据）
 id = "mini"
 name = "Mini (测试)"
 version = "0.0.1"
@@ -6,5 +6,5 @@ alphabet = "abcdefghijklmnopqrstuvwxy"
 max_code_len = 4
 source = "crates/heinrich-core/tests/fixtures/mini（手写）"
 license = "internal-test-only"
-entry_count = 8
+entry_count = 11
 lexicon_sha256 = "skip"

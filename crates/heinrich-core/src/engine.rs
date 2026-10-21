@@ -252,21 +252,25 @@ mod tests {
         assert_eq!(ranked[0].word, target, "固顶词必须排首位");
     }
 
+    /// D48 之后 `hao` 的判定变回五笔：它是合法五笔三级简码（虚、好），
+    /// 拼音候选排在五笔之后而不是顶上去。
     #[test]
     fn mixed_engine_routes_pinyin_and_keeps_decision_stable() {
         let mut eng = mixed_engine();
-        assert_eq!(eng.mixed("hao", 1_000).source, Source::Pinyin);
+        let m = eng.mixed("hao", 1_000);
+        assert_eq!(m.source, Source::Wubi);
+        assert_eq!(m.primary.first().map(|c| c.word.as_str()), Some("虚"));
         assert_eq!(
-            eng.mixed("hao", 1_000)
-                .primary
-                .first()
-                .map(|c| c.word.as_str()),
-            Some("好")
+            m.folded.first().map(|c| c.word.as_str()),
+            Some("号"),
+            "拼音候选接在五笔之后（「好」已在五笔段，不再重复）"
         );
         // 判定结果在缓冲区内锁定：换个时刻问，来源不变
-        assert_eq!(eng.source(), Some(Source::Pinyin));
+        assert_eq!(eng.source(), Some(Source::Wubi));
         // 五笔码仍走五笔
         assert_eq!(eng.mixed("vbgd", 1_000).source, Source::Wubi);
+        // 纯拼音串（五笔没有这个词条）走拼音
+        assert_eq!(eng.mixed("xian", 1_000).source, Source::Pinyin);
     }
 
     #[test]

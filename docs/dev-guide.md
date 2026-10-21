@@ -540,12 +540,12 @@ taskkill /im heinrich-server.exe /f
    sync_preedit + ipc::query(buffer)
         │
    ┌────┴─────────────────────────────┐
-   │ core::pinyin::query              │
-   │  五笔侧：lookup(scheme)            │ 精确命中 → 质量 1.0
-   │  拼音侧：lex.match_indices        │ 可切分 → 1.0；仅前缀 → 0.5
-   │  比质量：同分判拼音（§6.1）         │
-   │  primary = 判定的那侧              │
-   │  folded  = 另一侧（§6.2 折叠）      │
+   │ core::pinyin::query_with_limit    │
+   │  带 ' → 纯拼音（五笔不查）          │
+   │  五笔侧：lookup(scheme)            │ 精确命中 → 主段 = 五笔
+   │  拼音侧：lex.match_indices        │ 五笔没命中 → 主段 = 拼音
+   │  primary = 主段（D48：五笔优先）    │
+   │  folded  = 补段，剔掉主段已有的词    │
    └──────────────────────────────────┘
 ```
 
@@ -576,10 +576,11 @@ taskkill /im heinrich-server.exe /f
    词组的语料权重高于同音字，把用户真正想打的字挤到了后面。分开后是
    「好、号、浩、豪、耗、郝…」再跟前缀词组。
 
-4. **判定不能只看「有没有候选」。** 拼音的「可切分」与「有候选」是两件事：
-   `zhuang` 可切分（质量 1.0）；`zhuangx` 不可切分但仍有以它开头的词组（质量 0.5）。
-   若把两者都算 1.0，`hao` 这类「既是五笔码又是拼音」的输入会与「打了一半的拼音」
-   同分，`vbg` 反而可能被误判。质量分是 §6.1 段质量在单段上的落点。
+4. **判定不看质量分，只看「五笔有没有精确命中」（D48）。** D46 时代做过一套质量分
+   （五笔精确 1.0 / 拼音可切分 1.0 / 拼音仅前缀 0.5，同分判拼音），真机证明它等价于
+   「只要像拼音就判拼音」——3–4 个字母几乎总能切成一串合法音节。现在只剩一条判定：
+   五笔精确命中就是五笔主段，否则拼音主段，带 `'` 则直接跳过五笔。
+   `PinyinLexicon::can_split` 仍保留（`check-pinyin` 用它校验音节表），但**不再参与裁决**。
 
 **当前只做单段。** 真正的多段输入（`haovb` = 拼音段 + 五笔段，组合出「好我」）需要
 各段候选做笛卡尔积，而它的实际频率极低——用户要么在打五笔、要么在打拼音。单段判定
@@ -600,6 +601,87 @@ cargo run -p heinrich-cli -- check-pinyin --data data/pinyin
 - `判定 拼音 · 61 个候选` + `以下是五笔候选（折叠区）` → 判定与折叠都生效
 - `判定 五笔` → 该串切不成音节（`vbg` 里的 `v` 不是音节起始）
 - `` `zzz` 没有候选 `` → 两边都没命中，符合 D45（不出窗）
+
+### 4.11 混输接进 TSF（M3.3）
+
+```
+server 握手 → Welcome { features }  ──┐
+                                      ├→ ipc::FEATURES（原子）
+DLL 键路径 ← keys::Input.pinyin ──────┘   ├─ z 进缓冲（还是按 D42 吃掉）
+                                          └─ 码长上限 4 → 24
+server 查询 → Result { entries, source, primary_len }
+                 │                    │
+                 └─ 主段在前、补段在后 └─ 分界 → Cands.split → Theme.secondary 淡一档
+```
+
+**判定顺序（D48，撤销了 D46 的「同分判拼音」）**：
+
+```
+串里有 '            → 纯拼音，五笔一条都不查
+五笔精确命中        → 五笔主段 + 拼音补段（剔掉主段已有的词）
+五笔没命中、拼音有   → 拼音主段
+都没有              → 不出窗（D45）
+```
+
+原来的规则是「同分判拼音」，理由写的是「拼音是不会拆时的退路」。真机实测把前提推翻了：
+五笔码多为 3–4 码，而 3–4 个字母几乎总能切成一串合法音节（`hao` / `ni` / `xian` 全切得开），
+于是「同分」实际等于「只要长得像拼音就判拼音」。`hao` 因此出 61 条同音字，五笔的「虚」
+（三级简码、唯一精确命中）被压到第 13 页。
+
+想吃拼音的候选：它就在五笔候选后面（`ni` 的第 2 条是「你」）。想**独占**拼音：打 `ni'`。
+
+**为什么 `z` 要按能力位分家（D47）。** D42 定「组合态内吃掉 `z`」的前提是「`z` 不是五笔字根键」，
+这个前提在混输下不成立：拼音里 `zhuang`、`zao`、`zhe`、`zui` 都以 `z` 开头，吃掉它等于
+**整片 z 声母的字打不出来**。反过来也不能无条件放开——纯五笔环境（dist 里没带 `data/pinyin`）
+放开 `z` 就没有 D42 那个「不打断输入」的保护。所以判断权交给 server：它装了拼音词库就置
+`feature::PINYIN`，DLL 读到才改行为。
+
+**码长上限同理。** `MAX_CODE_LEN = 4` 的语义是「五笔全码定长」，而拼音词条最长 20 个字母
+（`linchuangzhengzhuang` = 临床症状）。不放开的话打长词会在第 5 个字母时被「原样上屏」。
+`keys::MAX_PINYIN_CODE_LEN = 24`，并在**编译期**断言 `≥ 20`——哪天有人为了省事改回去，
+编译就会炸，而不是等真机上打到一半被截。
+
+**三个容易踩的点**：
+
+1. **`primary_len` 必须夹到 `limit`。** 主段可能有 30 条、协议只让带 9 条，那 9 条就全是主段的；
+   若直接 `primary.len()`，DLL 会拿到一个超过结果长度的分界，画出来整屏都是主段色，
+   而实际第 10 条以后根本没有。当前写法是 `primary.len().min(limit)`，**在截断之前**算。
+2. **候选缓存要连 `source` / `primary_len` 一起存。** 只缓存 `Vec<String>` 的话，命中缓存那次
+   就丢了分区信息，同一串输入第一次和第二次画出来不一样。
+3. **`features` 存在原子变量里，别每次按键去握手。** 键路径不能等 IPC（D18），而握手在后台
+   线程；连不上时保持上一次的值——宁可沿用「有拼音」，也别在一次掉线后把 `z` 突然锁死。
+
+**怎么验**：
+
+```powershell
+# ① 数据与判定（不需要 TSF 壳）
+cargo run -p heinrich-server -- --selftest --scheme-dir data/wubi86 --pinyin-dir data/pinyin
+#   期望看到：混输已启用 / hao 五笔占主段 + 拼音跟随 / hao' 只出拼音 /
+#            xian 判拼音 / 折叠分界不越界 / vbg 仍判五笔
+
+# ② 确认降级路径（把拼音目录指到一个不存在的路径）
+cargo run -p heinrich-server -- --selftest --scheme-dir data/wubi86 --pinyin-dir C:\no\such
+#   期望看到：纯五笔（无拼音词库），且 hao 判五笔 —— 行为与 M2 一致
+
+# ③ 真机：构建 → 装新 DLL → 在记事本里打 hao / nihao / vbg / zhuang
+powershell -ExecutionPolicy Bypass -File tools\build.ps1
+```
+
+**翻页与字符键（D49）**：有候选窗时 `-` 往前、`=` 往后，与 `←/→/PgUp/PgDn` 等价
+（笔记本上 PgUp/PgDn 常要按 Fn，方向键离手位太远，那三组键在真机上等于没有翻页）。
+组合态内（`buffer_len > 0`）所有**会产生字符**的键一律吞掉（`keys::is_text_key`）——
+放行会在组合串中间插字符、终止组合串，`OnCompositionTerminated` 把编码当残留删掉，
+真机表现是「符号先冒出来，然后正在打的字消失了」。功能键（F1–F12、Tab、CapsLock）不受影响。
+
+真机上怎么看日志（`%LOCALAPPDATA%\Heinrich\logs\`）：
+
+| 现象 | 日志 | 含义 |
+|---|---|---|
+| 打 `hao` 第 1 条是「虚」，后面跟着淡色的「好 / 号 / 浩…」 | `已连上 server（… 混输可用）` + `hao → 32 条，主段五笔 1 条` | 正常（D48：五笔优先，补段淡一档） |
+| 打 `hao'` 只出拼音 | `hao' → 32 条，主段拼音 32 条` | 正常（`'` 钉死成纯拼音） |
+| 打 `hao` 第 1 条是「好」 | 同上但 `主段拼音` | 判定没反转过来 ⇒ 检查 DLL 与 server 是不是同一个版本 |
+| 打 `zhuang` 打不出字（`z` 被吃掉） | `已连上 server（… 纯五笔）` | server 没装拼音词库（`features` 没置位）⇒ 检查 `dist\data\pinyin` 是否存在 |
+| 打拼音出的是字母 | `server 不可用` / `候选查询无应答` | IPC 没连上（D27 的降级），不是混输的问题 |
 
 ## 5. 数据管线
 
@@ -663,7 +745,18 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 19. **`windows-core` 的 `Error::code()` 是 `HRESULT`，不是 Win32 错误码。** 它被 `HRESULT_FROM_WIN32` 包过（`0x8007_0000 | code`），拿它直接跟 `ERROR_FILE_NOT_FOUND`（2）比永远不相等——表现是「管道还不存在」这种正常路径被当成真错误刷进日志，或者反过来的「该重连的时候不重连」。取低 16 位（`code.0 as u32 & 0xFFFF`）再比。另外 0.62 没有 `Error::message()` 和 `HRESULT_FROM_WIN32`，要看文案就 `format!("{e}")`。
 20. **重叠 I/O 超时后必须放弃整条连接，而且 `OVERLAPPED` 要放堆上。** 超时那一刻内核可能仍然引用着那块 `OVERLAPPED`（`CancelIoEx` 只是发起取消，不保证同步完成），栈上的对象随函数返回就被复用了，等于让内核往别人的栈帧里写。做法：`Box<OVERLAPPED>`，丢弃 `mem::forget`（每次超时泄漏 40 字节，换「不写坏内存」）。同理，超时后管道里可能还剩半个响应，继续复用会读到错位的帧——直接关句柄、重连，比「猜着读」可靠得多。
 21. **常驻进程会锁住自己的 exe。** `heinrich-server.exe` 在跑时 `Copy-Item` 覆盖 `dist` 里的同名文件必然失败，表现与 DLL 被宿主映射一模一样（`os error 32`）。`build.ps1` 在复制前先结束它——它是我们自己的进程、没有用户数据，DLL 下一次按键会自动拉起新版。
-22. **命名管道的 `CreateNamedPipeW` / `ConnectNamedPipe` 在 `Win32::System::Pipes`，而 `CreateFileW` 在 `Win32::Storage::FileSystem`。** 而且 `CreateFileW` / `CreateEventW` 因为形参里有 `SECURITY_ATTRIBUTES`，**必须**同时开 `Win32_Security` feature，否则整个函数会被 cfg 掉，报错是「no `CreateFileW` in `Win32::Storage::FileSystem`」——看起来像 API 不存在，其实只是 feature 没开。
+22. **同一个键在不同数据配置下归属会反转，判断权必须给「持有配置的那一侧」。** 典型是 `z`：纯五笔里它是万能学习键（D42 要吃掉，否则宿主会在组合串中间插字符、把已打的编码当残留删掉），装了拼音词库后它是普通字母（`zhuang` / `zao` / `zhe` 都以它开头，吃掉等于整片 z 声母打不出来）。DLL **不可能**自己判断——`data/pinyin` 在 dist 里是可选的，只有 server 知道自己装没装。所以做成握手能力位（`feature::PINYIN`），DLL 读到才改行为，读不到就退回老一套。同一批的还有码长上限：`MAX_CODE_LEN = 4` 是五笔的定长语义，混输下必须放到 24（最长词条 20 字母），并且用**编译期断言**钉住下界。
+    > 协议侧的对称要求：加字段必须同时升 `PROTO_VERSION`。这次 `Result` 在条目数前插了 `source` + `primary_len`，旧 DLL 若被放行会把 `source` 当成候选条数读出一堆乱码；升版本后它在握手阶段就被 `Bye` 挡掉。
+
+23. **命名管道的 `CreateNamedPipeW` / `ConnectNamedPipe` 在 `Win32::System::Pipes`，而 `CreateFileW` 在 `Win32::Storage::FileSystem`。** 而且 `CreateFileW` / `CreateEventW` 因为形参里有 `SECURITY_ATTRIBUTES`，**必须**同时开 `Win32_Security` feature，否则整个函数会被 cfg 掉，报错是「no `CreateFileW` in `Win32::Storage::FileSystem`」——看起来像 API 不存在，其实只是 feature 没开。
+
+24. **删掉一个「看起来没用」的判断之前，先想它防的是什么。** 改 D48 时把 `wubi_candidates`
+    里的 `LookupMode::Exact` 判断当成冗余删了（注释还写着「D45 之后没有调用方」），结果
+    `lookup` 的前缀兜底复活：`abc` 打出「abce 节能 / abci 藂 / abcu 菆」一整屏毫无关系的字。
+    **单元测试全绿**——因为夹具里的 `abc` 前缀恰好没有词条；抓住它的是 server 自测里那条
+    `abc → 无命中`。教训有两层：① 兜底分支的注释写「已无人调用」时，去搜**真正的调用链**
+    而不是相信注释；② 断言「空」比断言「有哪些」更能抓住兜底泄漏，因为泄漏的特征就是
+    「本不该有，却有了」。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -693,8 +786,9 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M2.3 接进 TSF | ✅ 自测通过（记事本 / Notepad++ / Chrome）（逐键查询 D37 + `GetTextExt` 三级兜底 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；`cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
 | M2.4 学习落库 | 🟡 代码完成 + 自测通过，待验收（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9） |
 | M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
-| M3.2 混输裁决 | 🟡 代码完成 + 自测通过，待验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。见 §4.10） |
-| M3.3–M3.5 | 未开始（接进 TSF / 码提示 chip + 外链 / 显式 `'` 标记 + `z` 学习键） |
+| M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
+| M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
+| M3.4–M3.5 | 未开始（码提示 chip + 外链查询 / `z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

@@ -60,7 +60,7 @@ use windows::Win32::UI::TextServices::{
 use crate::cand;
 use crate::caret::CaretProbe;
 use crate::ipc;
-use crate::keys::{self, Action, Mode, Mods, ShiftTap, MAX_CODE_LEN};
+use crate::keys::{self, Action, Mode, Mods, ShiftTap};
 use crate::preedit::{CompSlot, Goal, PreeditSession};
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
@@ -102,7 +102,9 @@ pub struct Core {
     /// 实例序号。
     seq: u32,
 
-    /// 当前编码缓冲（五笔字母），上限 [`MAX_CODE_LEN`] 码。
+    /// 当前编码缓冲（五笔字母 / 拼音字母），上限随混输切换：
+    /// 纯五笔 4 码（[`keys::MAX_CODE_LEN`]），有拼音词库时 24 个字母
+    /// （[`keys::MAX_PINYIN_CODE_LEN`]）。
     ///
     /// 组合串显示的内容就是它——两者是同一份状态的两种表现，所以缓冲一变就要同步
     /// 组合串，别让它们各自漂移。
@@ -181,6 +183,11 @@ impl Core {
         std::mem::take(&mut *self.buffer.borrow_mut())
     }
 
+    /// 当前码长上限。混输时拼音最长词条有 20 个字母，5 笔的 4 码上限会把它截断。
+    fn max_code_len(&self) -> usize {
+        keys::max_code_len(ipc::has_pinyin())
+    }
+
     /// 当前位置的修饰键快照。`GetKeyState` 读本线程输入队列，开销可忽略。
     fn mods(&self) -> Mods {
         Mods {
@@ -198,6 +205,7 @@ impl Core {
             mode: self.mode.get(),
             buffer_len: self.buffer_len(),
             page_len: self.cands.borrow().page_len(),
+            pinyin: ipc::has_pinyin(),
         };
         keys::decide(input, vk, self.mods())
     }
@@ -337,12 +345,17 @@ impl Core {
             None
         };
 
-        if self.buffer_len() >= MAX_CODE_LEN {
-            // 已满 4 码还来第 5 个键：五笔全码最长 4 位，不可能命中。
+        if self.buffer_len() >= self.max_code_len() {
+            // 已满码还来下一个键：纯五笔是「五笔全码最长 4 位，不可能命中」，
+            // 混输时是「拼音 24 个字母还查不到，基本是打错了」。
             // 原样上屏再重新开始，比「忽略这个键」或「卡住不响应」都好——
             // 用户至少能看出发生了什么。
             let prev = self.clear_buffer();
-            tsf_info!("#{} 已满 {MAX_CODE_LEN} 码，原样上屏 {prev:?}", self.seq);
+            tsf_info!(
+                "#{} 已满 {} 码，原样上屏 {prev:?}",
+                self.seq,
+                self.max_code_len()
+            );
             self.finish(context, prev);
         }
         self.buffer.borrow_mut().push(ch);
@@ -372,13 +385,24 @@ impl Core {
             return;
         }
         match ipc::query(&code) {
-            Some(entries) if entries.is_empty() => {
+            Some(reply) if reply.words.is_empty() => {
                 self.cands.borrow_mut().clear();
                 tsf_debug!("#{} {code} 无候选", self.seq);
             }
-            Some(entries) => {
-                let words: Vec<String> = entries.into_iter().map(|e| e.word).collect();
-                self.cands.borrow_mut().update(words);
+            Some(reply) => {
+                // 候选窗按 server 给的顺序画：主段在前、折叠区在后（D48）。
+                // `primary_len` 交给窗口当分界，折叠区那一截淡一档——用户得能
+                // 一眼看出「这条是五笔打出来的」还是「这条是拼音猜的」。
+                tsf_debug!(
+                    "#{} {code} → {} 条，主段{} {} 条",
+                    self.seq,
+                    reply.words.len(),
+                    if reply.pinyin { "拼音" } else { "五笔" },
+                    reply.primary_len
+                );
+                self.cands
+                    .borrow_mut()
+                    .update(reply.words, reply.primary_len);
                 self.show_candidates(context, fallback_caret);
             }
             None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),
@@ -550,8 +574,8 @@ impl Core {
             return word;
         }
         match ipc::query(code) {
-            Some(entries) if !entries.is_empty() => {
-                let word = entries[0].word.clone();
+            Some(reply) if !reply.words.is_empty() => {
+                let word = reply.words[0].clone();
                 tsf_info!("#{} 提交 {code} → {word}", self.seq);
                 ipc::record(code, &word);
                 word

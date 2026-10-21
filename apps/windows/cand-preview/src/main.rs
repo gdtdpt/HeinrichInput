@@ -64,6 +64,8 @@ fn run(args: &Args) -> windows::core::Result<bool> {
         page: args.page,
         page_size: args.page_size,
         highlight: 0,
+        // 预览器可以故意造出「两段」的样子来验折叠区的颜色：`--split N`。
+        split: args.split,
         anchor: args.at,
     };
     let prepared = match args.scale {
@@ -285,6 +287,9 @@ struct Args {
     scale: Option<f32>,
     at: (i32, i32),
     hold: Option<u32>,
+    /// 折叠区第一条的全局序号（D48）。默认 `usize::MAX` = 只有一段；
+    /// `--split N` 让后半截画淡一档，用来目验混输的两段分界。
+    split: usize,
     selftest: bool,
 }
 
@@ -297,6 +302,7 @@ impl Args {
             scale: None,
             at: (200, 260),
             hold: None,
+            split: usize::MAX,
             selftest: false,
         };
         while let Some(arg) = args.next() {
@@ -320,11 +326,16 @@ impl Args {
                     );
                 }
                 "--hold" => out.hold = value("--hold").parse().ok(),
+                "--split" => {
+                    out.split = value("--split").parse().unwrap_or(usize::MAX);
+                }
                 "--selftest" => out.selftest = true,
                 "-h" | "--help" => {
                     println!(
                         "用法：heinrich-cand-preview [--count N] [--page P] [--page-size S]\n\
-                         \x20                      [--dpi SCALE] [--at X,Y] [--hold MS] [--selftest]"
+                         \x20                      [--dpi SCALE] [--at X,Y] [--hold MS]
+\
+                         \x20                      [--split N] [--selftest]"
                     );
                     std::process::exit(0);
                 }

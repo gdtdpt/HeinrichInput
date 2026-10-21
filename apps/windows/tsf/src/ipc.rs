@@ -24,7 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
@@ -46,7 +46,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
-use heinrich_proto::{body_len, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION};
+use heinrich_proto::{
+    body_len, feature, source as proto_source, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION,
+};
 
 /// 键路径上的往返预算。本地管道正常是**几十微秒**级，50 ms 已经是「server 出事」
 /// 的量级；再大就会让用户感觉到卡。
@@ -100,8 +102,13 @@ impl Drop for Conn {
 }
 
 static CONN: Mutex<Option<Conn>> = Mutex::new(None);
-static CACHE: Mutex<Option<HashMap<String, Vec<Entry>>>> = Mutex::new(None);
+static CACHE: Mutex<Option<HashMap<String, Reply>>> = Mutex::new(None);
 static PENDING_MODE: Mutex<Option<Mode>> = Mutex::new(None);
+/// 服务端最近一次握手声明的能力位（`Frame::Welcome::features`）。
+///
+/// 键路径要读它（`z` 归谁、码长上限），而握手在后台线程——所以存在原子变量里。
+/// 连不上时保持上一次的值：宁可沿用「有拼音」也别在一次掉线后把 `z` 突然锁死。
+static FEATURES: AtomicU8 = AtomicU8::new(0);
 /// 待上报的上屏记录：`(编码, 词, 提交时刻)`。
 ///
 /// 为什么要排队而不是「打完直接发」：上屏发生在键路径上（D18 一行都不能等），
@@ -127,11 +134,42 @@ pub fn warm_up() {
     });
 }
 
+/// 一次查询的答复。
+///
+/// 比「一串候选」多两个字段，都是为了 §6.2 的分区显示：候选窗要把**首屏**
+/// （判定语言）与**折叠区**（另一种语言）分开画，而判定在 server 做——
+/// DLL 手上只有两份词库里查到的东西，自己判不出这一串到底是五笔还是拼音。
+///
+/// 字段是 `words` / `pinyin` / `primary_len` 而不是协议类型，是为了不让
+/// `heinrich_proto` 的类型渗进 `text_service`（那一层只认字符串与 `keys::Mode`）。
+#[derive(Clone, Debug)]
+pub struct Reply {
+    pub words: Vec<String>,
+    /// 首屏候选来自拼音（`Frame::Result::source`）
+    pub pinyin: bool,
+    /// 前多少条属于首屏；`words` 的其余部分是折叠区
+    pub primary_len: usize,
+}
+
+impl Reply {
+    fn from_result(entries: Vec<Entry>, source: u8, primary_len: u16) -> Self {
+        let words: Vec<String> = entries.into_iter().map(|e| e.word).collect();
+        // 协议里的 `primary_len` 是 server 算的，仍然夹一次：万一 server 版本对不上
+        // 给了个越界值，DLL 这边最多画错分区，不能因此切片 panic。
+        let primary_len = (primary_len as usize).min(words.len());
+        Self {
+            words,
+            pinyin: source == proto_source::PINYIN,
+            primary_len,
+        }
+    }
+}
+
 /// 查一个码的候选。**永不阻塞超过 [`KEY_BUDGET`]**。
 ///
 /// 返回 `None` 表示「没问到」（server 不可用 / 超时 / 后台正在重连）——
-/// 调用方应当把编码原样上屏。返回 `Some(vec![])` 表示「问到了，没这个词」。
-pub fn query(code: &str) -> Option<Vec<Entry>> {
+/// 调用方应当把编码原样上屏。返回 `Some(空)` 表示「问到了，没这个词」。
+pub fn query(code: &str) -> Option<Reply> {
     if let Some(hit) = cache_get(code) {
         return Some(hit);
     }
@@ -143,15 +181,26 @@ pub fn query(code: &str) -> Option<Vec<Entry>> {
         KEY_BUDGET,
     )?;
     match reply {
-        Frame::Result { entries, .. } => {
-            cache_put(code, &entries);
-            Some(entries)
+        Frame::Result {
+            entries,
+            source,
+            primary_len,
+            ..
+        } => {
+            let reply = Reply::from_result(entries, source, primary_len);
+            cache_put(code, &reply);
+            Some(reply)
         }
         other => {
             tsf_debug!("查询 {code} 收到意外应答 {other:?}");
             None
         }
     }
+}
+
+/// 服务端是否装了拼音词库（混输可用）。**读的是最近一次握手的结果**。
+pub fn has_pinyin() -> bool {
+    FEATURES.load(Ordering::Relaxed) & feature::PINYIN != 0
 }
 
 /// 取 server 上的中英模式：`Some(true)` = 中文，`None` = 问不到，调用方保持不动。
@@ -166,7 +215,10 @@ pub fn current_mode() -> Option<bool> {
         },
         KEY_BUDGET,
     )? {
-        Frame::Welcome { mode, .. } => Some(mode == Mode::Chinese),
+        Frame::Welcome { mode, features, .. } => {
+            FEATURES.store(features, Ordering::Relaxed);
+            Some(mode == Mode::Chinese)
+        }
         _ => None,
     }
 }
@@ -433,15 +485,24 @@ fn open() -> Option<Conn> {
         GREET_BUDGET,
     ) {
         Ok(Frame::Welcome {
-            entry_count, mode, ..
+            entry_count,
+            mode,
+            features,
+            ..
         }) => {
+            FEATURES.store(features, Ordering::Relaxed);
             tsf_info!(
-                "已连上 server（pid 未知，{} 条词条，{}）",
+                "已连上 server（pid 未知，{} 条词条，{}，{}）",
                 entry_count,
                 if mode == Mode::Chinese {
                     "中文"
                 } else {
                     "英文"
+                },
+                if features & feature::PINYIN != 0 {
+                    "混输可用"
+                } else {
+                    "纯五笔"
                 }
             );
             Some(conn)
@@ -633,20 +694,20 @@ fn to_wide(s: &str) -> Vec<u16> {
 // 候选缓存
 // ---------------------------------------------------------------------------
 
-fn cache_get(code: &str) -> Option<Vec<Entry>> {
+fn cache_get(code: &str) -> Option<Reply> {
     CACHE
         .lock()
         .ok()
         .and_then(|g| g.as_ref().and_then(|m| m.get(code).cloned()))
 }
 
-fn cache_put(code: &str, entries: &[Entry]) {
+fn cache_put(code: &str, reply: &Reply) {
     if let Ok(mut g) = CACHE.lock() {
         let map = g.get_or_insert_with(HashMap::new);
         if map.len() >= CACHE_CAP {
             map.clear();
         }
-        map.insert(code.to_string(), entries.to_vec());
+        map.insert(code.to_string(), reply.clone());
     }
 }
 

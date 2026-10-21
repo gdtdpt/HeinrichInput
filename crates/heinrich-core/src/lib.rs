@@ -4,12 +4,12 @@
 //! 时钟读取。时间一律由调用方以 Unix 秒传入，这样排序行为在测试里完全可复现。
 
 mod engine;
-mod pinyin;
+pub mod pinyin;
 mod rank;
 mod usage;
 
 pub use engine::Engine;
-pub use pinyin::{query, Mixed, Source};
+pub use pinyin::{query, query_with_limit, Mixed, Source};
 pub use rank::{
     kind_label, learning_score, lookup, rank_indices, rank_inputs, Candidate, LookupMode,
     RankInput, RankingConfig,

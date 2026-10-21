@@ -48,6 +48,9 @@ pub struct Theme {
     pub border: [f32; 4],
     pub ink: [f32; 4],
     pub muted: [f32; 4],
+    /// 折叠区候选的文字色（D48）。比 `ink` 淡、比 `muted` 深——`muted` 是给
+    /// 序号标签用的，两者用同一个值会让「第 3 条是拼音」这件事完全看不出来。
+    pub secondary: [f32; 4],
     pub highlight: [f32; 4],
     pub border_width: f32,
 }
@@ -60,6 +63,7 @@ impl Default for Theme {
             border: rgba(0xC9, 0xC9, 0xC9, 0xFF),
             ink: rgba(0x22, 0x22, 0x22, 0xFF),
             muted: rgba(0x8A, 0x8A, 0x8A, 0xFF),
+            secondary: rgba(0x77, 0x77, 0x77, 0xFF),
             highlight: rgba(0xDB, 0xEA, 0xFE, 0xFF),
             border_width: 1.0,
         }
@@ -127,6 +131,7 @@ impl Renderer {
             let border = brush(target, theme.border)?;
             let ink = brush(target, theme.ink)?;
             let muted = brush(target, theme.muted)?;
+            let secondary = brush(target, theme.secondary)?;
             let highlight = brush(target, theme.highlight)?;
 
             // 背景 + 描边。矩形内缩半个描边宽度，1px 的线才正好压在边界上、
@@ -154,8 +159,20 @@ impl Renderer {
             }
 
             for item in &layout.items {
-                text_in(target, &item.label, &formats.label, item.label_rect, &muted)?;
-                text_in(target, &item.text, &formats.text, item.text_rect, &ink)?;
+                // 折叠区（另一门语言的补段）淡一档：序号与文字都退到 secondary。
+                let (label_ink, text_ink) = if item.secondary {
+                    (&secondary, &secondary)
+                } else {
+                    (&muted, &ink)
+                };
+                text_in(
+                    target,
+                    &item.label,
+                    &formats.label,
+                    item.label_rect,
+                    label_ink,
+                )?;
+                text_in(target, &item.text, &formats.text, item.text_rect, text_ink)?;
             }
             for arrow in [layout.prev.as_ref(), layout.next.as_ref()]
                 .into_iter()

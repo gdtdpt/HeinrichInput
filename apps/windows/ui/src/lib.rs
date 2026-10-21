@@ -15,6 +15,7 @@
 //!     page: 0,
 //!     page_size: 5,
 //!     highlight: 0,
+//!     split: texts.len(), // 只有一段；混输时传折叠区第一条的全局序号
 //!     anchor: (400, 500), // 光标位置，只用来查这块屏的 DPI
 //! })?;
 //! let p = place(
@@ -84,6 +85,11 @@ pub struct Candidates<'a> {
     pub page_size: usize,
     /// 本页内的键盘选中项（0 起）。
     pub highlight: usize,
+    /// 折叠区第一条的**全局**序号（D48）。等于 `texts.len()` 或更大 = 只有一段。
+    ///
+    /// 混输下候选分两段：主段（五笔优先）在前、补段（拼音）在后。两段必须
+    /// 在视觉上分开，否则用户分不清哪条是五笔打出来的、哪条是拼音猜的。
+    pub split: usize,
     /// 光标位置（屏幕坐标）。只为确定这块屏的 DPI——候选窗必须按它所在屏幕缩放，
     /// 不能按主屏。
     pub anchor: (i32, i32),
@@ -220,6 +226,8 @@ impl CandidateWindow {
             has_prev,
             has_next,
             highlight: Some(c.highlight),
+            // 全局序号直接透传；越界（= 没有折叠区）时 layout 侧一次都不会命中。
+            split: (c.split < total).then_some(c.split),
             metrics,
         });
 

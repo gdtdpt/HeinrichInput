@@ -72,6 +72,16 @@ pub struct Input {
     /// 不是「有没有候选」的布尔——数字键要判「按 7 时本页真有第 7 条吗」，
     /// 所以这里给的是**本页条数**。
     pub page_len: usize,
+    /// 服务端装了拼音词库（协议能力位 `feature::PINYIN`）。
+    ///
+    /// 它改变**两条**规则，两条都是「五笔的约束在拼音下不成立」：
+    ///
+    /// 1. `z` 从「万能学习键」变回普通字母——拼音里 `zhuang`、`zao`、`zhe` 都以它开头。
+    /// 2. 码长上限从 4 放开：拼音是变长的，`linchuangzhengzhuang` 有 20 个字母。
+    ///
+    /// 服务端没装拼音就保持五笔的老行为（D42），所以这一位必须由 server 告诉 DLL，
+    /// DLL 自己猜不出来。
+    pub pinyin: bool,
 }
 
 impl Input {
@@ -90,6 +100,7 @@ impl Input {
             mode,
             buffer_len: 0,
             page_len: 0,
+            pinyin: false,
         }
     }
 
@@ -100,6 +111,12 @@ impl Input {
 
     pub fn with_page(mut self, len: usize) -> Self {
         self.page_len = len;
+        self
+    }
+
+    /// 模拟「服务端装了拼音词库」。
+    pub fn with_pinyin(mut self) -> Self {
+        self.pinyin = true;
         self
     }
 }
@@ -119,6 +136,26 @@ pub const VK_Z: u16 = 0x5A;
 /// 单字全码最长 4 码（D15：3 或 4 码，不足四字根补末笔识别码）。
 pub const MAX_CODE_LEN: usize = 4;
 
+/// 混输（五笔 + 拼音）时的码长上限。
+///
+/// 拼音是变长的：`data/pinyin` 里最长的词条是 `linchuangzhengzhuang`（临床症状），
+/// 20 个字母。留 4 个字母余量到 24——再长就不可能是哪个词的全拼，
+/// 当成「打过头了」原样上屏，与五笔满 4 码的处理一致。
+pub const MAX_PINYIN_CODE_LEN: usize = 24;
+
+/// 编译期就把「上限必须覆盖最长词条」钉住：万一有人为了省事把它改回 4，
+/// 这条断言会在编译时炸，而不是等真机上打 `linchuang…` 打到一半被上屏。
+const _: () = assert!(MAX_PINYIN_CODE_LEN >= 20);
+
+/// 当前的码长上限。`pinyin` 指服务端是否装了拼音词库。
+pub fn max_code_len(pinyin: bool) -> usize {
+    if pinyin {
+        MAX_PINYIN_CODE_LEN
+    } else {
+        MAX_CODE_LEN
+    }
+}
+
 /// Shift 有三个 vkey：通用 `VK_SHIFT`、左 `VK_LSHIFT`、右 `VK_RSHIFT`，
 /// 宿主给哪个都可能。
 pub const VK_SHIFT: u16 = 0x10;
@@ -129,6 +166,16 @@ pub fn is_shift_key(vk: u16) -> bool {
     vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT
 }
 
+/// OEM 键：`-`（下划线键）与 `=`（加号键）。**有候选时是翻页键**。
+///
+/// 这是五笔输入法用户的肌肉记忆：`-` 往前、`=` 往后。M2.3 只接了 `←/→/PgUp/PgDn`，
+/// 而笔记本键盘上 PgUp/PgDn 常要按 Fn，方向键又离手位太远——真机上等于没有翻页。
+pub const VK_OEM_MINUS: u16 = 0xBD;
+pub const VK_OEM_PLUS: u16 = 0xBB;
+
+/// 单引号。混输下它是**显式拼音标记**（§6.5 / D48）：`hao'` = 只要拼音候选。
+pub const VK_QUOTE: u16 = 0xDE;
+
 /// vkey → 五笔码字母。在 `a`–`y` 之外返回 `None`。
 pub fn wubi_letter(vk: u16) -> Option<char> {
     if (VK_A..=VK_Y).contains(&vk) {
@@ -136,6 +183,21 @@ pub fn wubi_letter(vk: u16) -> Option<char> {
     } else {
         None
     }
+}
+
+/// vkey → **编码缓冲**字母。与 [`wubi_letter`] 只差 `z`。
+///
+/// `pinyin = true`（服务端装了拼音词库）时 `z` 是普通字母：拼音里 `zhuang`、`zao`、
+/// `zhe`、`zui` 都以它开头，吃掉它等于整片 z 声母的字打不出来。
+/// `pinyin = false` 时保持五笔老行为，`z` 不进缓冲（D42）。
+pub fn code_letter(pinyin: bool, vk: u16) -> Option<char> {
+    if let Some(ch) = wubi_letter(vk) {
+        return Some(ch);
+    }
+    if pinyin && vk == VK_Z {
+        return Some('z');
+    }
+    None
 }
 
 /// 中文模式下要接管的标点：`vkey + 是否按住 Shift` → 全角字符。
@@ -171,12 +233,35 @@ pub fn punct_text(vk: u16, shift: bool) -> Option<char> {
         (0x31, true) => Some('！'),
         (0x39, true) => Some('（'),
         (0x30, true) => Some('）'),
-        // 单引号（0xDE）**故意不接管**：它是 §6.5 的显式拼音标记键（D11），
-        // M3 要用它表示「这段按拼音解析」。现在先吃掉会在 M3 时产生行为变更。
-        // 其余 OEM 键（`=` `-` `[` `]` `\` `` ` `` `<` `>` `|` `~`）在多数字体下
-        // 用户要的是半角原文（写代码、写路径），一律放行。
+        // 单引号（0xDE）**不在这张表里**：混输下它是显式拼音标记（D48），
+        // 由 `decide` 单独接管。`-` / `=`（0xBD / 0xBB）同理——有候选时是翻页键。
+        // 其余 OEM 键（`[` `]` `\` `` ` ``）在空缓冲下放行：多数字体下用户要的是
+        // 半角原文（写代码、写路径），组合态内则由 `is_text_key` 统一吞掉。
         _ => None,
     }
+}
+
+/// 这个键会不会产生一个**可见字符**。
+///
+/// 用来兜住「组合态内按了个别的字符键」：这类键放行给宿主的唯一后果是宿主在
+/// 组合串中间插一个字符、终止组合串，`OnCompositionTerminated` 把打了一半的编码
+/// 当残留删掉。用户看到的不是「多了个符号」，而是「正在打的字凭空消失」。
+///
+/// 只列举**字符键**，不碰功能键：F1–F12、Tab、Win、CapsLock 在组合态里仍有
+/// 它们自己的含义（刷新、切焦点、切窗口），吞掉会让用户以为键盘坏了。
+pub fn is_text_key(vk: u16) -> bool {
+    matches!(
+        vk,
+        // 主键区数字 0–9
+        0x30..=0x39
+        // 小键盘：数字与 + - * / .
+        | 0x60..=0x6F
+        // OEM 标点区：; : = , - . / ` 与 Shift 后的配对符号
+        | 0xBA..=0xC0
+        // [ \ ] ' 与 OEM102
+        | 0xDB..=0xDF
+        | 0xE2
+    )
 }
 
 /// 判定一个按键该不该被接管。
@@ -201,7 +286,7 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
 
     let empty = input.buffer_len == 0;
 
-    if let Some(ch) = wubi_letter(vk) {
+    if let Some(ch) = code_letter(input.pinyin, vk) {
         // 按住 Shift 打字母 → 放行，宿主会输出大写字母。
         // 这等于一个「临时英文」逃生口，比切模式快，也不占额外按键。
         if mods.shift {
@@ -210,7 +295,8 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
         return Action::Buffer(ch);
     }
 
-    // `z`：万能学习键，v1 还没做（M3 与码提示一起）。
+    // `z`：服务端**没装**拼音词库时它是万能学习键，v1 还没做（M3.5 与码提示一起）。
+    // 装了拼音词库的 `z` 已经在上面走 `code_letter` 进了缓冲，到不了这里。
     //
     // **组合态内必须吃掉**。放行给宿主的实际后果是打断输入：宿主在组合串中间
     // 插入 `z`，TSF 随即终止组合串，`OnCompositionTerminated` 把已经打出的编码
@@ -222,6 +308,16 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     // 可打断，`z` 就是个普通字母。
     if vk == VK_Z && !empty && !mods.shift {
         return Action::Noop;
+    }
+
+    // 单引号 = 显式拼音标记（§6.5 / D48）。只有装了拼音词库它才有意义：
+    // 让 `hao'` 把「虚」这类五笔候选全部让开，只留拼音。
+    //
+    // 空缓冲时放行——没有组合串可打断，用户就是要打一个 `'`。
+    // 没装拼音词库时它跟别的符号一样被下面那条兜住，不放行也不进缓冲：
+    // 进了缓冲也没人解释它的含义，放行则会在组合串中间插字符、把编码弄丢。
+    if vk == VK_QUOTE && !empty && !mods.shift && input.pinyin {
+        return Action::Buffer('\'');
     }
 
     // 标点：中文模式下由我们接手，保证「字 + 标点」一起出、不丢编码。
@@ -246,9 +342,10 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
             };
         }
         match vk {
-            // ← / PgUp 往前，→ / PgDn 往后（D38）。翻到头由调用方判空。
-            0x25 | 0x21 => return Action::PagePrev,
-            0x27 | 0x22 => return Action::PageNext,
+            // ← / PgUp / `-` 往前，→ / PgDn / `=` 往后（D38）。
+            // 翻到头由调用方判空。
+            0x25 | 0x21 | VK_OEM_MINUS => return Action::PagePrev,
+            0x27 | 0x22 | VK_OEM_PLUS => return Action::PageNext,
             // ↑ / ↓ 暂时没有纵向导航可用（单行布局），但也不能放行——光标一动
             // 组合串就停在原地。吃掉、不动，是这里唯一不会留下错位的选择。
             0x26 | 0x28 => return Action::Noop,
@@ -268,6 +365,16 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
         // 屏幕上出现「光标在这、字却在那」的错位。没有候选窗时（M1.2 起的老行为）
         // 折中成「吃掉并取消」：代价是一次方向键被吞，换来绝不留下错位的组合串。
         0x21..=0x28 if !empty => Action::Cancel,
+        // 兜底：组合态内所有**字符键**一律吃掉，不动。
+        //
+        // 这一条原先不存在，代价是每次按 `-` `=` `[` `]` `\` 之类都会把打了一半的
+        // 字弄没：宿主在组合串中间插入半角字符，TSF 随即终止组合串，
+        // `OnCompositionTerminated` 把已经打出的编码当残留删掉。用户看到的是
+        // 「符号先冒出来，然后我正在打的字消失了」——符号甚至排在编码前面。
+        //
+        // 「想在组合态里打一个符号」本来就是伪需求：先上屏再打就是了。
+        // 空缓冲时 `is_text_key` 一律放行，写代码、写路径完全不受影响。
+        _ if is_text_key(vk) && !empty => Action::Noop,
         _ => Action::Pass,
     }
 }
@@ -384,6 +491,43 @@ mod tests {
         assert_eq!(decide(en(0), Z, m()), Action::Pass);
     }
 
+    /// 装了拼音词库后 `z` 回到普通字母：`zhuang`、`zao`、`zhe` 都以它开头，
+    /// 吃掉它等于整片 z 声母的字打不出来。
+    #[test]
+    fn z_is_a_letter_when_pinyin_is_available() {
+        let py = zh(0).with_pinyin();
+        assert_eq!(decide(py, Z, m()), Action::Buffer('z'), "空缓冲");
+        assert_eq!(
+            decide(py.with_buffer(3), Z, m()),
+            Action::Buffer('z'),
+            "组合态内"
+        );
+        // Shift+z 永远是临时英文，与有没有拼音无关
+        assert_eq!(decide(py, Z, shift()), Action::Pass);
+        // 英文模式照旧放行
+        assert_eq!(
+            decide(Input::new(Mode::English).with_pinyin(), Z, m()),
+            Action::Pass
+        );
+    }
+
+    #[test]
+    fn code_letter_adds_z_only_with_pinyin() {
+        assert_eq!(code_letter(false, Z), None, "纯五笔时 z 不进缓冲");
+        assert_eq!(code_letter(true, Z), Some('z'));
+        assert_eq!(code_letter(true, V), Some('v'));
+        assert_eq!(code_letter(true, SHIFT), None);
+    }
+
+    /// 码长上限随拼音放开：拼音词条最长 20 个字母（`linchuangzhengzhuang`），
+    /// 「上限够覆盖最长词条」那条由 `MAX_PINYIN_CODE_LEN` 上的编译期断言保证。
+    #[test]
+    fn code_len_limit_follows_pinyin() {
+        assert_eq!(max_code_len(false), MAX_CODE_LEN);
+        assert_eq!(max_code_len(true), MAX_PINYIN_CODE_LEN);
+        assert!(max_code_len(true) > max_code_len(false), "混输必须放开码长");
+    }
+
     #[test]
     fn commit_and_cancel_need_a_buffer() {
         assert_eq!(decide(zh(0), SPACE, m()), Action::Pass);
@@ -483,17 +627,39 @@ mod tests {
         assert_eq!(decide(zh(0), 0x30, s), Action::Punct('）'));
     }
 
-    /// 表里没有的键一律放行——写代码、写路径要的是半角原文。
+    /// 表里没有的键在**空缓冲**时一律放行——写代码、写路径要的是半角原文。
     #[test]
     fn untabled_keys_pass_through() {
         for vk in [0xBB, 0xBD, 0xDB, 0xDD, 0xDC, 0xC0, 0xDE, 0xE2] {
             assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x} 不该被吃掉");
         }
-        // 单引号留给 §6.5 的显式拼音标记（D11）
-        assert_eq!(decide(zh(2), 0xDE, m()), Action::Pass);
         // 不带 Shift 的数字键永远是数字
         for vk in 0x30..=0x39 {
             assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x}");
+        }
+    }
+
+    /// 组合态内所有**字符键**一律吞掉。
+    ///
+    /// 放行的后果不是「多了个符号」，而是「正在打的字没了」：宿主在组合串中间
+    /// 插字符会终止组合串，`OnCompositionTerminated` 把编码当残留删掉。
+    /// 真机上表现为「符号先冒出来，编码随后消失」。
+    #[test]
+    fn text_keys_are_swallowed_mid_composition() {
+        for vk in [0xBB, 0xBD, 0xDB, 0xDD, 0xDC, 0xC0, 0xE2, 0x30, 0x35, 0x6B] {
+            assert_eq!(
+                decide(zh(3), vk, m()),
+                Action::Noop,
+                "{vk:#04x} 有编码时必须吞掉"
+            );
+        }
+        // 功能键不受影响：它们有自己的含义，吞掉会让用户以为键盘坏了
+        for vk in [
+            0x09, 0x70, /* F1 */
+            0x7B, /* F12 */
+            0x14, /* CapsLock */
+        ] {
+            assert_eq!(decide(zh(3), vk, m()), Action::Pass, "{vk:#04x} 不该被吞");
         }
     }
 
@@ -554,12 +720,68 @@ mod tests {
         assert_eq!(decide(last_page, 0x33, m()), Action::Noop);
     }
 
-    /// 没候选窗时数字键仍是数字。
+    /// 没候选窗时数字键不选词，但也**不能放行**：有编码时放行会把数字插进
+    /// 组合串中间、把正在打的字弄丢。空缓冲时它才是普通数字。
     #[test]
-    fn digits_pass_without_candidates() {
+    fn digits_pass_only_without_a_buffer() {
         for vk in 0x31..=0x39 {
-            assert_eq!(decide(zh(3), vk, m()), Action::Pass, "{vk:#04x}");
+            assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x} 空缓冲");
+            assert_eq!(decide(zh(3), vk, m()), Action::Noop, "{vk:#04x} 组合态内");
         }
+    }
+
+    // ---------------------------------------------------------------
+    // `-` / `=` 翻页（D49）
+    // ---------------------------------------------------------------
+
+    const MINUS: u16 = 0xBD;
+    const EQUAL: u16 = 0xBB;
+
+    /// 有候选窗时 `-` 往前、`=` 往后。这是五笔用户的肌肉记忆，也是笔记本上
+    /// 唯一不用 Fn 的翻页方式（PgUp/PgDn 常要按 Fn，方向键离手位太远）。
+    #[test]
+    fn minus_and_equal_page_when_candidates_exist() {
+        let page = zh_page(3, 5);
+        assert_eq!(decide(page, MINUS, m()), Action::PagePrev);
+        assert_eq!(decide(page, EQUAL, m()), Action::PageNext);
+        // Shift 组合也按同一套走：`Shift+-` 是 `_`，但在候选窗前面它不可能是
+        // 「我要一个下划线」——那时用户正在选词。
+        assert_eq!(decide(page, MINUS, shift()), Action::PagePrev);
+        assert_eq!(decide(page, EQUAL, shift()), Action::PageNext);
+    }
+
+    /// 没有候选窗时这两个键仍是原文：`-` 与 `=` 在写代码时天天用到。
+    #[test]
+    fn minus_and_equal_are_plain_keys_without_candidates() {
+        assert_eq!(decide(zh(0), MINUS, m()), Action::Pass);
+        assert_eq!(decide(zh(0), EQUAL, m()), Action::Pass);
+        // 有编码但没候选（打了一半的死码）：吞掉，别让它打断组合串
+        assert_eq!(decide(zh(3), MINUS, m()), Action::Noop);
+        assert_eq!(decide(zh(3), EQUAL, m()), Action::Noop);
+    }
+
+    // ---------------------------------------------------------------
+    // `'` 显式拼音标记（§6.5 / D48）
+    // ---------------------------------------------------------------
+
+    const QUOTE: u16 = 0xDE;
+
+    #[test]
+    fn quote_marks_pinyin_when_pinyin_is_available() {
+        let py = zh(2).with_pinyin();
+        assert_eq!(decide(py, QUOTE, m()), Action::Buffer('\''), "进缓冲当标记");
+        // 空缓冲时它就是个普通单引号
+        assert_eq!(decide(zh(0).with_pinyin(), QUOTE, m()), Action::Pass);
+        // Shift+' 是双引号，但它同样不能插进组合串中间——按字符键兜底吞掉
+        assert_eq!(decide(py, QUOTE, shift()), Action::Noop);
+    }
+
+    /// 没装拼音词库时 `'` 没有任何含义：既不进缓冲（没人解释它），也不放行
+    /// （会在组合串中间插字符、把编码弄丢）。
+    #[test]
+    fn quote_is_swallowed_without_pinyin() {
+        assert_eq!(decide(zh(2), QUOTE, m()), Action::Noop);
+        assert_eq!(decide(zh(0), QUOTE, m()), Action::Pass);
     }
 
     // ---------------------------------------------------------------

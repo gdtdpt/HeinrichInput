@@ -31,7 +31,11 @@ use std::fmt;
 /// - v2：M2.4 加入 [`Frame::Record`]（上屏回报）。**只加了一条单向消息**，
 ///   旧客户端连上来会被 `Bye` 挡掉——版本号是对称的，宁可握手失败也不要
 ///   让 server 收到自己解释不了的帧。
-pub const PROTO_VERSION: u16 = 2;
+/// - v3：M3.3 混输。`Welcome` 加 `features`（能力位），`Result` 加 `source` /
+///   `primary_len`（判定语言与折叠分界）。三个字段都插在原有字段**之前**的固定
+///   位置，所以字节布局变了、但读顺序仍是直的；旧 DLL 连上来会因为版本不符被
+///   `Bye`，不会把 `source` 当成候选条数读出一堆乱码。
+pub const PROTO_VERSION: u16 = 3;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -40,6 +44,24 @@ pub const MAX_PAYLOAD: usize = 48 * 1024;
 /// 一帧最多带多少个候选。DLL 只需要首个候选（M1.3），但协议一次给足 9 个，
 /// 免得 M2 加候选窗时再改线格式。
 pub const MAX_ENTRIES: usize = 32;
+
+/// 候选来源（`Frame::Result::source`）。
+pub mod source {
+    /// 五笔码命中
+    pub const WUBI: u8 = 0;
+    /// 拼音命中（含混输判定为拼音的情况）
+    pub const PINYIN: u8 = 1;
+}
+
+/// 能力位（`Frame::Welcome::features`）。
+pub mod feature {
+    /// 服务端加载了拼音词库，混输可用。
+    ///
+    /// DLL 看到这一位才敢做两件事：让 `z` 进缓冲区（拼音里 `zhuang` 的 `z` 是
+    /// 普通字母），以及不再把组合串卡在 4 码以内（`zhuang` 有 6 个字母）。
+    /// 没这一位时保持五笔的老行为——`z` 吃掉、超 4 码拒绝。
+    pub const PINYIN: u8 = 0b0000_0001;
+}
 
 /// 中英模式。**由 server 持有**——DLL 每个宿主进程一份实例，模式若也存在实例里，
 /// A 应用切了英文、B 应用仍是中文，用户会当成 bug。
@@ -85,11 +107,22 @@ pub enum Frame {
         scheme_id: String,
         entry_count: u32,
         mode: Mode,
+        /// 能力位标志，见 [`feature`]。DLL 靠它判断该不该放开拼音那套行为
+        /// （`z` 进缓冲、组合串可以超过 4 码）——没有这个词，DLL 只能猜。
+        features: u8,
     },
     /// 精确码查询。
     Query { code: String, limit: u8 },
     /// 查询结果。空 `entries` 表示「这个码没有词条」，与「查询失败」是两回事。
-    Result { code: String, entries: Vec<Entry> },
+    Result {
+        code: String,
+        entries: Vec<Entry>,
+        /// 判定来源：见 [`source`]。决定候选窗把它当五笔还是拼音（§6.2 的分区）
+        source: u8,
+        /// 前 N 条属于首屏（判定语言），其余是折叠区。`0` 表示「不分折叠」，
+        /// 全部算首屏——DLL 在旧版本兼容路径下会看到这个值。
+        primary_len: u16,
+    },
     /// 改中英模式（单向，server 回一条 [`Frame::Mode`] 确认）。
     SetMode { mode: Mode },
     /// 当前模式。
@@ -179,18 +212,27 @@ impl Frame {
                 scheme_id,
                 entry_count,
                 mode,
+                features,
             } => {
                 body.extend_from_slice(&proto.to_le_bytes());
                 put_str(&mut body, scheme_id);
                 body.extend_from_slice(&entry_count.to_le_bytes());
                 body.push(mode.as_u8());
+                body.push(*features);
             }
             Frame::Query { code, limit } => {
                 put_str(&mut body, code);
                 body.push(*limit);
             }
-            Frame::Result { code, entries } => {
+            Frame::Result {
+                code,
+                entries,
+                source,
+                primary_len,
+            } => {
                 put_str(&mut body, code);
+                body.push(*source);
+                body.extend_from_slice(&primary_len.to_le_bytes());
                 body.push(entries.len() as u8);
                 for e in entries {
                     put_str(&mut body, &e.word);
@@ -264,11 +306,13 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
             let scheme_id = r.string()?;
             let entry_count = r.u32()?;
             let mode = r.mode()?;
+            let features = r.u8()?;
             Frame::Welcome {
                 proto,
                 scheme_id,
                 entry_count,
                 mode,
+                features,
             }
         }
         kind::QUERY => Frame::Query {
@@ -277,6 +321,8 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
         },
         kind::RESULT => {
             let code = r.string()?;
+            let source = r.u8()?;
+            let primary_len = r.u16()?;
             let n = r.u8()? as usize;
             if n > MAX_ENTRIES {
                 return Err(DecodeError::TooManyEntries(n));
@@ -288,7 +334,12 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
                     label: r.string()?,
                 });
             }
-            Frame::Result { code, entries }
+            Frame::Result {
+                code,
+                entries,
+                source,
+                primary_len,
+            }
         }
         kind::SET_MODE => Frame::SetMode { mode: r.mode()? },
         kind::MODE => Frame::Mode { mode: r.mode()? },
@@ -389,6 +440,7 @@ mod tests {
             scheme_id: "wubi86".into(),
             entry_count: 136_239,
             mode: Mode::English,
+            features: feature::PINYIN,
         });
         roundtrip(Frame::Query {
             code: "vbg".into(),
@@ -396,6 +448,8 @@ mod tests {
         });
         roundtrip(Frame::Result {
             code: "vbg".into(),
+            source: source::WUBI,
+            primary_len: 0,
             entries: vec![
                 Entry {
                     word: "好".into(),
@@ -495,6 +549,8 @@ mod tests {
     fn multibyte_words_survive() {
         let f = Frame::Result {
             code: "vbgf".into(),
+            source: source::PINYIN,
+            primary_len: 1,
             entries: vec![Entry {
                 word: "好玩".into(),
                 label: "三级简码".into(),

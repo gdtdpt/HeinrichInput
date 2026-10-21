@@ -38,6 +38,8 @@ pub struct Cands {
     seq: u32,
     /// 全部候选（不只是本页）。
     words: Vec<String>,
+    /// 折叠区第一条的全局序号（D48）。`== words.len()` 表示只有一段。
+    split: usize,
     /// 页码、本页区间、两端箭头。
     pager: Pager,
     /// 本页内的高亮项。M2.3 里数字键是**直接提交**、鼠标点也是直接提交，
@@ -59,6 +61,7 @@ impl Cands {
         Self {
             seq,
             words: Vec::new(),
+            split: 0,
             pager: Pager::new(PAGE_SIZE),
             highlight: 0,
             caret: None,
@@ -74,9 +77,13 @@ impl Cands {
     }
 
     /// 换一批候选，回到第 1 页，并**不**自动显示（光标位置得由调用方给）。
-    pub fn update(&mut self, words: Vec<String>) {
+    ///
+    /// `split` 是折叠区第一条的全局序号（D48）：从它开始的候选属于另一门语言，
+    /// 画的时候淡一档。传 `words.len()` 表示只有一段。
+    pub fn update(&mut self, words: Vec<String>, split: usize) {
         self.pager.reset(words.len());
         self.highlight = 0;
+        self.split = split.min(words.len());
         self.words = words;
         tsf_debug!(
             "#{} 候选 {} 条，共 {} 页",
@@ -89,6 +96,7 @@ impl Cands {
     /// 清空候选并隐藏窗口。
     pub fn clear(&mut self) {
         self.words.clear();
+        self.split = 0;
         self.pager.reset(0);
         self.highlight = 0;
         self.hide();
@@ -172,6 +180,7 @@ impl Cands {
             page: self.pager.page(),
             page_size: self.pager.page_size(),
             highlight: self.highlight,
+            split: self.split,
             anchor,
         });
 

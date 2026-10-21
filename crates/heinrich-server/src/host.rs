@@ -3,20 +3,23 @@
 //! 本文件不碰任何 Windows API，只做「收到一条帧 → 回一条帧」。传输（命名管道）
 //! 在 `pipe.rs`，这样 M5 换平台时这一半完全不用动，也能在任意平台上跑单测。
 //!
-//! ## 为什么查询只认「精确命中」
+//! ## 查询语义（M3.3 起）
 //!
-//! `heinrich_core::lookup` 在该码长没有候选时会回退到前缀展开（对 `v` 这种
-//! 一级简码是必要的兜底）。但那是给**候选窗**用的：M1.3 没有候选窗，一旦把
-//! 前缀候选的首位拿来上屏，`abc` 这种「打错了」的码会突然蹦出一个无关的字。
-//! 所以这里显式只在 `LookupMode::Exact` 时返回候选，其余一律当「无命中」，
-//! 由 DLL 原样上屏（D27）。
+//! 走 `heinrich_core::pinyin::query_with_limit`：一段输入同时交给五笔与拼音，
+//! 按段质量判定语言（D46），首屏只放判定语言，另一种折叠在后面。没有拼音词库时
+//! 退化成纯五笔，行为与 M1/M2 完全一致。
+//!
+//! 五笔侧仍只认精确码长（D45）：前缀兜底一律丢弃，否则 `xxv` 这种「还没打完」
+//! 会弹出一屏码前缀撞车的字。
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use heinrich_core::scheme::Scheme;
-use heinrich_core::{lookup, LookupMode, MemoryStore, RankingConfig, Tier, Usage, UsageStore};
-use heinrich_proto::{Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION};
+use heinrich_core::scheme::{PinyinLexicon, Scheme};
+use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
+use heinrich_proto::{
+    feature, source as proto_source, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION,
+};
 
 use crate::store::SqliteStore;
 
@@ -86,6 +89,8 @@ impl UsageStore for Store {
 
 pub struct Host {
     scheme: Scheme,
+    /// 拼音词库。`None` = 只有五笔（M1/M2 的行为，也是干净环境的降级形态）
+    pinyin: Option<PinyinLexicon>,
     store: Store,
     cfg: RankingConfig,
     /// 中英模式。**这是权威副本**：DLL 每个宿主进程各有一份实例，
@@ -108,12 +113,32 @@ impl Host {
     /// **打不开就降级成内存**并记一条错误，绝不让学习库的问题挡住打字。
     #[cfg(test)]
     pub fn load(dir: &Path) -> Result<Self, String> {
-        Self::open(dir, None)
+        Self::open(dir, None, None)
     }
 
-    pub fn open(dir: &Path, db: Option<&Path>) -> Result<Self, String> {
+    /// `pinyin_dir` 给了路径就加载拼音词库并启用混输；**加载失败只记一条错误、
+    /// 继续以纯五笔运行**——拼音数据装坏了不该让用户完全打不了字，这与学习库
+    /// 打不开就降级成内存是同一条原则。
+    pub fn open(dir: &Path, db: Option<&Path>, pinyin_dir: Option<&Path>) -> Result<Self, String> {
         let scheme =
             Scheme::load(dir).map_err(|e| format!("装载方案 {} 失败：{e}", dir.display()))?;
+        let pinyin = match pinyin_dir {
+            None => None,
+            Some(pd) => match PinyinLexicon::load(pd) {
+                Ok(lex) => {
+                    srv_info!(
+                        "拼音词库：{} 条（{} 个音节），混输已启用",
+                        lex.entry_count,
+                        lex.syllable_count
+                    );
+                    Some(lex)
+                }
+                Err(e) => {
+                    srv_error!("装载拼音词库 {} 失败：{e}；本次以纯五笔运行", pd.display());
+                    None
+                }
+            },
+        };
         let store = match db {
             None => Store::Memory(MemoryStore::new()),
             Some(path) => match SqliteStore::open(path) {
@@ -127,6 +152,7 @@ impl Host {
         srv_info!("学习库：{}", store.describe());
         Ok(Self {
             scheme,
+            pinyin,
             store,
             cfg: RankingConfig::default(),
             mode: Mode::Chinese,
@@ -145,6 +171,19 @@ impl Host {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// 能力位，握手时告诉 DLL「该不该放开拼音那套行为」。
+    pub fn features(&self) -> u8 {
+        let mut f = 0u8;
+        if self.pinyin.is_some() {
+            f |= feature::PINYIN;
+        }
+        f
+    }
+
+    pub fn has_pinyin(&self) -> bool {
+        self.pinyin.is_some()
     }
 
     /// 本次运行收到的上屏回报条数。
@@ -175,11 +214,17 @@ impl Host {
                     scheme_id: self.scheme_id().to_string(),
                     entry_count: self.entry_count() as u32,
                     mode: self.mode,
+                    features: self.features(),
                 })
             }
             Frame::Query { code, limit } => {
-                let entries = self.query(&code, limit);
-                Some(Frame::Result { code, entries })
+                let reply = self.query(&code, limit);
+                Some(Frame::Result {
+                    code,
+                    entries: reply.entries,
+                    source: reply.source,
+                    primary_len: reply.primary_len,
+                })
             }
             Frame::SetMode { mode } => {
                 self.mode = mode;
@@ -224,27 +269,57 @@ impl Host {
         );
     }
 
-    /// 精确查询。`limit` 上限见 [`MAX_ENTRIES`]。
-    pub fn query(&self, code: &str, limit: u8) -> Vec<Entry> {
+    /// 混输查询。`limit` 上限见 [`MAX_ENTRIES`]。
+    ///
+    /// 返回的不只是候选：还有**判定语言**与**首屏条数**——DLL 要据此把折叠区
+    /// （另一种语言的候选）排到首屏之后，而它自己无法判定（判定要看两份词库）。
+    pub fn query(&self, code: &str, limit: u8) -> QueryReply {
         let limit = (limit as usize).clamp(1, MAX_ENTRIES);
         let now = unix_now();
-        let (list, mode) = lookup(&self.scheme, code, &self.store, now, &self.cfg);
-        // 只认精确码长（D45）：前缀兜底一律丢弃。**这不是漏写的分支**——
-        // `xxv` 没有精确词条但 `xxvk` 有「比如」，若在此回退，用户正准备按第 4 键时
-        // 会弹出一屏「幽灵 / 幽婉」（它们只是码前缀撞了，与「比」毫无语义关系）。
-        // 五笔是定长编码，「还没打完」不等于「空码」。想查某个前缀下有哪些词，
-        // 走 `z` 学习键（M3）。core 仍保留 `LookupMode::PrefixFallback` 供 CLI 与单测用。
-        if mode != LookupMode::Exact {
-            return Vec::new();
-        }
-        list.iter()
+        let mixed = pinyin::query_with_limit(
+            &self.scheme,
+            self.pinyin.as_ref(),
+            code,
+            &self.store,
+            now,
+            &self.cfg,
+            limit,
+        );
+        let source = match mixed.source {
+            Source::Wubi => proto_source::WUBI,
+            Source::Pinyin => proto_source::PINYIN,
+        };
+        // 折叠分界要在截断**之前**算：首屏可能有 30 条、而协议只让带 9 条，
+        // 那 9 条就全是首屏的。若先截断再取 len，DLL 会以为折叠区从第 9 条开始，
+        // 把纯五笔的结果标成「拼音在前」。
+        let primary_len = mixed.primary.len().min(limit) as u16;
+        let entries: Vec<Entry> = mixed
+            .into_all()
+            .into_iter()
             .take(limit)
             .map(|c| Entry {
-                word: c.word.clone(),
+                word: c.word,
                 label: c.kind_label.to_string(),
             })
-            .collect()
+            .collect();
+        QueryReply {
+            entries,
+            source,
+            primary_len,
+        }
     }
+}
+
+/// 一次查询的答复。
+///
+/// 拆成结构体而不是元组，是因为 `primary_len` 与 `source` 语义相关却容易被写反：
+/// 拼音候选的 `primary_len` 是拼音条的条数，五笔候选的则是五笔条的条数。
+pub struct QueryReply {
+    pub entries: Vec<Entry>,
+    /// 首屏候选的语言，见 `heinrich_proto::source`
+    pub source: u8,
+    /// 前多少条属于判定语言（首屏）；其余是折叠区
+    pub primary_len: u16,
 }
 
 /// 当前 Unix 秒。
@@ -289,11 +364,13 @@ mod tests {
                 scheme_id,
                 entry_count,
                 mode,
+                features,
             } => {
                 assert_eq!(proto, PROTO_VERSION);
                 assert_eq!(scheme_id, "mini");
-                assert_eq!(entry_count, 8);
+                assert_eq!(entry_count, 11);
                 assert_eq!(mode, Mode::Chinese);
+                assert_eq!(features, 0, "没装拼音词库时不该声称有拼音能力");
             }
             other => panic!("期望 Welcome，得到 {other:?}"),
         }
@@ -319,10 +396,17 @@ mod tests {
             })
             .expect("应回应");
         match reply {
-            Frame::Result { code, entries } => {
+            Frame::Result {
+                code,
+                entries,
+                source,
+                primary_len,
+            } => {
                 assert_eq!(code, "vbg");
                 assert_eq!(entries.len(), 1);
                 assert_eq!(entries[0].word, "好");
+                assert_eq!(source, proto_source::WUBI);
+                assert_eq!(primary_len, 1, "唯一那条属于首屏");
             }
             other => panic!("期望 Result，得到 {other:?}"),
         }
@@ -399,7 +483,11 @@ mod tests {
     }
 
     fn words(h: &mut Host, code: &str) -> Vec<String> {
-        h.query(code, 9).into_iter().map(|e| e.word).collect()
+        h.query(code, 9)
+            .entries
+            .into_iter()
+            .map(|e| e.word)
+            .collect()
     }
 
     /// 上屏回报要真的进排序：用一次「蒿」之后它越过「呵」，但抢不走「号」的首位。
@@ -443,7 +531,7 @@ mod tests {
         let db = dir.join("learn.db");
 
         {
-            let mut h = Host::open(&fixture(), Some(&db)).expect("应能打开");
+            let mut h = Host::open(&fixture(), Some(&db), None).expect("应能打开");
             for _ in 0..20 {
                 h.handle(Frame::Record {
                     code: "vbgd".into(),
@@ -454,7 +542,7 @@ mod tests {
             h.shutdown();
         }
 
-        let mut h2 = Host::open(&fixture(), Some(&db)).expect("应能重开");
+        let mut h2 = Host::open(&fixture(), Some(&db), None).expect("应能重开");
         assert_eq!(
             words(&mut h2, "vbgd")[0],
             "蒿",
@@ -470,7 +558,7 @@ mod tests {
         // 拿一个目录当库文件路径：open 一定失败。
         let dir = std::env::temp_dir().join(format!("heinrich-bad-db-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let mut h = Host::open(&fixture(), Some(&dir)).expect("降级后仍应能启动");
+        let mut h = Host::open(&fixture(), Some(&dir), None).expect("降级后仍应能启动");
         assert!(words(&mut h, "vbg").contains(&"好".to_string()));
         h.handle(Frame::Record {
             code: "vbg".into(),
@@ -479,5 +567,198 @@ mod tests {
         });
         assert_eq!(h.recorded(), 1, "降级后仍照常接收回报，只是不落盘");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- M3.3：混输接进 server ----
+
+    /// 拼音夹具跟 `heinrich-scheme` 走（`PinyinLexicon` 在那里），只此一份。
+    fn pinyin_fixture() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../heinrich-scheme/tests/fixtures/pinyin-mini")
+    }
+
+    fn mixed_host() -> Host {
+        Host::open(&fixture(), None, Some(&pinyin_fixture())).expect("混输宿主应可装载")
+    }
+
+    fn features_of(h: &mut Host) -> u8 {
+        match h.handle(hello()) {
+            Some(Frame::Welcome { features, .. }) => features,
+            other => panic!("期望 Welcome，得到 {other:?}"),
+        }
+    }
+
+    /// 装了拼音词库，握手要声明能力位——DLL 全靠它决定要不要放开 `z` 和 4 码上限。
+    #[test]
+    fn welcome_declares_pinyin_feature() {
+        assert_eq!(
+            features_of(&mut mixed_host()) & feature::PINYIN,
+            feature::PINYIN
+        );
+        assert_eq!(features_of(&mut host()) & feature::PINYIN, 0);
+    }
+
+    /// 装了拼音后 `vbg` 仍是五笔：`v` 不是任何音节的起始，判不出拼音。
+    #[test]
+    fn wubi_code_still_wubi_with_pinyin_loaded() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "vbg".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                source,
+                primary_len,
+                ..
+            }) => {
+                assert_eq!(source, proto_source::WUBI);
+                assert_eq!(entries[0].word, "好");
+                assert_eq!(primary_len as usize, entries.len(), "五笔没有折叠区");
+            }
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// `hao` 既是「字母串」又恰好全是字根键：判定为拼音，首屏全是拼音候选，
+    /// `primary_len` 指向首屏末尾（折叠区从它之后开始）。
+    /// D48：`hao` 两边都命中时五笔占主段，`primary_len` 就是五笔那几条。
+    #[test]
+    fn wubi_leads_and_pinyin_follows() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "hao".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                source,
+                primary_len,
+                ..
+            }) => {
+                assert_eq!(source, proto_source::WUBI);
+                assert_eq!(entries[0].word, "虚");
+                // 夹具里 hao 的两条五笔词（虚、好）
+                assert_eq!(primary_len, 2);
+                assert_eq!(entries[1].word, "好");
+                // 拼音紧接其后：精确区（号、浩）+ 前缀区（好评、好吃）
+                assert_eq!(
+                    entries[2..]
+                        .iter()
+                        .map(|e| e.word.as_str())
+                        .collect::<Vec<_>>(),
+                    ["号", "浩", "好评", "好吃"]
+                );
+            }
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// 五笔没有这个词条时拼音接管主段，`primary_len` 覆盖全部候选。
+    #[test]
+    fn pinyin_leads_when_wubi_misses() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "xian".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                source,
+                primary_len,
+                ..
+            }) => {
+                assert_eq!(source, proto_source::PINYIN);
+                assert_eq!(entries[0].word, "先");
+                assert_eq!(primary_len as usize, entries.len());
+            }
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// `'` 是显式拼音标记：同一串码的五笔候选全部让开。
+    #[test]
+    fn apostrophe_skips_wubi_side() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "hao'".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                source,
+                primary_len,
+                ..
+            }) => {
+                assert_eq!(source, proto_source::PINYIN);
+                assert_eq!(entries[0].word, "好");
+                assert!(
+                    !entries.iter().any(|e| e.word == "虚"),
+                    "带标记时五笔侧一条都不该出"
+                );
+                assert_eq!(primary_len as usize, entries.len());
+            }
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// `primary_len` 是**截断后**的主段条数：协议只让带 1 条时，主段也只算 1 条。
+    #[test]
+    fn primary_len_is_clamped_by_limit() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "hao".into(),
+            limit: 1,
+        }) {
+            Some(Frame::Result {
+                entries,
+                primary_len,
+                ..
+            }) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(primary_len, 1);
+            }
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// 拼音数据装坏了（路径不存在 / 文件缺）只降级成纯五笔，不能挡住打字。
+    #[test]
+    fn broken_pinyin_dir_degrades_to_wubi() {
+        let missing = std::env::temp_dir().join("heinrich-no-such-pinyin-dir");
+        let mut h = Host::open(&fixture(), None, Some(&missing)).expect("应能启动");
+        assert!(!h.has_pinyin());
+        assert_eq!(features_of(&mut h) & feature::PINYIN, 0);
+        assert_eq!(words(&mut h, "vbg"), ["好"]);
+    }
+
+    /// 拼音的上屏回报与五笔共用一份学习数据：学过的词在拼音候选里也上浮。
+    ///
+    /// 连打三次「浩」应当越过同音的「号」，但仍被 1.5 倍门槛拦在「好」后面——
+    /// 与五笔那条 `record_reorders_but_keeps_the_throne` 是同一个规则，
+    /// 这里验的是它在**拼音候选**上同样成立（§5.2 不区分语言）。
+    #[test]
+    fn learning_is_shared_between_wubi_and_pinyin() {
+        let mut h = mixed_host();
+        let before = words(&mut h, "hao");
+        assert_eq!(
+            before,
+            ["虚", "好", "号", "浩", "好评", "好吃"],
+            "基线：五笔主段在前，拼音按语料权重跟在后面"
+        );
+
+        for _ in 0..3 {
+            h.handle(Frame::Record {
+                code: "hao".into(),
+                word: "浩".into(),
+                at_unix: now(),
+            });
+        }
+
+        let after = words(&mut h, "hao");
+        assert_eq!(after[0], "虚", "偶用三次不许抢主段首位");
+        let hao = after.iter().position(|w| w == "浩").unwrap();
+        let hao2 = after.iter().position(|w| w == "号").unwrap();
+        assert!(hao < hao2, "「浩」应上浮越过「号」：{after:?}");
     }
 }

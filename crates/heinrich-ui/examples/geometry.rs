@@ -95,6 +95,8 @@ fn panel(
         has_prev: nav.0,
         has_next: nav.1,
         highlight,
+        // 这个例子只画单段（纯五笔）的几何，两段分界不在它的观察范围内。
+        split: None,
         metrics: m,
     });
 

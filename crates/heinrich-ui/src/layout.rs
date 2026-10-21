@@ -155,6 +155,12 @@ pub struct LayoutInput<'a> {
     pub has_next: bool,
     /// 本页内的高亮项（键盘选中项），不参与几何。
     pub highlight: Option<usize>,
+    /// 折叠区第一条在**全部候选**里的序号（D48）。
+    ///
+    /// 混输下候选分两段：主段（当前判定语言，五笔优先）在前、另一门语言在后。
+    /// 两段在视觉上必须能分开——否则用户看到「虚、好、号、浩」会以为列表坏了，
+    /// 或者以为「好」也是五笔打出来的。`None` = 只有一段（纯五笔 / 纯拼音）。
+    pub split: Option<usize>,
     pub metrics: Metrics,
 }
 
@@ -173,6 +179,8 @@ pub struct ItemBox {
     pub text_rect: Rect,
     /// 这条的文字宽度被压窄过。
     pub elided: bool,
+    /// 属于折叠区（另一门语言的补段）。渲染端应当把它画淡一档。
+    pub secondary: bool,
 }
 
 /// 布局结果。
@@ -309,8 +317,9 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
         let label_rect = Rect::new(x + m.item_padding_x, y, m.label_width, m.line_height);
         let text_w = widths[i];
         let text_rect = Rect::new(label_rect.right() + m.label_gap, y, text_w, m.line_height);
+        let index = input.page_start + i;
         items.push(ItemBox {
-            index: input.page_start + i,
+            index,
             // 序号是本页内的 1..=5。一页超过 9 条时标签会变成两位数，
             // 调用方应把 page_size 限制在 9 以内（数字键也就 1–9）。
             label: (i + 1).to_string(),
@@ -319,6 +328,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
             label_rect,
             text_rect,
             elided: clipped && text_w < cand.width.max(0.0) - 0.01,
+            secondary: input.split.is_some_and(|s| index >= s),
         });
         x = rect.right() + m.item_gap;
     }
@@ -372,8 +382,39 @@ mod tests {
             has_prev: false,
             has_next: false,
             highlight: Some(0),
+            split: None,
             metrics: Metrics::new(16.0),
         }
+    }
+
+    /// 折叠分界是**全局**序号（D48）：第 3 页的第一条不属于折叠区时，
+    /// 不能因为「它是本页第 1 条」就判成主段。
+    #[test]
+    fn 折叠区按全局序号跨页分界() {
+        let page = [cand("好", 16.0), cand("号", 16.0), cand("浩", 16.0)];
+        let mut i = input(&page);
+        i.page_start = 4;
+        i.split = Some(5); // 全局第 5 条起是折叠区 ⇒ 本页第 2 条起
+        let out = layout(&i);
+        let flags: Vec<bool> = out.items.iter().map(|it| it.secondary).collect();
+        assert_eq!(flags, [false, true, true]);
+    }
+
+    #[test]
+    fn 没有折叠区时全部算主段() {
+        let page = [cand("好", 16.0), cand("号", 16.0)];
+        let out = layout(&input(&page));
+        assert!(out.items.iter().all(|it| !it.secondary));
+    }
+
+    /// 分界落在整页之后（= 这一页全是主段）时，一条都不该淡。
+    #[test]
+    fn 分界在本页之后时不淡任何一条() {
+        let page = [cand("好", 16.0), cand("号", 16.0)];
+        let mut i = input(&page);
+        i.split = Some(9);
+        let out = layout(&i);
+        assert!(out.items.iter().all(|it| !it.secondary));
     }
 
     #[test]

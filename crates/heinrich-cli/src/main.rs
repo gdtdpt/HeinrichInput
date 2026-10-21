@@ -167,7 +167,10 @@ fn repl(mut eng: Engine<MemoryStore>) {
                         println!("  （空缓冲区时 ' 输出标点「‘」，不进入编码）");
                         continue;
                     }
-                    println!("  「'」显式拼音标记将在 M3 后续生效，本次忽略");
+                    // `'` 是显式拼音标记（D48）：进缓冲、参与查询，core 会把
+                    // 它当「这串按拼音解析」的开关。它占一个字符位但不占码长语义——
+                    // 五笔码长校验只在没有拼音词库时跑，那时 `'` 也到不了这里。
+                    buffer.push('\'');
                     continue;
                 }
                 buffer.push(ch);

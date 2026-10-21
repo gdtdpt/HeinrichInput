@@ -110,6 +110,19 @@ $dataOut = Join-Path $DistDir 'data\wubi86'
 New-Item -ItemType Directory -Force -Path $dataOut | Out-Null
 Copy-Item (Join-Path $root 'data\wubi86\*') -Destination $dataOut -Force
 
+# 拼音数据（M3 混输）。**可选**：server 找不到这一份就按纯五笔跑，
+# 所以缺了只警告、不中断构建——但它确实是发版该带的东西，得吼一声。
+$pinyinSrc = Join-Path $root 'data\pinyin'
+if (Test-Path $pinyinSrc) {
+    $pinyinOut = Join-Path $DistDir 'data\pinyin'
+    New-Item -ItemType Directory -Force -Path $pinyinOut | Out-Null
+    Copy-Item (Join-Path $pinyinSrc '*') -Destination $pinyinOut -Force
+}
+else {
+    Write-Host '  未找到 data\pinyin，dist 里将没有拼音数据（server 会按纯五笔运行）' -ForegroundColor Yellow
+    Write-Host '  需要混输请先跑：powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind pinyin' -ForegroundColor DarkGray
+}
+
 Write-Host ''
 Write-Host "产物：$DistDir" -ForegroundColor Green
 # 不递归列出 .stale：那是绕过占用留下的旧文件，不属于产物。
