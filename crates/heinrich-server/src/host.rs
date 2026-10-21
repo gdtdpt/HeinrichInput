@@ -229,6 +229,11 @@ impl Host {
         let limit = (limit as usize).clamp(1, MAX_ENTRIES);
         let now = unix_now();
         let (list, mode) = lookup(&self.scheme, code, &self.store, now, &self.cfg);
+        // 只认精确码长（D45）：前缀兜底一律丢弃。**这不是漏写的分支**——
+        // `xxv` 没有精确词条但 `xxvk` 有「比如」，若在此回退，用户正准备按第 4 键时
+        // 会弹出一屏「幽灵 / 幽婉」（它们只是码前缀撞了，与「比」毫无语义关系）。
+        // 五笔是定长编码，「还没打完」不等于「空码」。想查某个前缀下有哪些词，
+        // 走 `z` 学习键（M3）。core 仍保留 `LookupMode::PrefixFallback` 供 CLI 与单测用。
         if mode != LookupMode::Exact {
             return Vec::new();
         }

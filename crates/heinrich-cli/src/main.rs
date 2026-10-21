@@ -297,7 +297,9 @@ fn print_candidates(buffer: &str, cands: &[heinrich_core::Candidate], mode: Opti
         return;
     }
     let hint = match mode {
-        Some(LookupMode::PrefixFallback) => "（该码本身无词条，以下为前缀候选）",
+        Some(LookupMode::PrefixFallback) => {
+            "（该码本身无词条，以下为前缀候选 · 仅 CLI 调试，真机不显示，见 D45）"
+        }
         _ => "",
     };
     println!("  `{buffer}` → {} 个候选{hint}", cands.len());
