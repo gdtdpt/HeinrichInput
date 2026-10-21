@@ -1,7 +1,7 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.11
-> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D39）：M2.1（几何）已验收，M2.2（窗口 + 预览器）代码完成，等待验收**
+> **版本**：v1.13
+> **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D40）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）代码完成且自测通过（记事本 / Notepad++ / Chrome），等待你验收**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
 > **语言栏 / 安装器显示名**：「**亨利五笔**」（4 字，与「微软五笔」同宽）
@@ -108,6 +108,8 @@
 | D37 | **逐键查询候选；超时只丢结果，绝不阻塞、绝不空窗** | 每个字母键都查一次 server（仍是 50 ms 上限）；失败时**保留上一帧窗口内容**，不闪、不清空；上屏仍只用缓存里最新的那份 | 有候选窗之后，50 ms 上限第一次落在**每个字母键**上，而不是按空格那一下。三条缓冲：64 条进程内缓存（打字前缀重复率高）、超时只丢本次结果、绝不阻塞。M2.3 接进 TSF 后先量逐键延迟再往下走 |
 | D38 | **修订 D31：候选非空时方向键是翻页，不是取消** | `←`/`→`/`PgUp`/`PgDn` 翻页（首页/末页时吃掉不动），`↑`/`↓` 吃掉不动，`Esc` 取消；候选为空时维持 D31 原样（方向键吃掉并取消） | D31 的「方向键一律取消」是**没有候选窗时的折中**。有了窗口还这样，用户想翻页会一按就把整段编码弄没。`↑`/`↓` 暂不接管纵向导航——单行布局没有上一行/下一行 |
 | D39 | **翻页提示只表示「这个方向还有」，不显示页码** | 窗口两端各一个箭头（实心三角 `◀` / `▶`），**该方向没有候选时箭头不存在、也不占宽度**（`has_prev` / `has_next` 由 `page_nav()` 给出）；箭头是独立命中区，点它只翻页不选词（`hit_arrow()` 与 `hit()` 分开） | 页码 `2/9` 的值是「你在第几页」，而用户只能前后翻、不能跳页 ⇒ 这个数对他没有任何可操作的信息，却要在单行窗口里长期占一块地。需要传递的只有一条：「后面还有」。顺带两条实现上的收获：① `has_next` 为真意味着本页是满页，所以右箭头永远紧跟在最后一条候选之后，不会出现「候选结束得早、箭头孤零零贴右边」的观感问题；② 字形用**实心三角**而不是更细的 `‹ ›`／小三角 `▸`——M2.2 真窗口实测中，`U+25B8` 在「Microsoft YaHei UI」里缺字，DirectWrite 回退到别的字体，画出来比序号还小、还淡，跟字号完全对不上；换成 CJK 字体保留的 `U+25B6`/`U+25C0` 后不回退、任何 DPI 都稳定 |
+| D40 | **候选窗接进 TSF：位置走三级兜底 + 首键预取、建窗懒且失败即永久降级、点击走 `Weak<Core>` 且路径全程不重入** | ① 定位：`ITfContextView::GetTextExt` 要 cookie ⇒ 每次显示都开一次 `TF_ES_READ｜TF_ES_SYNC` 会话；按 选区 → 组合串右下角（同一请求连问两次）→ `GetGUIThreadInfo` 插入符 三级兜底，每级只记日志不返错；缓冲为空时**另在动手前量一次**作为回退位置。② 建窗：`CandidateWindow::new` 推迟到第一次真要显示，成功后一生只建一次，失败则记一次错误并**永久降级为无窗打字**（M1.3 行为）。③ 点击：窗口过程不在任何 TSF 回调栈上，把状态搬进 `Rc<Core>` 后由回调持 `Weak<Core>` 提交；所有对 `Cands` 的借用都是瞬时借或 `try_borrow`，借用失败就丢弃这次事件 | 三条都是「不做就会静默坏掉」的：① 拿不到 cookie 就没有坐标，`GetTextExt` 直接失败 ⇒ 窗口一个都不显示；且**只问一种来源不够**——Chromium 在组合串刚建立、排版未就绪时对本会话的 `GetTextExt` 一律回 `TF_E_NOLAYOUT (0x80040206)`（记事本 / Notepad++ 不会），第一版这里用 `?` 抛出错误，兜底路径直接成了死代码，Chrome 里一个窗口都不出；改为三级兜底 + 连问两次 + 首键预取后，首键靠预取、后续键靠连问两次全部命中；② 在每次按键里建窗、失败再重试，会在老系统上每敲一个字刷一次错误日志并卡一下；③ 窗口过程里一旦二次 `borrow_mut` 同一个 `RefCell`，panic 跨出 `extern "system"` 就是**宿主进程 abort**（用户正在写的文档全丢）。另外「空格提交=高亮那条」让数字键、点选、空格三条路径共用 `Cands::current()`，不存在「按 2 出来的字和点第 2 条不一样」 |
+
 
 ## 4. 架构
 
@@ -186,7 +188,7 @@ Heinrich/
     heinrich-gen/               # 数据装配：原始码表 → data/wubi86/ + 校验报告（M0a）  ← 已实现
   apps/
     windows/                    # Windows 专属产物；M5 时平级新增 macos/、linux/
-      tsf/                      # TSF DLL（仅 windows-rs + heinrich-tip-id + heinrich-proto，D8）   ← 已实现
+      tsf/                      # TSF DLL（windows-rs + 自有的 proto / ui / win-ui，D8）   ← 已实现（M2.3 候选窗接线）
       ui/                       # 候选窗：HWND + 分层窗口 + D2D/DWrite 绘制（D36 的绘制半边）   ← 已实现（M2.2）
       cand-preview/             # 候选窗预览器：假候选直接弹窗 + `--selftest`   ← 已实现（M2.2）
       setup/                    # 注册器 install / uninstall / status（D19）       ← 已实现
@@ -207,6 +209,9 @@ Heinrich/
     gen.ps1                 # 装配方案数据 + 出报告
     check.ps1               # 全量校验（fmt / clippy / test / 数据一致性）
     build.ps1               # 构建 + 打包
+    tsf.ps1                 # 装/卸 TSF 组件、看状态与日志、造慢 server
+    shot-window.py          # 从屏幕 BitBlt 抓窗口（含分层窗口），纯 stdlib
+    smoke-ime.py            # 注入按键/点击做真机冒烟（SendInput），纯 stdlib
   PROJECT.md
   README.md                 # 仅面向使用者
 ```
@@ -451,8 +456,8 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | **M1.2** 组合串 ✅ **2026-10-20 验收通过** | 编码以 `ITfComposition` 组合串显示在文档里，逐键生长、退格收缩；空格/回车原地替换成命中字；Esc 与方向键取消。**本阶段不含显示属性虚线、不含光标跟随**——两者都只服务于候选窗，候选窗在 M2，提前做没有消费者。真机表现是宿主默认的组合串渲染（浅色底块），不是虚线下划线，够用、不阻塞 | ① 敲 `vbg` 时 `v`→`vb`→`vbg` 逐字可见、光标跟在末尾 ② 空格后原地变成「好」，不留编码 ③ Esc 后编码消失、文档无残留 ④ 退格逐码回退，退到空则组合串消失 ⑤ 敲 `vbg` 时直接点别的窗口，原窗口不留 `vbg` ⑥ 记事本与 Notepad++ 都要过 |
 | **M1.3** 接 server ✅ **2026-10-20 验收通过** | 新增 `heinrich-proto`（7 条消息、手写二进制、零依赖）与 `heinrich-server`（按会话单实例、命名管道、`--debug-sleep`、空闲退出）；DLL 删掉 `tinydict.rs` 改走 IPC，后台线程负责连/重连/拉起；中文标点接管并映射全角；中英模式搬到 server（D32–D34）。**本阶段仍不做**：候选窗、SQLite 学习、前缀/模糊查询、数字键选候选 | ① 13.6 万条下打字无可感延迟（逐键 preedit 一帧内）② server 卡住时宿主完全不卡、按键原样上屏 ③ 杀掉 server 后下一次按键自动重连 ④ 冷启动（无 server）首键 ≤50 ms 透传、不冻宿主 ⑤ `vbg` + `,` → 「好，」；单独 `,` → 「，」；英文模式仍是半角 ⑥ 中英模式跨进程一致。**验收实测补充**：这条要制造「连上了但慢」才有意义——`--debug-sleep` 对所有帧生效（含 `Hello`），而握手预算是 3 s，所以 `--debug-sleep 5000` 测到的是「连不上」（瞬间返回）而不是超时路径；改用 `--debug-sleep 800` 后日志出现 `server 不可用（ab），原样上屏`、宿主无可感停顿，且每次超时弃连后约 1.5 s 自动重连成功；`；`→「；」、`/`→「、」、Shift+`/`→「？」、英文模式半角均已实测。另注意 **字母键不走 IPC**（`query` 只在上屏键与标点键上发生），以及 **进程内候选缓存（64 条）会掩盖降级**——判据要看输出的字，不是看卡不卡 |
 | **M2.1** 候选窗几何 ✅ **2026-10-21 验收通过** | 新增 `crates/heinrich-ui`：单行布局（序号 + 词 + 两端翻页箭头 + 命中矩形）、分页（`page_count` / `page_slice` / `page_nav`）、超宽按比例压窄、`place` 定位（贴光标下沿 / 越下翻上方 / 夹进工作区 / 整数坐标）；视觉参数只有一个自由变量（字号），DPI 靠 `scaled()`；`examples/geometry.rs` 把布局画成 SVG。验收时按 D39 去掉页码、改为两端箭头 | ① 27 个单测覆盖布局、分页、翻页箭头、命中、定位、DPI、负坐标副屏 ② 几何图里箭头不压候选、150% DPI 不错位、单页时不画箭头 ③ 不做窗口，不碰 Windows API |
-| **M2.2** 候选窗窗口 🟡 **代码完成，待真机验收** | 新增 `apps/windows/ui`（`heinrich-win-ui`）：`WS_POPUP｜WS_CLIPSIBLINGS` + `WS_EX_LAYERED｜TOOLWINDOW｜TOPMOST｜NOACTIVATE` 的窗口、`WM_MOUSEACTIVATE → MA_NOACTIVATE`、D2D 的 **DC 渲染目标**绑 32 位预乘 alpha 的 DIB、`UpdateLayeredWindow` 上屏；文字由 DirectWrite 量、`Metrics` 按光标所在屏的 DPI 缩放；**几何完全来自 `heinrich-ui`，本层不重算任何矩形**。新增 `apps/windows/cand-preview`（假候选弹窗 + `--selftest`）与 `tools/shot-window.py`（自截图） | ① 圆角、5 候选、高亮、两端箭头肉眼正确 ② 窗口实际尺寸 = 布局尺寸（`--selftest` 断言）③ 点选与显示都不抢前台（`--selftest` 断言）④ 100%/150%/200% 下矩形与 `layout()` 输出一致 ⑤ 内边距与缝隙不误命中 |
-| **M2.3** 接进 TSF | 逐键查询（D37）、`GetTextExt` 定位、数字键选词、点选提交、失焦立即隐藏、D38 的翻页键 | ① 记事本 + Notepad++ + Chrome 三处定位准 ② 数字键与点选选中的是同一个候选 ③ 失焦/切窗口零残留 ④ 逐键查询下无可感延迟 |
+| **M2.2** 候选窗窗口 ✅ **2026-10-21 验收通过** | 新增 `apps/windows/ui`（`heinrich-win-ui`）：`WS_POPUP｜WS_CLIPSIBLINGS` + `WS_EX_LAYERED｜TOOLWINDOW｜TOPMOST｜NOACTIVATE` 的窗口、`WM_MOUSEACTIVATE → MA_NOACTIVATE`、D2D 的 **DC 渲染目标**绑 32 位预乘 alpha 的 DIB、`UpdateLayeredWindow` 上屏；文字由 DirectWrite 量、`Metrics` 按光标所在屏的 DPI 缩放；**几何完全来自 `heinrich-ui`，本层不重算任何矩形**。新增 `apps/windows/cand-preview`（假候选弹窗 + `--selftest`）与 `tools/shot-window.py`（自截图） | ① 圆角、5 候选、高亮、两端箭头肉眼正确 ② 窗口实际尺寸 = 布局尺寸（`--selftest` 断言）③ 点选与显示都不抢前台（`--selftest` 断言）④ 100%/150%/200% 下矩形与 `layout()` 输出一致 ⑤ 内边距与缝隙不误命中 |
+| **M2.3** 接进 TSF 🟡 **代码完成 + 自测通过，待你验收** | DLL 里新增 `cand.rs`（候选集 + 页码 + 懒建窗口）与 `caret.rs`（`GetTextExt` 的只读编辑会话，三级兜底）；`TextService` 的状态搬进 `Rc<Core>` 以便窗口过程的点击回调也能提交；每个字母键查一次候选（D37，超时保留上一帧）、窗口贴光标显示、空格/回车提交当前高亮、数字键 1–9 与点选提交**同一份数据**、`←/→` 与 PgUp/PgDn 翻页而 `↑/↓` 吃掉不动（D38）、失焦/取消/提交一律关窗（D40） | ① 记事本 + Notepad++ + Chrome 三处定位准 **✅ 自测通过** ② 数字键与点选选中的是同一个候选 **✅ 记事本 13 项全绿** ③ 失焦/切窗口零残留 **✅** ④ 逐键查询下无可感延迟 **✅ 日志实测每键 3–4 ms（查询 + 量字 + 上窗）** |
 | **M2.4** 学习落库 | server 加 SQLite（`usage` 表 + WAL）、上屏回报、完整 §5 打分与 1.5 倍晋升阈值、组合内锁序 | ① 连打三天词序符合预期、首位不被偶用抢走 ② 强杀 server 不丢已上屏记录 |
 | **M3** 混输 | DP 分段裁决 + 折叠规则 + 显式拼音标记（§6.5）+ 码提示 chip + 外链查询（§6.6） | ① 纯拼音/纯五笔/交替输入各 50 例不错判 ② `hao'` 只出拼音候选、不出五笔候选 ③ 拼音段候选带正确五笔码、五笔段不带 ④ 首屏只放当前判定语言 |
 | **M4** 差异化收尾 | emoji 标签与映射编辑界面、设置窗口（含 §5 学习数据查看，从 M2 移来）、`config_version` 兼容、安装包/卸载 | ① 安装包可静默安装 ② 旧配置读入不回退 ③ emoji 改绑后即时生效且升级不丢 ④ 全量回归 |
@@ -578,3 +583,5 @@ v1 不做字根拆解（见 §6.3 实测结论），所以必须留一个「查�
 | v1.9 | 2026-10-20 | **M2 拆解 + M2.1 候选窗几何**：M2 拆成 M2.1（几何）/ M2.2（窗口）/ M2.3（接进 TSF）/ M2.4（学习落库），「设置里的学习数据查看」移到 M4（设置窗口本身在 M4，原排期错位）；新增 D35（自绘候选窗，附 Weasel / fcitx5 / 青简 三条外部证据）、D36（布局定位与绘制分家，`crates/heinrich-ui` 只放几何）、D37（逐键查询候选 + 超时不阻塞不空窗）、D38（修订 D31：候选非空时方向键是翻页）；新增 `crates/heinrich-ui`：`layout()` 单行布局 + 分页 + 超宽按比例压窄 + 命中测试，`place()` 定位（翻上方 / 夹工作区 / 整数坐标），`Metrics` 以字号为唯一自由变量、`scaled()` 处理 DPI，23 单测，`examples/geometry.rs` 出几何 SVG；§2.2 补候选窗的非目标（动画 / 阴影 / 悬停 / 无障碍）；架构图澄清候选窗跑在 DLL 进程、server 不绘图 |
 | v1.10 | 2026-10-20 | **候选窗翻页提示改为两端箭头**：去掉页码（用户不能跳页，`2/9` 没有可操作信息），改为「该方向还有候选」才出现、否则不占宽度的 `◂` / `▸`（D39）；`layout()` 的 `page_index` / `page_count` 换成 `has_prev` / `has_next`，新增 `page_nav()` 给出这两值（与 `page_slice` 同一套夹紧规则）、`Layout::prev` / `next`（`PageArrow`）、`Layout::hit_arrow()`（点箭头只翻页不选词，与 `hit()` 分开）、`Metrics::arrow_width` / `arrow_gap`；新增 5 个单测（箭头位置/只在需要时占宽度/最后一页无右箭头/越界页号/命中分离）；`examples/geometry.rs` 四块面板改为「中间页两端都有」「150% DPI」「末页只有左箭头」「单页两端都没有」并画出箭头命中区 |
 | v1.11 | 2026-10-21 | **M2.2 候选窗窗口**：新增 `apps/windows/ui`（`heinrich-win-ui`，`text.rs` 用 DirectWrite 量字并缓存三个 `IDWriteTextFormat`；`render.rs` 走 D2D 的 DC 渲染目标 + 32 位预乘 alpha DIB + `UpdateLayeredWindow`；`lib.rs` 建分层窗口、`WM_MOUSEACTIVATE → MA_NOACTIVATE`、命中经 `Event::Click` 上报全局序号、`hide`/`hit`/`prepare`/`prepare_scaled`/`show`）；新增 `apps/windows/cand-preview`（假候选弹窗、`--dpi`/`--page`/`--hold`/`--selftest`）；新增 `tools/shot-window.py`（从屏幕 BitBlt 抓分层窗口，纯 stdlib）；D8 补入 `heinrich-ui` 与 `heinrich-win-ui`；D39 补记箭头字形的实测结论（`U+25B8` 在中文字体里缺字回退，改实心三角 `U+25C0`/`U+25B6`）；`build.ps1` 纳入预览器、`check.ps1` 增加候选窗自测；`HeinrichTsfAbiVersion` 不变（DLL 尚未接候选窗） |
+| v1.12 | 2026-10-21 | **M2.3 候选窗接进 TSF**：`crates/heinrich-ui` 新增 `Pager`（页码 / 本页区间 / 两端箭头 / 翻页夹紧，7 单测）；`keys` 的 `decide` 改为吃 `Input { mode, buffer_len, page_len }`，新增 `Select(usize)` / `PagePrev` / `PageNext` / `Noop` 四个动作——数字键 1–9 只在本页有对应候选时生效，`←/→` 与 PgUp/PgDn 翻页、`↑/↓` 吃掉不动、Home/End 仍取消（D38 落地），新增 6 个单测；DLL 新增 `cand.rs`（候选集 + `Pager` + 懒建窗口 + 建窗失败永久降级）与 `caret.rs`（`GetTextExt` 的 `TF_ES_READ｜TF_ES_SYNC` 会话，先问选区、退化到组合串右下角）；`TextService` 的全部状态搬进 `Rc<Core>`（Deref 透传）以便窗口过程的点击回调持 `Weak<Core>` 提交，点击路径全程瞬时借 / `try_borrow`；每个字母键查一次候选（超时保留上一帧）、空格提交 `Cands::current()`、数字键 / 点选 / 空格共用同一份候选数据、提交/取消/失焦/组合串被外部终止/Deactivate 一律关窗；`HeinrichTsfAbiVersion` 4→5；新增 D40；`tsf/Cargo.toml` 引入 `heinrich-ui` 与 `heinrich-win-ui`（D8 清单同步）；102 单测 |
+| v1.13 | 2026-10-21 | **M2.3 真机自测后的两处修正**：① `caret.rs` 改三级兜底（选区 → 组合串右下角**同一请求连问两次** → `GetGUIThreadInfo` 插入符），每级只记日志不返错——第一版用 `?` 把 `TF_E_NOLAYOUT (0x80040206)` 抛出，组合串兜底成了死代码，Chrome 里一个候选窗都不显示；② 缓冲为空时在动手**之前**先量一次光标（此时组合串未建、排版干净，选区那条必然成功）作为首键的回退位置，`show_candidates` 分三支记录坐标来源；D40 补记该实测成因与对策，`docs/dev-guide.md` §4.8 补「五条不做就静默坏掉」、日志对照表与三宿主实测表；新增 `tools/smoke-ime.py`（`SendInput` 注入按键 / 点击、查候选窗类名、按 pid 抢前台，纯 stdlib）；104 单测 + `check.ps1` 全绿 |

@@ -13,8 +13,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 heinrich-tip-id.workspace = true
 # 协议 crate 是零依赖的纯字节编解码，引它不违反 D8 的意图（不给每个宿主进程
-# 多背 serde/bincode）。D8 的清单：windows + heinrich-tip-id + heinrich-proto。
+# 多背 serde/bincode）。
 heinrich-proto.workspace = true
+# 候选窗：几何（heinrich-ui，零依赖纯算术）+ 窗口与绘制（heinrich-win-ui，
+# 自己写的另一个 crate）。两者都是我们自己维护的代码，不引入第三方运行时——
+# D8 守的是「别让每个宿主进程多背别人的库」，不是「不许拆 crate」。
+heinrich-ui.workspace = true
+heinrich-win-ui.workspace = true
 
 # D8 依赖纪律：注入型 DLL 只允许 windows。加任何别的库之前先想清楚
 # 「每个宿主进程都要多背一份」这件事。
@@ -38,4 +43,6 @@ features = [
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_TextServices",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
 ]

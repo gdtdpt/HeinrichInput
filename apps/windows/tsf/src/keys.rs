@@ -43,6 +43,65 @@ pub enum Action {
     Backspace,
     /// 吃掉，把缓冲（有的话）上屏后紧跟这个全角标点。
     Punct(char),
+    /// 吃掉并选**本页**第 n 条候选（0 起，数字键 1–9）。
+    Select(usize),
+    /// 吃掉并往前翻一页。已经首页时调用方什么也不做（D38）。
+    PagePrev,
+    /// 吃掉并往后翻一页。
+    PageNext,
+    /// 吃掉但什么也不做。用于「按住不放会出事、交还宿主更糟」的键。
+    Noop,
+}
+
+/// 判定所需的**实例状态**。
+///
+/// 和 `mods` 分开传，是因为它们来源不同：`Input` 是留住的状态（缓冲、页码），
+/// `mods` 是按键那一瞬间采样出来的物理键态。混成一个结构体，测试时容易写出
+/// 「状态是这份、修饰键是那份」的两份真相。
+///
+/// 打成一个结构体而不是三个参数：`decide` 是「吃不吃这个键」的唯一答案来源，
+/// 参数一多，两条回调路径（`OnTestKey*` / `OnKey*`）漏传一个就会得到不同的答案，
+/// 那正是 dev-guide 第 12 条要防的事故。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Input {
+    pub mode: Mode,
+    /// 编码缓冲里有几个字符。
+    pub buffer_len: usize,
+    /// 候选窗这一页上有几条候选。`0` = 没有候选窗。
+    ///
+    /// 不是「有没有候选」的布尔——数字键要判「按 7 时本页真有第 7 条吗」，
+    /// 所以这里给的是**本页条数**。
+    pub page_len: usize,
+}
+
+impl Input {
+    /// 此刻窗口里有没有候选。数字键与方向键的归属就看它。
+    fn has_candidates(&self) -> bool {
+        self.page_len > 0
+    }
+}
+
+/// 测试用的构造器。只在测试里用得到——生产代码直接写字面量，避免多一层间接。
+#[cfg(test)]
+impl Input {
+    /// 空缓冲、无候选的初始态。
+    pub fn new(mode: Mode) -> Self {
+        Self {
+            mode,
+            buffer_len: 0,
+            page_len: 0,
+        }
+    }
+
+    pub fn with_buffer(mut self, len: usize) -> Self {
+        self.buffer_len = len;
+        self
+    }
+
+    pub fn with_page(mut self, len: usize) -> Self {
+        self.page_len = len;
+        self
+    }
 }
 
 /// 五笔 86 的字根键：`a`–`y`，共 25 个。
@@ -117,19 +176,25 @@ pub fn punct_text(vk: u16, shift: bool) -> Option<char> {
 
 /// 判定一个按键该不该被接管。
 ///
-/// 参数全部来自本进程：`mode` 与 `buffer_len` 是实例状态，`mods` 由调用方从
+/// 参数全部来自本进程：`input` 里除 `mods` 外都是实例状态，`mods` 由调用方从
 /// `GetKeyState` 取。没有任何跨进程调用——这是 D18「按键路径零阻塞」的前提。
-pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
+///
+/// ## 数字键与方向键只在**有候选**时接管
+///
+/// 没有候选窗的时候，`1`–`9` 是老老实实的数字、方向键是老实的光标移动，谁都不该
+/// 被输入法吃掉。只有组合态（窗口里有候选）时它们才变成「选第 n 条」与「翻页」：
+/// 那一刻用户的意图已经被组合串与前缀锁定了，放行反而会破坏组合（D38）。
+pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     // Ctrl / Alt 组合一律放行：Ctrl+C、Ctrl+V、Alt+Tab 被输入法吞掉是灾难性的，
     // 而且用户对它们有强预期。
     if mods.ctrl || mods.alt {
         return Action::Pass;
     }
-    if mode == Mode::English {
+    if input.mode == Mode::English {
         return Action::Pass;
     }
 
-    let empty = buffer_len == 0;
+    let empty = input.buffer_len == 0;
 
     if let Some(ch) = wubi_letter(vk) {
         // 按住 Shift 打字母 → 放行，宿主会输出大写字母。
@@ -142,8 +207,34 @@ pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
 
     // 标点：中文模式下由我们接手，保证「字 + 标点」一起出、不丢编码。
     // 放在字母之后、编辑键之前——两组 vkey 不重叠，顺序只影响可读性。
+    // 也放在数字键之前：`Shift+1` 是「！」，不是「选第 1 条」。
     if let Some(p) = punct_text(vk, mods.shift) {
         return Action::Punct(p);
+    }
+
+    // 数字键：本页有第 n 条就选它，没有就吃掉不动。
+    //
+    // 「没有就吃掉不动」不是偷懒：这时把 `7` 放行给宿主，宿主会在组合串中间插入
+    // 半角数字、终止组合串，`OnCompositionTerminated` 把我们那串 `vbg` 当残留删掉——
+    // 用户按了个不存在的候选号，结果是打了一半的字没了。
+    if input.has_candidates() {
+        if (0x31..=0x39).contains(&vk) {
+            let nth = (vk - 0x31) as usize;
+            return if nth < input.page_len {
+                Action::Select(nth)
+            } else {
+                Action::Noop
+            };
+        }
+        match vk {
+            // ← / PgUp 往前，→ / PgDn 往后（D38）。翻到头由调用方判空。
+            0x25 | 0x21 => return Action::PagePrev,
+            0x27 | 0x22 => return Action::PageNext,
+            // ↑ / ↓ 暂时没有纵向导航可用（单行布局），但也不能放行——光标一动
+            // 组合串就停在原地。吃掉、不动，是这里唯一不会留下错位的选择。
+            0x26 | 0x28 => return Action::Noop,
+            _ => {}
+        }
     }
 
     match vk {
@@ -153,10 +244,10 @@ pub fn decide(mode: Mode, buffer_len: usize, vk: u16, mods: Mods) -> Action {
         0x1B if !empty => Action::Cancel,
         // 退格：空缓冲时交还宿主，否则会删不掉文档里已有的字。
         0x08 if !empty => Action::Backspace,
-        // 方向键 / Home / End / PgUp / PgDn（0x21–0x28）：组合态下光标一动，
-        // 组合串就停在原地，下一个字母还会往那个旧位置写，屏幕上出现「光标在这、
-        // 字却在那」的错位。M1.2 既没有候选窗也不做组合态光标，折中成
-        // 「吃掉并取消」：代价是一次方向键被吞，换来的是绝不留下错位的组合串。
+        // 剩下的方向键 / Home / End（有候选时 `←→↑↓` 与 PgUp/PgDn 已被上面接走）。
+        // 组合态下光标一动，组合串就停在原地，下一个字母还会往那个旧位置写，
+        // 屏幕上出现「光标在这、字却在那」的错位。没有候选窗时（M1.2 起的老行为）
+        // 折中成「吃掉并取消」：代价是一次方向键被吞，换来绝不留下错位的组合串。
         0x21..=0x28 if !empty => Action::Cancel,
         _ => Action::Pass,
     }
@@ -228,6 +319,25 @@ mod tests {
     fn m() -> Mods {
         Mods::default()
     }
+    /// 中文模式、`n` 个字码、无候选窗。
+    fn zh(n: usize) -> Input {
+        Input::new(Mode::Chinese).with_buffer(n)
+    }
+    /// 中文模式、`n` 个字码、本页 `page` 条候选。
+    fn zh_page(n: usize, page: usize) -> Input {
+        zh(n).with_page(page)
+    }
+    fn en(n: usize) -> Input {
+        Input::new(Mode::English).with_buffer(n)
+    }
+    fn shift() -> Mods {
+        Mods {
+            ctrl: false,
+            alt: false,
+            shift: true,
+        }
+    }
+
     const V: u16 = 0x56; // 'V'
     const Z: u16 = 0x5A; // 'Z'
     const SPACE: u16 = 0x20;
@@ -239,48 +349,41 @@ mod tests {
     #[test]
     fn letters_a_to_y_are_buffered() {
         for vk in VK_A..=VK_Y {
-            assert!(matches!(
-                decide(Mode::Chinese, 0, vk, m()),
-                Action::Buffer(_)
-            ));
+            assert!(matches!(decide(zh(0), vk, m()), Action::Buffer(_)));
         }
     }
 
     /// z 是万能学习键，M1.1 不实现，必须放行而不是吃掉。
     #[test]
     fn z_is_not_consumed() {
-        assert_eq!(decide(Mode::Chinese, 0, Z, m()), Action::Pass);
-        assert_eq!(decide(Mode::Chinese, 3, Z, m()), Action::Pass);
+        assert_eq!(decide(zh(0), Z, m()), Action::Pass);
+        assert_eq!(decide(zh(3), Z, m()), Action::Pass);
     }
 
     #[test]
     fn commit_and_cancel_need_a_buffer() {
-        assert_eq!(decide(Mode::Chinese, 0, SPACE, m()), Action::Pass);
-        assert_eq!(decide(Mode::Chinese, 3, SPACE, m()), Action::Commit);
-        assert_eq!(decide(Mode::Chinese, 0, ENTER, m()), Action::Pass);
-        assert_eq!(decide(Mode::Chinese, 3, ENTER, m()), Action::Commit);
-        assert_eq!(decide(Mode::Chinese, 0, ESC, m()), Action::Pass);
-        assert_eq!(decide(Mode::Chinese, 3, ESC, m()), Action::Cancel);
+        assert_eq!(decide(zh(0), SPACE, m()), Action::Pass);
+        assert_eq!(decide(zh(3), SPACE, m()), Action::Commit);
+        assert_eq!(decide(zh(0), ENTER, m()), Action::Pass);
+        assert_eq!(decide(zh(3), ENTER, m()), Action::Commit);
+        assert_eq!(decide(zh(0), ESC, m()), Action::Pass);
+        assert_eq!(decide(zh(3), ESC, m()), Action::Cancel);
     }
 
     /// 空缓冲时退格必须交还宿主，否则文档里已有的字删不掉。
     #[test]
     fn backspace_only_eaten_with_a_buffer() {
-        assert_eq!(decide(Mode::Chinese, 0, BACK, m()), Action::Pass);
-        assert_eq!(decide(Mode::Chinese, 2, BACK, m()), Action::Backspace);
+        assert_eq!(decide(zh(0), BACK, m()), Action::Pass);
+        assert_eq!(decide(zh(2), BACK, m()), Action::Backspace);
     }
 
-    /// 组合态下方向键一律「吃掉并取消」：吃了才不会留下错位的组合串，
+    /// **没有候选窗**时方向键吃掉并取消（D31 原样）：吃了才不会留下错位的组合串，
     /// 空缓冲时必须放行，否则用户连光标都移不动。
     #[test]
-    fn navigation_cancels_only_during_composition() {
+    fn navigation_cancels_when_no_candidates() {
         for vk in [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28] {
-            assert_eq!(
-                decide(Mode::Chinese, 2, vk, m()),
-                Action::Cancel,
-                "{vk:#04x}"
-            );
-            assert_eq!(decide(Mode::Chinese, 0, vk, m()), Action::Pass, "{vk:#04x}");
+            assert_eq!(decide(zh(2), vk, m()), Action::Cancel, "{vk:#04x}");
+            assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x}");
         }
     }
 
@@ -292,30 +395,32 @@ mod tests {
                 alt,
                 shift: false,
             };
-            assert_eq!(decide(Mode::Chinese, 2, V, mods), Action::Pass, "字母");
-            assert_eq!(decide(Mode::Chinese, 2, SPACE, mods), Action::Pass, "空格");
-            assert_eq!(decide(Mode::Chinese, 2, BACK, mods), Action::Pass, "退格");
+            let cands = zh_page(2, 5);
+            assert_eq!(decide(cands, V, mods), Action::Pass, "字母");
+            assert_eq!(decide(cands, SPACE, mods), Action::Pass, "空格");
+            assert_eq!(decide(cands, BACK, mods), Action::Pass, "退格");
+            assert_eq!(decide(cands, 0x31, mods), Action::Pass, "数字键");
+            assert_eq!(decide(cands, 0x27, mods), Action::Pass, "右方向");
         }
     }
 
     /// Shift+字母 = 临时英文，放行让宿主输出大写。
     #[test]
     fn shift_letters_pass_through() {
-        let mods = Mods {
-            ctrl: false,
-            alt: false,
-            shift: true,
-        };
-        assert_eq!(decide(Mode::Chinese, 0, V, mods), Action::Pass);
+        assert_eq!(decide(zh(0), V, shift()), Action::Pass);
         // 但 Shift 不影响空格提交。
-        assert_eq!(decide(Mode::Chinese, 2, SPACE, mods), Action::Commit);
+        assert_eq!(decide(zh(2), SPACE, shift()), Action::Commit);
     }
 
     #[test]
     fn english_mode_passes_everything() {
         for vk in [V, Z, SPACE, ENTER, ESC, BACK, SHIFT] {
-            assert_eq!(decide(Mode::English, 2, vk, m()), Action::Pass);
+            assert_eq!(decide(en(2), vk, m()), Action::Pass);
         }
+        // 英文模式下即便窗口里还挂着候选，数字键与方向键也不该被吃掉
+        let en_page = en(2).with_page(5);
+        assert_eq!(decide(en_page, 0x31, m()), Action::Pass);
+        assert_eq!(decide(en_page, 0x25, m()), Action::Pass);
     }
 
     // ---------------------------------------------------------------
@@ -329,57 +434,49 @@ mod tests {
 
     #[test]
     fn punctuation_becomes_fullwidth() {
-        assert_eq!(decide(Mode::Chinese, 0, COMMA, m()), Action::Punct('，'));
-        assert_eq!(decide(Mode::Chinese, 0, PERIOD, m()), Action::Punct('。'));
-        assert_eq!(decide(Mode::Chinese, 0, SEMI, m()), Action::Punct('；'));
-        assert_eq!(decide(Mode::Chinese, 0, SLASH, m()), Action::Punct('、'));
+        assert_eq!(decide(zh(0), COMMA, m()), Action::Punct('，'));
+        assert_eq!(decide(zh(0), PERIOD, m()), Action::Punct('。'));
+        assert_eq!(decide(zh(0), SEMI, m()), Action::Punct('；'));
+        assert_eq!(decide(zh(0), SLASH, m()), Action::Punct('、'));
     }
 
     /// 缓冲里有编码时标点照样吃掉：上屏字 + 标点由 `text_service` 一次写完。
     #[test]
     fn punctuation_is_consumed_mid_composition() {
-        assert_eq!(decide(Mode::Chinese, 3, COMMA, m()), Action::Punct('，'));
-        assert_eq!(decide(Mode::Chinese, 1, SLASH, m()), Action::Punct('、'));
+        assert_eq!(decide(zh(3), COMMA, m()), Action::Punct('，'));
+        assert_eq!(decide(zh(1), SLASH, m()), Action::Punct('、'));
     }
 
     #[test]
     fn shift_punctuation_maps_to_its_pair() {
-        let s = Mods {
-            ctrl: false,
-            alt: false,
-            shift: true,
-        };
-        assert_eq!(decide(Mode::Chinese, 0, SEMI, s), Action::Punct('：'));
-        assert_eq!(decide(Mode::Chinese, 0, SLASH, s), Action::Punct('？'));
-        assert_eq!(decide(Mode::Chinese, 0, COMMA, s), Action::Punct('《'));
-        assert_eq!(decide(Mode::Chinese, 0, PERIOD, s), Action::Punct('》'));
-        assert_eq!(decide(Mode::Chinese, 0, 0x31, s), Action::Punct('！'));
-        assert_eq!(decide(Mode::Chinese, 0, 0x39, s), Action::Punct('（'));
-        assert_eq!(decide(Mode::Chinese, 0, 0x30, s), Action::Punct('）'));
+        let s = shift();
+        assert_eq!(decide(zh(0), SEMI, s), Action::Punct('：'));
+        assert_eq!(decide(zh(0), SLASH, s), Action::Punct('？'));
+        assert_eq!(decide(zh(0), COMMA, s), Action::Punct('《'));
+        assert_eq!(decide(zh(0), PERIOD, s), Action::Punct('》'));
+        assert_eq!(decide(zh(0), 0x31, s), Action::Punct('！'));
+        assert_eq!(decide(zh(0), 0x39, s), Action::Punct('（'));
+        assert_eq!(decide(zh(0), 0x30, s), Action::Punct('）'));
     }
 
     /// 表里没有的键一律放行——写代码、写路径要的是半角原文。
     #[test]
     fn untabled_keys_pass_through() {
         for vk in [0xBB, 0xBD, 0xDB, 0xDD, 0xDC, 0xC0, 0xDE, 0xE2] {
-            assert_eq!(
-                decide(Mode::Chinese, 0, vk, m()),
-                Action::Pass,
-                "{vk:#04x} 不该被吃掉"
-            );
+            assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x} 不该被吃掉");
         }
         // 单引号留给 §6.5 的显式拼音标记（D11）
-        assert_eq!(decide(Mode::Chinese, 2, 0xDE, m()), Action::Pass);
+        assert_eq!(decide(zh(2), 0xDE, m()), Action::Pass);
         // 不带 Shift 的数字键永远是数字
         for vk in 0x30..=0x39 {
-            assert_eq!(decide(Mode::Chinese, 0, vk, m()), Action::Pass, "{vk:#04x}");
+            assert_eq!(decide(zh(0), vk, m()), Action::Pass, "{vk:#04x}");
         }
     }
 
     #[test]
     fn punctuation_passes_in_english_mode() {
-        assert_eq!(decide(Mode::English, 0, COMMA, m()), Action::Pass);
-        assert_eq!(decide(Mode::English, 3, PERIOD, m()), Action::Pass);
+        assert_eq!(decide(en(0), COMMA, m()), Action::Pass);
+        assert_eq!(decide(en(3), PERIOD, m()), Action::Pass);
     }
 
     /// Ctrl/Alt + 标点必须放行：`Ctrl+,` 之类是宿主的功能键。
@@ -390,18 +487,79 @@ mod tests {
             alt: false,
             shift: false,
         };
-        assert_eq!(decide(Mode::Chinese, 3, COMMA, c), Action::Pass);
+        assert_eq!(decide(zh(3), COMMA, c), Action::Pass);
     }
 
     /// Shift 键本身永远不被吃掉——它是修饰键，吃了会用不了大写和符号。
     #[test]
     fn shift_key_itself_passes() {
-        let mods = Mods {
-            ctrl: false,
-            alt: false,
-            shift: true,
-        };
-        assert_eq!(decide(Mode::Chinese, 2, SHIFT, mods), Action::Pass);
+        let s = shift();
+        assert_eq!(decide(zh(2), SHIFT, s), Action::Pass);
+    }
+
+    // ---------------------------------------------------------------
+    // 数字键选词（M2.3）
+    // ---------------------------------------------------------------
+
+    /// 有候选时 1–9 选本页对应条；超出本页条数吃掉不动。
+    #[test]
+    fn digits_select_within_the_page() {
+        let page = zh_page(3, 5);
+        for n in 1..=5u16 {
+            assert_eq!(
+                decide(page, 0x30 + n, m()),
+                Action::Select(n as usize - 1),
+                "数字 {n}"
+            );
+        }
+        for n in 6..=9u16 {
+            assert_eq!(
+                decide(page, 0x30 + n, m()),
+                Action::Noop,
+                "本页只有 5 条，第 {n} 个键吃掉不动"
+            );
+        }
+    }
+
+    /// 本页只剩 2 条（末页）时，3 号以后的键都不选。
+    #[test]
+    fn digits_are_limited_by_page_length() {
+        let last_page = zh_page(3, 2);
+        assert_eq!(decide(last_page, 0x31, m()), Action::Select(0));
+        assert_eq!(decide(last_page, 0x32, m()), Action::Select(1));
+        assert_eq!(decide(last_page, 0x33, m()), Action::Noop);
+    }
+
+    /// 没候选窗时数字键仍是数字。
+    #[test]
+    fn digits_pass_without_candidates() {
+        for vk in 0x31..=0x39 {
+            assert_eq!(decide(zh(3), vk, m()), Action::Pass, "{vk:#04x}");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 翻页（D38）
+    // ---------------------------------------------------------------
+
+    /// 有候选时 ←/→/PgUp/PgDn 是翻页，↑/↓ 吃掉不动。
+    #[test]
+    fn arrows_page_when_candidates_exist() {
+        let page = zh_page(3, 5);
+        assert_eq!(decide(page, 0x25, m()), Action::PagePrev, "←");
+        assert_eq!(decide(page, 0x27, m()), Action::PageNext, "→");
+        assert_eq!(decide(page, 0x21, m()), Action::PagePrev, "PgUp");
+        assert_eq!(decide(page, 0x22, m()), Action::PageNext, "PgDn");
+        assert_eq!(decide(page, 0x26, m()), Action::Noop, "↑");
+        assert_eq!(decide(page, 0x28, m()), Action::Noop, "↓");
+    }
+
+    /// Home / End 仍然是取消：它们会把光标扔到文档两端，组合串必然错位。
+    #[test]
+    fn home_and_end_still_cancel_during_composition() {
+        let page = zh_page(3, 5);
+        assert_eq!(decide(page, 0x24, m()), Action::Cancel, "Home");
+        assert_eq!(decide(page, 0x23, m()), Action::Cancel, "End");
     }
 
     // ---------------------------------------------------------------

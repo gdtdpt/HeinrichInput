@@ -42,6 +42,8 @@ use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
+use heinrich_ui::{Dir, Rect};
+use heinrich_win_ui::{Event, Hit};
 use windows::core::{implement, ComObjectInterface, IUnknown, Interface, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{FALSE, LPARAM, TRUE, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -52,9 +54,11 @@ use windows::Win32::UI::TextServices::{
     ITfEditSession, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
     ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
-    TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
+    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
 
+use crate::cand;
+use crate::caret::CaretProbe;
 use crate::ipc;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap, MAX_CODE_LEN};
 use crate::preedit::{CompSlot, Goal, PreeditSession};
@@ -63,6 +67,14 @@ use crate::preedit::{CompSlot, Goal, PreeditSession};
 static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// 一个宿主进程里的一份文本服务实例。
+///
+/// ## 为什么状态装在 `Rc<Core>` 里，而不是直接放在本结构体上
+///
+/// 候选窗是**独立窗口**，用户点它的时候是宿主在 `DispatchMessage` 里回调我们的
+/// 窗口过程——那不在任何 TSF 回调栈里。也就是说「点选提交」这条路径拿不到
+/// `&self`（COM 对象在 vtable 后面，没有安全的入口）。把可变状态放进 `Rc<Core>`，
+/// 窗口过程的闭包就能持有一个 `Weak<Core>`，点选时升级成 `Rc` 再走同一套
+/// 「起编辑会话 → 上屏」的代码，不必为点击写第二份提交逻辑。
 ///
 /// 状态**必须**是实例内的：DLL 被注入到每个进程都会 new 一个，
 /// 如果放全局，A 窗口的缓冲就会跑到 B 窗口去（预研坑 #5 的根因）。
@@ -73,6 +85,12 @@ static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
     ITfCompositionSink
 )]
 pub struct TextService {
+    core: Rc<Core>,
+}
+
+/// 所有实例状态。见 [`TextService`] 的文档：它要被窗口过程的闭包共享，
+/// 所以不能直接长在 COM 对象上。
+pub struct Core {
     /// 本次激活的线程 id，撤按键 sink 时需要它。
     tid: Cell<u32>,
     /// 线程管理器，`Deactivate` 时用来撤 sink。
@@ -101,14 +119,34 @@ pub struct TextService {
     comp: CompSlot,
     /// 自己在 `ITfCompositionSink` 上的引用，`StartComposition` 要它。
     comp_sink: RefCell<Option<ITfCompositionSink>>,
-    /// 组合串所在的 context。失焦时要靠它把残留的组合串撤掉。
+    /// 组合串所在的 context。失焦时要靠它把残留的组合串撤掉；
+    /// 光标定位与点选提交也要靠它。
     active_ctx: RefCell<Option<ITfContext>>,
+
+    /// 候选窗 + 这一页的状态。见 [`crate::cand`]。
+    cands: Rc<RefCell<cand::Cands>>,
+}
+
+/// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
+/// 这类写法在两个 `Deref` 之后自动落到 `Core` 上（`#[implement]` 已经为
+/// `TextService_Impl` 生成了指向 `TextService` 的 `Deref`）。
+impl std::ops::Deref for TextService {
+    type Target = Core;
+    fn deref(&self) -> &Core {
+        &self.core
+    }
 }
 
 impl TextService {
     pub fn new() -> Self {
+        Self { core: Core::new() }
+    }
+}
+
+impl Core {
+    fn new() -> Rc<Self> {
         let seq = INSTANCE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        Self {
+        let core = Rc::new(Self {
             tid: Cell::new(0),
             thread_mgr: RefCell::new(None),
             thread_mgr_cookie: Cell::new(TF_INVALID_COOKIE),
@@ -120,7 +158,19 @@ impl TextService {
             comp: Rc::new(RefCell::new(None)),
             comp_sink: RefCell::new(None),
             active_ctx: RefCell::new(None),
-        }
+            cands: Rc::new(RefCell::new(cand::Cands::new(seq))),
+        });
+
+        // 候选窗的点击回调。只持有 `Weak` 有两个原因：
+        // ① 窗口在 `Core` 里，回调再持有 `Rc<Core>` 就成环，`Core` 永不释放；
+        // ② 窗口销毁得晚于 `Core` 的可能性必须被容忍——升级失败就当没发生。
+        let weak = Rc::downgrade(&core);
+        core.cands.borrow_mut().set_on_event(move |event| {
+            if let Some(core) = weak.upgrade() {
+                core.on_candidate_event(event);
+            }
+        });
+        core
     }
 
     fn buffer_len(&self) -> usize {
@@ -141,8 +191,15 @@ impl TextService {
     }
 
     /// 用当前状态跑一次判定。两条回调路径都走这里。
+    ///
+    /// `page_len` 也要喂进去：数字键与方向键归谁，取决于此刻窗口里有没有候选。
     fn decide(&self, vk: u16) -> Action {
-        keys::decide(self.mode.get(), self.buffer_len(), vk, self.mods())
+        let input = keys::Input {
+            mode: self.mode.get(),
+            buffer_len: self.buffer_len(),
+            page_len: self.cands.borrow().page_len(),
+        };
+        keys::decide(input, vk, self.mods())
     }
 
     /// 每次按键回调的入口都调一次：采样物理 Shift 状态，推进「单击切中英」状态机。
@@ -183,6 +240,8 @@ impl TextService {
             }
         }
         self.clear_buffer();
+        // 窗口跟着撤：切到英文模式后还挂着一屏中文候选，等于骗用户按空格。
+        self.cands.borrow_mut().clear();
         tsf_info!(
             "#{} 切换为{}模式{}",
             self.seq,
@@ -203,20 +262,11 @@ impl TextService {
     /// 执行判定结果。**只有 `OnKey*` 会调它**，`OnTestKey*` 绝不调。
     fn apply(&self, context: &ITfContext, action: Action) {
         match action {
-            Action::Pass => {}
-            Action::Buffer(ch) => {
-                if self.buffer_len() >= MAX_CODE_LEN {
-                    // 已满 4 码还来第 5 个键：五笔全码最长 4 位，不可能命中。
-                    // 原样上屏再重新开始，比「忽略这个键」或「卡住不响应」都好——
-                    // 用户至少能看出发生了什么。
-                    let prev = self.clear_buffer();
-                    tsf_info!("#{} 已满 {MAX_CODE_LEN} 码，原样上屏 {prev:?}", self.seq);
-                    self.run_preedit(context, Goal::Finish(Some(prev)));
-                }
-                self.buffer.borrow_mut().push(ch);
-                tsf_debug!("#{} 缓冲={:?}", self.seq, self.buffer.borrow());
-                self.sync_preedit(context);
-            }
+            // `Noop` 是「键已经吃了，但什么也不做」：吃掉是为了不让宿主在组合串
+            // 中间插字符（那会终止组合串、把编码当残留丢掉），不做是因为此刻
+            // 没有合法的动作可做（翻到头了、按下不存在的高亮号）。
+            Action::Pass | Action::Noop => {}
+            Action::Buffer(ch) => self.type_letter(context, ch),
             Action::Commit => self.commit(context),
             Action::Punct(p) => {
                 // 标点把「当前编码 + 标点」一起写成最终文字。缓冲为空时只写标点。
@@ -228,17 +278,194 @@ impl TextService {
                 };
                 text.push(p);
                 tsf_info!("#{} 标点 {p}，一次写入 {text:?}", self.seq);
-                self.run_preedit(context, Goal::Finish(Some(text)));
+                self.finish(context, text);
             }
             Action::Cancel => {
                 let dropped = self.clear_buffer();
                 tsf_info!("#{} 取消，丢弃编码 {dropped:?}", self.seq);
-                self.run_preedit(context, Goal::Finish(None));
+                self.abort(context);
             }
             Action::Backspace => {
                 self.buffer.borrow_mut().pop();
                 tsf_debug!("#{} 退格后缓冲={:?}", self.seq, self.buffer.borrow());
                 self.sync_preedit(context);
+                self.refresh_candidates(context, None);
+            }
+            Action::Select(nth) => self.select(context, nth),
+            Action::PagePrev => self.flip_page(Dir::Prev),
+            Action::PageNext => self.flip_page(Dir::Next),
+        }
+    }
+
+    /// 敲一个字母：缓冲 + 组合串 + 候选窗（D37：每个字母都查一次）。
+    fn type_letter(&self, context: &ITfContext, ch: char) {
+        // **首个字母进来之前先量一次光标。**
+        //
+        // 这时文档还没被我们改过，宿主的排版信息是干净的，`GetTextExt` 一定答得出。
+        // 组合串一写进去，Chromium 的排版就进入「脏」状态，紧接着问会给
+        // `TF_E_NOLAYOUT`（见 `caret` 模块文档）——那正是 Chrome 里第一键
+        // 看不到窗口的原因。所以留一份「动手前的位置」当兜底。
+        //
+        // 只在 `buffer_len() == 0`（一段新编码的第一个键）做，多花的那一次会话
+        // 摊到每个词上只有一次。
+        let pre_caret = if self.buffer_len() == 0 {
+            self.caret_rect(context)
+        } else {
+            None
+        };
+
+        if self.buffer_len() >= MAX_CODE_LEN {
+            // 已满 4 码还来第 5 个键：五笔全码最长 4 位，不可能命中。
+            // 原样上屏再重新开始，比「忽略这个键」或「卡住不响应」都好——
+            // 用户至少能看出发生了什么。
+            let prev = self.clear_buffer();
+            tsf_info!("#{} 已满 {MAX_CODE_LEN} 码，原样上屏 {prev:?}", self.seq);
+            self.finish(context, prev);
+        }
+        self.buffer.borrow_mut().push(ch);
+        tsf_debug!("#{} 缓冲={:?}", self.seq, self.buffer.borrow());
+        // 顺序有讲究：组合串是本地的（快），候选要过 IPC（最多 50 ms）。
+        // 先让用户看见编码长了，再去等候选——反过来的话，慢 server 会让
+        // 光标后面的字晚半拍才出现。
+        self.sync_preedit(context);
+        self.refresh_candidates(context, pre_caret);
+    }
+
+    /// 按当前编码问一次候选，并让窗口跟着更新。
+    ///
+    /// ## 三种结果，三种处理（D37）
+    ///
+    /// | 结果 | 窗口 | 理由 |
+    /// |---|---|---|
+    /// | 有候选 | 换成新候选，回第 1 页 | 正常路径 |
+    /// | 问到了但没这个词 | 关掉 | 没有东西可显示，留一个空壳更奇怪 |
+    /// | 超时 / server 挂了 | **保留上一帧** | 清空会让窗口一闪一闪；上屏时仍原样吐字母 |
+    ///
+    /// `fallback_caret`：重画时如果问不到光标（宿主排版脏），用这个位置代替。
+    fn refresh_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
+        let code = self.buffer.borrow().clone();
+        if code.is_empty() {
+            self.cands.borrow_mut().clear();
+            return;
+        }
+        match ipc::query(&code) {
+            Some(entries) if entries.is_empty() => {
+                self.cands.borrow_mut().clear();
+                tsf_debug!("#{} {code} 无候选", self.seq);
+            }
+            Some(entries) => {
+                let words: Vec<String> = entries.into_iter().map(|e| e.word).collect();
+                self.cands.borrow_mut().update(words);
+                self.show_candidates(context, fallback_caret);
+            }
+            None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),
+        }
+    }
+
+    /// 让候选窗贴着光标显示。
+    ///
+    /// 光标有两处来源：现场量一次，量不到就用调用方给的 `fallback_caret`
+    /// （首键前预取的那一个）。两个都没有才不显示——猜一个位置会盖住用户正在
+    /// 看的那一行字，比没有窗口更糟。
+    fn show_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
+        let caret = match (self.caret_rect(context), fallback_caret) {
+            (Some(caret), _) => caret,
+            (None, Some(caret)) => {
+                tsf_debug!("#{} 沿用动手前量到的光标 {caret:?}", self.seq);
+                caret
+            }
+            (None, None) => {
+                tsf_debug!("#{} 拿不到光标位置，本次不显示候选窗", self.seq);
+                return;
+            }
+        };
+        self.cands.borrow_mut().show(caret);
+    }
+
+    /// 问一次光标矩形（屏幕坐标）。
+    ///
+    /// 开一次**只读**编辑会话：`GetTextExt` 要 cookie，cookie 只在会话里有效。
+    /// 会话是 `TF_ES_SYNC`，返回时结果已经填好。
+    fn caret_rect(&self, context: &ITfContext) -> Option<Rect> {
+        let (probe, slot) = CaretProbe::new(context.clone(), Rc::clone(&self.comp), self.tid.get());
+        let iface = CaretProbe::into_session(probe);
+        let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
+        if let Err(e) = unsafe { context.RequestEditSession(self.tid.get(), &iface, flags) } {
+            tsf_debug!("#{} 光标会话请求失败：{e}", self.seq);
+            return None;
+        }
+        // 先拷出来再返回：`Option<Rect>` 是 `Copy`，把它作为尾表达式会把
+        // `Ref` 临时值的生命周期拉到函数末尾，而 `slot` 在那之前就 drop 了。
+        let rect = *slot.borrow();
+        rect
+    }
+
+    /// 按本页序号选词（数字键 1–9）。
+    fn select(&self, context: &ITfContext, nth: usize) {
+        let word = self.cands.borrow().word_on_page(nth);
+        let code = self.clear_buffer();
+        match word {
+            Some(word) => {
+                tsf_info!("#{} 数字键选第 {} 条 {code} → {word}", self.seq, nth + 1);
+                self.finish(context, word);
+            }
+            None => {
+                // 到不了这里：`decide` 只在 `nth < page_len` 时给 `Select`。
+                // 真到了就按上屏处理，绝不丢键（D27）。
+                tsf_info!(
+                    "#{} 第 {} 条不存在，编码原样上屏 {code:?}",
+                    self.seq,
+                    nth + 1
+                );
+                let text = if code.is_empty() {
+                    String::new()
+                } else {
+                    self.resolve(&code)
+                };
+                self.finish(context, text);
+            }
+        }
+    }
+
+    fn flip_page(&self, dir: Dir) {
+        self.cands.borrow_mut().flip(dir);
+    }
+
+    /// 候选窗报上来的事件。**跑在窗口过程里**，不在任何 TSF 回调栈上。
+    fn on_candidate_event(&self, event: Event) {
+        match event {
+            Event::Click(Hit::Candidate(global)) => {
+                // 只借一下取值，绝不把借用带进 `finish`——那会二次借同一个
+                // `RefCell`，panic 一旦跨出 wndproc 就是宿主进程 abort。
+                let word = self.cands.try_borrow().ok().and_then(|c| c.word_at(global));
+                let code = self.buffer.borrow().clone();
+                let ctx = self.active_ctx.borrow().clone();
+                let Some(ctx) = ctx else {
+                    self.cands.borrow_mut().clear();
+                    return;
+                };
+                match word {
+                    Some(word) => {
+                        tsf_info!("#{} 点选第 {} 条 {code} → {word}", self.seq, global + 1);
+                        self.clear_buffer();
+                        self.finish(&ctx, word);
+                    }
+                    None => {
+                        tsf_info!("#{} 点选的第 {} 条不存在，忽略", self.seq, global + 1);
+                    }
+                }
+            }
+            // 箭头只翻页、不选词（D39）。
+            Event::Click(Hit::Arrow(dir)) => {
+                if let Ok(mut cands) = self.cands.try_borrow_mut() {
+                    cands.flip(dir);
+                }
+            }
+            // 分层窗口更新时系统可能同步发 DPI 变化；这时重画会重入窗口过程，
+            // 所以只记日志，位置留给下一次按键重新算（每次 `prepare` 都重新取
+            // 光标所在屏的 DPI，最多滞后一个键）。
+            Event::DpiChanged(dpi) => {
+                tsf_debug!("#{} 显示器 DPI 变为 {dpi}，下一个键重新定位", self.seq);
             }
         }
     }
@@ -249,28 +476,51 @@ impl TextService {
         self.run_preedit(context, Goal::Show(text));
     }
 
-    /// 把缓冲提交上屏。
+    /// 把缓冲提交上屏（空格 / 回车）。
     fn commit(&self, context: &ITfContext) {
         let code = self.clear_buffer();
         if code.is_empty() {
             return;
         }
         let text = self.resolve(&code);
+        self.finish(context, text);
+    }
+
+    /// 这次输入成功结束：关掉候选窗，把文字写进文档。
+    ///
+    /// **所有**「上屏」路径都要走它（包括点选与数字键），这样「窗口什么时候消失」
+    /// 只有一个答案，不会出现「字上去了、窗口还挂着」的残影。
+    fn finish(&self, context: &ITfContext, text: String) {
+        self.cands.borrow_mut().clear();
         self.run_preedit(context, Goal::Finish(Some(text)));
+    }
+
+    /// 这次输入被取消：关窗、抹掉组合串、不留残留。
+    fn abort(&self, context: &ITfContext) {
+        self.cands.borrow_mut().clear();
+        self.run_preedit(context, Goal::Finish(None));
     }
 
     /// 编码 → 上屏文字。**任何路径都必须返回一段文字**。
     ///
-    /// 三种情况：
+    /// 四种情况：
     ///
     /// | 情况 | 结果 |
     /// |---|---|
-    /// | 命中 | 首候选（M1.3 没有候选窗，第 2 个及以后的候选还选不了） |
+    /// | 窗口里正显示着候选 | 当前候选（空格上屏的就是高亮那条，与数字键、点选同一份数据） |
+    /// | 缓存/查询命中 | 首候选（窗口已关的情况：候选窗建不出来时的降级） |
     /// | 查到了但没这个词 | 编码原样上屏（D27：吃掉的键必须变成输出） |
     /// | server 不可用 / 超时 | 同样原样上屏——比丢字好，也比卡住好 |
     ///
     /// 最后一行是 D18 的落地形态：**宁可这一次降级成英文，绝不冻住宿主**。
     fn resolve(&self, code: &str) -> String {
+        // 先问窗口：它手里那批候选正是用户刚刚看着的那一屏，用它才谈得上
+        // 「所见即所得」。取完立刻离开借用，后面的 IPC 可能慢。
+        let shown = self.cands.borrow().current();
+        if let Some(word) = shown {
+            tsf_info!("#{} 提交 {code} → {word}（候选窗）", self.seq);
+            return word;
+        }
         match ipc::query(code) {
             Some(entries) if !entries.is_empty() => {
                 let word = entries[0].word.clone();
@@ -325,6 +575,9 @@ impl TextService {
         let dropped = self.buffer.borrow().clone();
         let ctx = self.active_ctx.borrow_mut().take();
         self.clear_buffer();
+        // 窗口先撤，再撤组合串：**顺序反了会看到残影**——组合串没了、窗口还挂着
+        // 一屏候选，而此刻缓冲已空，再按数字键什么也不会发生。
+        self.cands.borrow_mut().clear();
         let Some(ctx) = ctx else { return };
         if dropped.is_empty() && self.comp.borrow().is_none() {
             return;
@@ -443,6 +696,7 @@ impl TextService_Impl {
         // 反注册途中不该再往文档里写字，所以这里只丢状态、不撤组合串：
         // 宿主正在切走，TSF 会自己终止它，`OnCompositionTerminated` 会收到通知。
         self.clear_buffer();
+        self.cands.borrow_mut().clear();
         *self.comp.borrow_mut() = None;
         self.active_ctx.borrow_mut().take();
         self.comp_sink.borrow_mut().take();
@@ -660,6 +914,9 @@ impl ITfCompositionSink_Impl for TextService_Impl {
             *self.comp.borrow_mut() = None;
             self.active_ctx.borrow_mut().take();
             let dropped = self.clear_buffer();
+            // 组合串没了，候选窗也得跟着撤：否则屏幕上留着一屏对着「已经不存在的
+            // 编码」的候选，点它还会往文档里写字。
+            self.cands.borrow_mut().clear();
             tsf_info!("#{seq} 组合串被外部终止，已删除残留 {dropped:?}");
             Ok(())
         })
@@ -702,6 +959,10 @@ fn action_name(action: Action) -> &'static str {
         Action::Cancel => "cancel",
         Action::Backspace => "backspace",
         Action::Punct(_) => "punct",
+        Action::Select(_) => "select",
+        Action::PagePrev => "page-prev",
+        Action::PageNext => "page-next",
+        Action::Noop => "noop",
     }
 }
 

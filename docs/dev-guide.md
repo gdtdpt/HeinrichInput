@@ -381,6 +381,100 @@ python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-100-zoom.png --z
 **python.exe 默认 DPI 不感知**，不声明的话 200% 屏上抓到的图会先被虚拟化一半再放大，
 字全是糊的，窗口坐标也会差一倍（这个坑很隐蔽：只抓到「正确的窗口的一角」，看起来像布局错了）。
 
+### 4.8 候选窗接进 TSF（M2.3）
+
+一次按键的完整链路（**顺序不能换**）：
+
+```
+OnKeyDown → keys::decide(Input{ mode, buffer_len, page_len }, vk, mods)
+          → apply(action)
+              Action::Buffer  → 缓冲 +1
+                  ├─ caret_rect()          缓冲为空时先量一次「动手前」的光标，留作兜底
+                  ├─ sync_preedit()        组合串先长（本地、快）
+                  ├─ ipc::query(code)      ≤50 ms，超时就保留上一帧（D37）
+                  ├─ caret_rect()          只读编辑会话 → GetTextExt（三级兜底）
+                  └─ Cands::show(caret)    prepare（DWrite 量字）→ place → 分层窗口
+              Action::Commit   → Cands::current() → Finish(Some(word))
+              Action::Select(n)→ word_on_page(n) → Finish(Some(word))
+              Action::Page*    → Cands::flip(dir)（到头则什么都不做）
+```
+
+**五条「不做就静默坏掉」的点**（D40）：
+
+1. **`GetTextExt` 必须进编辑会话。** 它要一个读 cookie（`ec`），cookie 只在
+   `DoEditSession` 里有效。所以我们为它单开一个 `TF_ES_READ | TF_ES_SYNC` 会话
+   （`caret.rs`），而不是想在键回调里直接问。
+2. **定位走三级兜底，别只问一种。** `caret.rs` 按顺序试：① **选区**——组合串的
+   range 覆盖整串编码，宿主折行时它的外接矩形会横跨两行；而每次写完组合串我们都
+   把选区收到末尾（`preedit::set_caret`），所以选区是一个折叠 range，**它就是插入符**；
+   ② **组合串右下角**（连问两次，见下条）；③ `GetGUIThreadInfo` 给的 GUI 插入符。
+   三级都空就返回 `None`，由调用方用「动手前」量到的那个位置顶上（首键才有）。
+   每级只记日志、不返回错误——第一版在这里用 `?` 把错误抛出去，结果兜底路径成了
+   死代码，Chrome 一个窗口都不显示。
+3. **Chromium 会在组合串刚建立时回 `TF_E_NOLAYOUT (0x80040206)`。** 那时它还没给
+   新组合串排版，`GetTextExt` 直接失败。记事本 / Notepad++ 不会。对策两条：**同一
+   请求连问两次**（第二次它就现算排版并给出真实矩形，M2.3 实测通过率 100%），以及
+   **首键前预取**——缓冲为空时先量一次，此时组合串还没建、排版干净，选区那条必然
+   成功。所以 Chrome 的第一键靠预取、后续键靠连问两次。
+4. **窗口里的点击不在任何 TSF 回调栈上。** 它发生在宿主的 `DispatchMessage` 里，
+   拿不到 `&self`。所以 `TextService` 的全部状态搬进 `Rc<Core>`，回调只持
+   `Weak<Core>`。**任何 `RefCell` 二次借用都会 panic，而 panic 跨出
+   `extern "system"` 就是宿主进程 abort** —— 所以事件路径上只用瞬时借或
+   `try_borrow`，借不到就丢掉这次事件（下一次按键会重画）。
+5. **建窗失败要永久降级。** `CandidateWindow::new` 只在第一次真要显示时调用；
+   失败一次就记一条错误、此后不再尝试，退化成 M1.3 的「无窗也能打字」。
+
+**验收怎么跑**（真机，模拟不了）：
+
+```powershell
+# 1) 先确保装的是新 DLL（ABI 5）
+.\dist\heinrich-setup.exe --status
+
+# 2) 打开逐键 debug 日志（改完要重启宿主程序）
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on
+
+# 3) 在记事本 / Notepad++ / Chrome 里各打一遍 vbg，然后看日志
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log
+```
+
+日志里该看到的（一条键一行）：
+
+- `候选 5 条，共 1 页` → 查询命中、窗口内容已换
+- `光标来自选区` / `光标来自组合串右下角（第 N 次）` / `光标来自 GUI 插入符`
+  → 坐标是哪一级给的（Chrome 里常态是「组合串右下角（第 1 次）」）
+- `沿用动手前量到的光标` → 现场三级全没量到，用了首键预取的位置（Chrome 首键即此）
+- `三级兜底都没量到光标` + `本次不显示候选窗` → 真没坐标，这次不出窗（不该常出现）
+- `候选窗 498×62 @ (x, y)` → 定位成功（**没有这行就是 `GetTextExt` 没给坐标**）
+- `提交 vbg → 好（候选窗）` → 空格走的是窗口里那份候选
+- `数字键选第 2 条 vbg → 㛅` / `点选第 2 条 vbg → 㛅` → 两条路径同一个词
+- `翻到第 2 / 2 页` → 翻页生效；`已经在最后一页` → 末页按右
+
+**自测用注入脚本**：不想手敲就用 `tools/smoke-ime.py`（纯 stdlib）把按键送进
+**指定 pid** 的前台窗口，配合 `shot-window.py` 截图，全程不看屏幕也能验：
+
+```powershell
+$np = Start-Process notepad -PassThru
+python tools\smoke-ime.py --pid $np.Id vbg "{SPACE}" vbg "2" vbg "{RIGHT}"
+python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-live.png --margin 16
+```
+
+它抢不到前台就直接退出（绝不往未知窗口里打字），`{NAME}` 是功能键（表在脚本顶部）。
+用 `SendInput` 而不是 `keybd_event`：`SendInput` 校验的 `cbSize` 是**整个 `INPUT`**
+的大小，x64 上由 `MOUSEINPUT` 决定（40 字节），结构体里漏写 `mi`/`hi` 会恒返回
+`ERROR_INVALID_PARAMETER (87)`——这个坑脚本注释里记着，别把它「精简」掉。
+
+**M2.3 真机实测**（记事本 / Notepad++ / Chrome，脚本 `tools/smoke-ime.py` 注入按键）：
+
+| 宿主 | 首键出窗 | 定位来源 | 提交 / 翻页 / 点选 / Esc |
+|---|---|---|---|
+| 记事本 | ✅ | 选区 | 全绿（13 项） |
+| Notepad++ | ✅ | 选区 | 全绿 |
+| Chrome（新 profile） | ✅（靠首键预取） | 组合串右下角（首键靠预取） | 提交 ✅ |
+
+**已知边界**：宿主如果**不是** per-monitor DPI 感知（老程序），`GetTextExt` 给的坐标
+是虚拟化的、而 `GetDpiForMonitor` 给的是真 DPI，副屏上会错位；记事本 / Notepad++ /
+Chrome 都是 DPI 感知的，v1 不为老宿主做补偿。
+
 ## 5. 数据管线
 
 ```
@@ -469,8 +563,8 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M1.2 组合串 | ✅ 已验收（`ITfComposition` preedit 逐键生长 / 退格收缩 + 空格原地替换 + Esc 与方向键取消 + 外部终止删残留；显示属性虚线与光标跟随推迟到 M2，因为它们只服务候选窗。实际观感是宿主默认组合串渲染的浅底色块） |
 | M1.3 接 server | ✅ 已验收（`heinrich-proto` + `heinrich-server` 命名管道 + 50 ms 硬上限 + 后台重连 + 中文标点 + 全局中英模式）。降级路径用 `tsf.ps1 server slow` 验，见 §4.5 |
 | M2.1 候选窗几何 | ✅ 已验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
-| M2.2 候选窗窗口 | 🟡 代码完成，待真机验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
-| M2.3 接进 TSF | 逐键查询 + `ITfContextView::GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页（D37/D38） |
+| M2.2 候选窗窗口 | ✅ 已验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
+| M2.3 接进 TSF | 🟡 代码完成，待真机验收（逐键查询 D37 + `GetTextExt` 定位 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；新增 `cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
 | M2.4 学习落库 | SQLite `usage` 表 + 上屏回报 + 完整 §5 打分 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。

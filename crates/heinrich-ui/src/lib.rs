@@ -1,9 +1,10 @@
 //! 亨利输入法 · 候选窗的**纯几何层**。
 //!
-//! 这个 crate 只回答两个问题，都用纯算术回答：
+//! 这个 crate 只回答三个问题，都用纯算术回答：
 //!
 //! 1. [`layout`]：这一页候选，每个字画在哪个矩形里，窗口多大；
-//! 2. [`place`]：这个窗口该放在屏幕的哪个坐标。
+//! 2. [`place`]：这个窗口该放在屏幕的哪个坐标；
+//! 3. [`Pager`]：翻到第几页了、本页第 n 条对应全部候选的第几条。
 //!
 //! 剩下的（HWND、分层窗口、DirectWrite、DPI 消息、鼠标捕获）全在
 //! `apps/windows/ui`——那部分只能靠肉眼和截图验收，所以尽量薄。
@@ -35,6 +36,7 @@
 
 mod geom;
 mod layout;
+mod pager;
 mod place;
 
 pub use geom::{Rect, Size};
@@ -42,4 +44,5 @@ pub use layout::{
     layout, page_count, page_nav, page_slice, CandidateText, Dir, ItemBox, Layout, LayoutInput,
     Metrics, PageArrow, ARROW_NEXT, ARROW_PREV,
 };
+pub use pager::Pager;
 pub use place::{place, Placement};

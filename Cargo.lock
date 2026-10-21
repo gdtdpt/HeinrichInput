@@ -73,6 +73,8 @@ version = "0.1.0"
 dependencies = [
  "heinrich-proto",
  "heinrich-tip-id",
+ "heinrich-ui",
+ "heinrich-win-ui",
  "windows",
  "windows-core",
 ]

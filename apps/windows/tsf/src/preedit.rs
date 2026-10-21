@@ -192,7 +192,10 @@ unsafe fn write_text(ec: u32, range: &ITfRange, text: &str) -> Result<()> {
 }
 
 /// 取当前选区的 range。没有选区（极少见）返回 `None`。
-unsafe fn selection_range(context: &ITfContext, ec: u32) -> Result<Option<ITfRange>> {
+///
+/// `pub(crate)`：候选窗定位（`caret`）要用同一个选区去问 `GetTextExt`——
+/// 我们每次都把选区收到组合串末尾，所以它就是插入符。
+pub(crate) unsafe fn selection_range(context: &ITfContext, ec: u32) -> Result<Option<ITfRange>> {
     let mut sel = [TF_SELECTION::default()];
     let mut fetched = 0u32;
     context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched)?;
