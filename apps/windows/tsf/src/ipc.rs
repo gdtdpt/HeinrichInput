@@ -47,7 +47,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use heinrich_proto::{
-    body_len, feature, source as proto_source, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION,
+    body_len, feature, source as proto_source, Entry, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES,
+    PROTO_VERSION,
 };
 
 /// 键路径上的往返预算。本地管道正常是**几十微秒**级，50 ms 已经是「server 出事」
@@ -104,6 +105,11 @@ impl Drop for Conn {
 static CONN: Mutex<Option<Conn>> = Mutex::new(None);
 static CACHE: Mutex<Option<CacheState>> = Mutex::new(None);
 static PENDING_MODE: Mutex<Option<Mode>> = Mutex::new(None);
+/// server 推来的字根表（§6.7）。`None` = 还没收到，此时键位图相关按键一律放行。
+///
+/// 数据在一整条连接里不变，收到就留着；断线重连时新连接会再推一次。
+/// 不清空：万一重连期间用户按了 `Ctrl+Shift+N`，用上一次的表画总比不弹好。
+static ROOTS: Mutex<Option<Vec<ProtoKeyRoots>>> = Mutex::new(None);
 /// 服务端最近一次握手声明的能力位（`Frame::Welcome::features`）。
 ///
 /// 键路径要读它（`z` 归谁、码长上限），而握手在后台线程——所以存在原子变量里。
@@ -210,6 +216,14 @@ pub fn has_pinyin() -> bool {
     FEATURES.load(Ordering::Relaxed) & feature::PINYIN != 0
 }
 
+/// server 推来的字根表（§6.7）。`None` = 还没收到过。
+///
+/// 返回克隆而不是引用：表本身只有几百字节，克隆一次比在键路径上「拿锁 + 持锁
+/// 进绘制」安全得多——绘制要走 DWrite/D2D，那里万一批异常，锁就再也放不回来了。
+pub fn key_roots() -> Option<Vec<ProtoKeyRoots>> {
+    ROOTS.lock().ok().and_then(|g| g.clone())
+}
+
 /// 取 server 上的中英模式：`Some(true)` = 中文，`None` = 问不到，调用方保持不动。
 ///
 /// 只该在 `Activate` 这类「不在按键热路径」的地方调用。对外只暴露一个布尔，
@@ -283,10 +297,38 @@ fn request(frame: &Frame, budget: Duration) -> Option<Frame> {
     }
 }
 
+/// 一次最多跳过多条推送帧。推送只在握手后有一条；给 4 是「就算对端疯了一样推，
+/// 也不会把这次按键的预算耗光」。
+const MAX_PUSH_SKIP: usize = 4;
+
 fn exchange(conn: &Conn, req: &Frame, budget: Duration) -> io::Result<Frame> {
     let deadline = Instant::now() + budget;
     write_all(conn, &req.encode(), deadline)?;
 
+    // 一条请求对应一条应答——但协议 v5 起 server 会**主动推**一帧字根表
+    // （排在 `Welcome` 后面）。它静静躺在管道里，不跳过去的话下一次读应答就会
+    // 读到它，整条管道从此错位一帧：查询拿到上一条的应答、模式变更拿到候选……
+    // 所以这里只跳过 `Roots`，其余帧一律当应答返回。
+    for _ in 0..MAX_PUSH_SKIP {
+        let frame = read_frame(conn, deadline)?;
+        if let Frame::Roots { keys } = frame {
+            let n = keys.len();
+            if let Ok(mut g) = ROOTS.lock() {
+                *g = Some(keys);
+            }
+            tsf_debug!("收到字根表 {n} 键");
+            continue;
+        }
+        return Ok(frame);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "连续收到推送帧，没有应答",
+    ))
+}
+
+/// 读一整帧（含长度前缀）。
+fn read_frame(conn: &Conn, deadline: Instant) -> io::Result<Frame> {
     let mut header = [0u8; 4];
     read_exact(conn, &mut header, deadline)?;
     let len =

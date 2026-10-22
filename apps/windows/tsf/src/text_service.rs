@@ -60,6 +60,7 @@ use windows::Win32::UI::TextServices::{
 use crate::cand;
 use crate::caret::CaretProbe;
 use crate::ipc;
+use crate::keycap;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap};
 use crate::preedit::{CompSlot, Goal, PreeditSession};
 
@@ -127,6 +128,8 @@ pub struct Core {
 
     /// 候选窗 + 这一页的状态。见 [`crate::cand`]。
     cands: Rc<RefCell<cand::Cands>>,
+    /// 码位键位图（§6.7）。懒建、按需弹，与候选窗同生共死。
+    keycaps: RefCell<keycap::KeycapPanel>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -161,6 +164,7 @@ impl Core {
             comp_sink: RefCell::new(None),
             active_ctx: RefCell::new(None),
             cands: Rc::new(RefCell::new(cand::Cands::new(seq))),
+            keycaps: RefCell::new(keycap::KeycapPanel::new(seq)),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -241,7 +245,7 @@ impl Core {
         ipc::set_mode(next == Mode::Chinese);
         let flushed = self.flush_codes_as_letters(pic);
         // 窗口跟着撤：切到英文模式后还挂着一屏中文候选，等于骗用户按空格。
-        self.cands.borrow_mut().clear();
+        self.clear_popups();
         tsf_info!(
             "#{} 切换为{}模式{}",
             self.seq,
@@ -323,6 +327,7 @@ impl Core {
                 self.refresh_candidates(context, None);
             }
             Action::Select(nth) => self.select(context, nth),
+            Action::Keycaps(nth) => self.show_keycaps(nth),
             Action::PagePrev => self.flip_page(Dir::Prev),
             Action::PageNext => self.flip_page(Dir::Next),
         }
@@ -379,14 +384,18 @@ impl Core {
     ///
     /// `fallback_caret`：重画时如果问不到光标（宿主排版脏），用这个位置代替。
     fn refresh_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
+        // 编码一变，上一张键位图就过期了（它画的是**上一个码**的字根）。
+        // 放在最前面而不是跟着 `clear` 走：新码也查到候选时不会走 `clear`，
+        // 但那张图同样不能留（§6.7 的「换码即关闭」）。
+        self.keycaps.borrow_mut().hide();
         let code = self.buffer.borrow().clone();
         if code.is_empty() {
-            self.cands.borrow_mut().clear();
+            self.clear_popups();
             return;
         }
         match ipc::query(&code) {
             Some(reply) if reply.words.is_empty() => {
-                self.cands.borrow_mut().clear();
+                self.clear_popups();
                 tsf_debug!("#{} {code} 无候选", self.seq);
             }
             Some(reply) => {
@@ -480,6 +489,47 @@ impl Core {
         self.cands.borrow_mut().flip(dir);
     }
 
+    /// 显示本页第 `nth` 条候选的码位键位图（`Ctrl+Shift+N`，§6.7）。
+    ///
+    /// **码的优先级**（见 [`crate::keycap`]）：候选自己的 `code` → 当前缓冲。
+    /// 拼音段能拿到「好 → vbg」这种反查码；五笔段没有码提示，用户手上那串字母
+    /// 本身就是码。
+    fn show_keycaps(&self, nth: usize) {
+        // 一次借用里把三样东西取出来就立刻放开：`keycap.show` 要建窗、要量字，
+        // 期间若还持有 `cands` 的借用，任何一次回调重入都会 panic。
+        let (code, anchor, flipped) = {
+            let c = self.cands.borrow();
+            let Some(anchor) = c.rect() else {
+                tsf_debug!("#{} 候选窗没显示，键位图不弹", self.seq);
+                return;
+            };
+            let code = match c.code_on_page(nth) {
+                Some(code) if !code.is_empty() => code,
+                Some(_) => self.buffer.borrow().clone(),
+                None => {
+                    tsf_debug!("#{} 本页没有第 {} 条", self.seq, nth + 1);
+                    return;
+                }
+            };
+            (code, anchor, c.flipped())
+        };
+        if code.is_empty() {
+            tsf_debug!("#{} 手上没有码，键位图不弹", self.seq);
+            return;
+        }
+        tsf_info!("#{} 键位图：第 {} 条 → {code}", self.seq, nth + 1);
+        self.keycaps.borrow_mut().show(&code, anchor, flipped);
+    }
+
+    /// 候选窗与键位图一起收掉。
+    ///
+    /// 键位图贴在候选窗下沿——候选窗没了它还留着，就是一个飘在屏幕上、
+    /// 与任何东西都对不上的空框。
+    fn clear_popups(&self) {
+        self.cands.borrow_mut().clear();
+        self.keycaps.borrow_mut().hide();
+    }
+
     /// 候选窗报上来的事件。**跑在窗口过程里**，不在任何 TSF 回调栈上。
     fn on_candidate_event(&self, event: Event) {
         match event {
@@ -490,7 +540,7 @@ impl Core {
                 let code = self.buffer.borrow().clone();
                 let ctx = self.active_ctx.borrow().clone();
                 let Some(ctx) = ctx else {
-                    self.cands.borrow_mut().clear();
+                    self.clear_popups();
                     return;
                 };
                 match word {
@@ -540,13 +590,13 @@ impl Core {
     /// **所有**「上屏」路径都要走它（包括点选与数字键），这样「窗口什么时候消失」
     /// 只有一个答案，不会出现「字上去了、窗口还挂着」的残影。
     fn finish(&self, context: &ITfContext, text: String) {
-        self.cands.borrow_mut().clear();
+        self.clear_popups();
         self.run_preedit(context, Goal::Finish(Some(text)));
     }
 
     /// 这次输入被取消：关窗、抹掉组合串、不留残留。
     fn abort(&self, context: &ITfContext) {
-        self.cands.borrow_mut().clear();
+        self.clear_popups();
         self.run_preedit(context, Goal::Finish(None));
     }
 
@@ -631,7 +681,7 @@ impl Core {
         self.clear_buffer();
         // 窗口先撤，再撤组合串：**顺序反了会看到残影**——组合串没了、窗口还挂着
         // 一屏候选，而此刻缓冲已空，再按数字键什么也不会发生。
-        self.cands.borrow_mut().clear();
+        self.clear_popups();
         let Some(ctx) = ctx else { return };
         if dropped.is_empty() && self.comp.borrow().is_none() {
             return;
@@ -750,7 +800,7 @@ impl TextService_Impl {
         // 反注册途中不该再往文档里写字，所以这里只丢状态、不撤组合串：
         // 宿主正在切走，TSF 会自己终止它，`OnCompositionTerminated` 会收到通知。
         self.clear_buffer();
-        self.cands.borrow_mut().clear();
+        self.clear_popups();
         *self.comp.borrow_mut() = None;
         self.active_ctx.borrow_mut().take();
         self.comp_sink.borrow_mut().take();
@@ -970,7 +1020,7 @@ impl ITfCompositionSink_Impl for TextService_Impl {
             let dropped = self.clear_buffer();
             // 组合串没了，候选窗也得跟着撤：否则屏幕上留着一屏对着「已经不存在的
             // 编码」的候选，点它还会往文档里写字。
-            self.cands.borrow_mut().clear();
+            self.clear_popups();
             tsf_info!("#{seq} 组合串被外部终止，已删除残留 {dropped:?}");
             Ok(())
         })
@@ -1014,6 +1064,7 @@ fn action_name(action: Action) -> &'static str {
         Action::Backspace => "backspace",
         Action::Punct(_) => "punct",
         Action::Select(_) => "select",
+        Action::Keycaps(_) => "keycaps",
         Action::PagePrev => "page-prev",
         Action::PageNext => "page-next",
         Action::Noop => "noop",

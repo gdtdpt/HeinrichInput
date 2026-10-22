@@ -38,7 +38,11 @@ use std::fmt;
 /// - v4：M3.4a 码提示。`Entry` 加 `code`（**追加在 `label` 之后**，前三个字段的
 ///   位置不动）。码由 server 决定给不给（`hint.mode` 与「这一段是怎么出来的」都在
 ///   server 侧），DLL 只负责「非空就画 chip」——这样提示规则只有一处实现。
-pub const PROTO_VERSION: u16 = 4;
+/// - v5：M3.4b 键位图。新增 [`Frame::Roots`]（server → DLL，**连接建立后主动推一帧**）。
+///   这是协议里第一条**不是应答**的帧，所以客户端读应答时必须跳过它
+///   （`apps/windows/tsf/src/ipc.rs` 的 `exchange`），否则下一条请求会读到别人的
+///   应答、整条管道错位一帧。
+pub const PROTO_VERSION: u16 = 5;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -47,6 +51,10 @@ pub const MAX_PAYLOAD: usize = 48 * 1024;
 /// 一帧最多带多少个候选。DLL 只需要首个候选（M1.3），但协议一次给足 9 个，
 /// 免得 M2 加候选窗时再改线格式。
 pub const MAX_ENTRIES: usize = 32;
+
+/// 一帧最多带多少个键位（[`Frame::Roots`]）。五笔只有 25 个字母键，
+/// 上限给 32 是留一格余量、同时挡住坏帧。
+pub const MAX_KEYS: usize = 32;
 
 /// 候选来源（`Frame::Result::source`）。
 pub mod source {
@@ -104,6 +112,23 @@ pub struct Entry {
     pub code: String,
 }
 
+/// 一个键位上的字根（[`Frame::Roots`] 的一条）。
+///
+/// 只带**画键帽需要的**四样东西。区位号与助记口诀不上线：键位图上不画它们，
+/// 多传就是多一份要跟着 `roots.toml` 同步的字段。要显示助记再加字段，
+/// 那时协议也得跟着升版——但现在没有任何一处需要它。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProtoKeyRoots {
+    /// 字母键，`a`–`y`。线格式是一个字节（ASCII）。
+    pub key: char,
+    /// 一级简码字，画在键帽右下。
+    pub primary: char,
+    /// 主字根在前、变体在后，**每个 `char` 是一枚字根**（不是拆字结果）。
+    pub roots: String,
+    /// `roots` 前几枚是主字根，其余在键帽上淡一档。
+    pub main_len: u8,
+}
+
 /// 一条消息。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Frame {
@@ -148,6 +173,15 @@ pub enum Frame {
     },
     /// server 拒绝服务或要断开。
     Bye { reason: String },
+    /// 字根表（§6.7 键位图）。**server 主动推**，不是任何请求的应答。
+    ///
+    /// 只在**每条连接的第一次握手成功后**发一次：数据是装配期就固定下来的，
+    /// 一整条连接里不会变，没必要每次 `Hello` 都重发（`Hello` 还兼着「问当前
+    /// 中英模式」的职责，会被 `Activate` 反复调用）。
+    ///
+    /// DLL 收到后缓存；没收到（老 server、或这一帧丢了）就一直不接管
+    /// `Ctrl+Shift+N`——键位图画不出来时，那个键本来就该还给宿主。
+    Roots { keys: Vec<ProtoKeyRoots> },
 }
 
 mod kind {
@@ -159,6 +193,7 @@ mod kind {
     pub const MODE: u16 = 6;
     pub const BYE: u16 = 7;
     pub const RECORD: u16 = 8;
+    pub const FROOTS: u16 = 9;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,6 +208,12 @@ pub enum DecodeError {
     /// 帧尾有多余字节。
     Trailing(usize),
     TooManyEntries(usize),
+    /// `Frame::Roots` 里的键位过多。
+    TooManyKeys(usize),
+    /// 键位的一级简码不是恰好一个字符。
+    BadKeyPrimary,
+    /// 主字根个数超过字根总数。
+    BadKeyRoots,
     BadUtf8,
 }
 
@@ -185,6 +226,9 @@ impl fmt::Display for DecodeError {
             DecodeError::BadMode(m) => write!(f, "未知模式 {m}"),
             DecodeError::Trailing(n) => write!(f, "帧尾多出 {n} 字节"),
             DecodeError::TooManyEntries(n) => write!(f, "候选过多（{n} 个）"),
+            DecodeError::TooManyKeys(n) => write!(f, "键位过多（{n} 个）"),
+            DecodeError::BadKeyPrimary => write!(f, "键位的一级简码不是单个字符"),
+            DecodeError::BadKeyRoots => write!(f, "主字根个数超过字根总数"),
             DecodeError::BadUtf8 => write!(f, "字符串不是合法 UTF-8"),
         }
     }
@@ -202,6 +246,7 @@ impl Frame {
             Frame::SetMode { .. } => kind::SET_MODE,
             Frame::Mode { .. } => kind::MODE,
             Frame::Record { .. } => kind::RECORD,
+            Frame::Roots { .. } => kind::FROOTS,
             Frame::Bye { .. } => kind::BYE,
         }
     }
@@ -263,6 +308,17 @@ impl Frame {
                 body.extend_from_slice(&at_unix.to_le_bytes());
             }
             Frame::Bye { reason } => put_str(&mut body, reason),
+            Frame::Roots { keys } => {
+                body.push(keys.len() as u8);
+                for k in keys {
+                    // 键位字母是 ASCII，一个字节足够；写成 `as u8` 而不是字符串，
+                    // 25 个键就省下 25 个长度前缀。
+                    body.push(k.key as u8);
+                    put_str(&mut body, &k.primary.to_string());
+                    body.push(k.main_len);
+                    put_str(&mut body, &k.roots);
+                }
+            }
         }
         let mut out = Vec::with_capacity(body.len() + 4);
         out.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -364,6 +420,35 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
         kind::BYE => Frame::Bye {
             reason: r.string()?,
         },
+        kind::FROOTS => {
+            let n = r.u8()? as usize;
+            if n > MAX_KEYS {
+                return Err(DecodeError::TooManyKeys(n));
+            }
+            let mut keys = Vec::with_capacity(n);
+            for _ in 0..n {
+                let key = r.u8()? as char;
+                let primary = r.string()?;
+                let mut pc = primary.chars();
+                let primary = match (pc.next(), pc.next()) {
+                    (Some(c), None) => c,
+                    // 空串或多字符都当坏帧：键帽上一个格子只能放一个字。
+                    _ => return Err(DecodeError::BadKeyPrimary),
+                };
+                let main_len = r.u8()?;
+                let roots = r.string()?;
+                if main_len as usize > roots.chars().count() {
+                    return Err(DecodeError::BadKeyRoots);
+                }
+                keys.push(ProtoKeyRoots {
+                    key,
+                    primary,
+                    roots,
+                    main_len,
+                });
+            }
+            Frame::Roots { keys }
+        }
         other => return Err(DecodeError::BadKind(other)),
     };
     if r.pos != body.len() {
@@ -490,6 +575,55 @@ mod tests {
         roundtrip(Frame::Bye {
             reason: "协议版本不匹配".into(),
         });
+        roundtrip(Frame::Roots {
+            keys: vec![
+                ProtoKeyRoots {
+                    key: 'v',
+                    primary: '发',
+                    roots: "女刀九臼山彐曰".into(),
+                    main_len: 7,
+                },
+                ProtoKeyRoots {
+                    key: 'g',
+                    primary: '一',
+                    roots: "王一五戋龶丰".into(),
+                    main_len: 4,
+                },
+            ],
+        });
+    }
+
+    /// 字根表这一帧的规模要可算：25 键、每键七八枚字根（8 枚已是 `roots.toml`
+    /// 里最大的那一档）时也就 800 多字节。这条不是性能测试，是防止有人往
+    /// `roots` 里塞整本字典。
+    #[test]
+    fn roots_frame_stays_small() {
+        let keys: Vec<ProtoKeyRoots> = "abcdefghijklmnopqrstuvwxy"
+            .chars()
+            .map(|c| ProtoKeyRoots {
+                key: c,
+                primary: '一',
+                roots: "女刀九臼山彐曰金".into(),
+                main_len: 6,
+            })
+            .collect();
+        let bytes = Frame::Roots { keys }.encode();
+        assert!(bytes.len() < 1024, "字根表 {} 字节，超了", bytes.len());
+    }
+
+    /// 主字根个数超出字根总数是**坏帧**，不能画出来当「全是主字根」。
+    #[test]
+    fn roots_with_bad_main_len_are_rejected() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&kind::FROOTS.to_le_bytes());
+        body.push(1);
+        body.push(b'g');
+        put_str(&mut body, "一");
+        body.push(9); // 只有 2 枚字根
+        put_str(&mut body, "王一");
+        let mut bytes = (body.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&body);
+        assert_eq!(Frame::decode(&bytes), Err(DecodeError::BadKeyRoots));
     }
 
     /// 长度前缀必须覆盖「消息类型 + 载荷」，客户端靠它一次读准。

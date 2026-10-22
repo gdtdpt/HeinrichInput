@@ -15,10 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use heinrich_core::scheme::{Config, HintMode, PinyinLexicon, Scheme};
+use heinrich_core::scheme::{Config, HintMode, PinyinLexicon, Roots, Scheme};
 use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
 use heinrich_proto::{
-    feature, source as proto_source, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION,
+    feature, source as proto_source, Entry, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES, PROTO_VERSION,
 };
 
 use crate::store::SqliteStore;
@@ -109,6 +109,9 @@ pub struct Host {
     recorded: u64,
     /// 码提示的生效模式，带配置文件热更新。
     hint: HintState,
+    /// 字根表（§6.7 键位图）。`None` = 字根表没装成，DLL 那边就不接管
+    /// `Ctrl+Shift+N`——键位图是锦上添花，不能因为它挡住打字。
+    roots: Option<Roots>,
 }
 
 /// 码提示（§6.3）的生效模式。
@@ -251,6 +254,22 @@ impl Host {
             },
         };
         srv_info!("学习库：{}", store.describe());
+        // 字根表与方案在同一个目录（`data/wubi86/roots.toml`）。装不上只降级：
+        // 没有它只是键位图不弹，与「打不了字」是两件完全不同量级的事。
+        let roots = match Roots::load(dir) {
+            Ok(r) => {
+                srv_info!(
+                    "字根表：{} 键 / {} 条主字根",
+                    r.keys().len(),
+                    r.total_roots()
+                );
+                Some(r)
+            }
+            Err(e) => {
+                srv_error!("{e}；本次不提供键位图（Ctrl+Shift+N 让给宿主）");
+                None
+            }
+        };
         Ok(Self {
             scheme,
             pinyin,
@@ -260,6 +279,7 @@ impl Host {
             last_checkpoint: Instant::now(),
             recorded: 0,
             hint: HintState::new(None, None),
+            roots,
         })
     }
 
@@ -337,6 +357,32 @@ impl Host {
         self.pinyin.is_some()
     }
 
+    /// 字根表这一帧（§6.7）。`None` = 字根表没装成。
+    ///
+    /// **不是应答**：由 `pipe.rs` 在每条连接第一次握手成功后主动发一次。
+    /// 数据是装配期固定的，一条连接里不会变，没必要每次 `Hello` 都重发。
+    pub fn roots_frame(&self) -> Option<Frame> {
+        let roots = self.roots.as_ref()?;
+        Some(Frame::Roots {
+            keys: roots
+                .keys()
+                .iter()
+                .map(|k| {
+                    let mut all: String = k.roots.iter().collect();
+                    all.extend(k.variants.iter());
+                    ProtoKeyRoots {
+                        key: k.key,
+                        primary: k.primary,
+                        // 主字根个数是**字符数**，不是字节数：`main_len` 由 DLL
+                        // 拿去切前几位画实色，按字节切会把多字节字切开。
+                        main_len: k.roots.len().min(u8::MAX as usize) as u8,
+                        roots: all,
+                    }
+                })
+                .collect(),
+        })
+    }
+
     /// 本次运行收到的上屏回报条数。
     pub fn recorded(&self) -> u64 {
         self.recorded
@@ -392,12 +438,13 @@ impl Host {
                 srv_debug!("上屏 {code} → {word}（第 {} 条）", self.recorded);
                 None
             }
-            // Welcome / Result / Mode / Bye 是**服务端发出去的**方向，
+            // Welcome / Result / Mode / Bye / Roots 是**服务端发出去的**方向，
             // 收到它们只能说明对端把方向搞反了，不理。
             Frame::Welcome { .. }
             | Frame::Result { .. }
             | Frame::Mode { .. }
-            | Frame::Bye { .. } => None,
+            | Frame::Bye { .. }
+            | Frame::Roots { .. } => None,
         }
     }
 

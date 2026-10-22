@@ -57,6 +57,11 @@ pub struct Cands {
     /// 上次显示用的光标矩形。翻页/重画要用同一处，不能每次重问 TSF
     /// （翻页发生在窗口过程里，那时没有编辑会话可开）。
     caret: Option<Rect>,
+    /// 候选窗**实际**落在哪（屏幕坐标）。键位图贴它，§6.7。
+    /// `None` = 还没成功显示过。
+    rect: Option<Rect>,
+    /// 候选窗是否翻到了光标上方。键位图跟着走，否则会压在正文上。
+    flipped: bool,
     window: Option<CandidateWindow>,
     /// 建窗时交给窗口的点击回调。只被取走一次。
     on_event: Option<Box<dyn FnMut(Event)>>,
@@ -74,6 +79,8 @@ impl Cands {
             pager: Pager::new(PAGE_SIZE),
             highlight: 0,
             caret: None,
+            rect: None,
+            flipped: false,
             window: None,
             on_event: None,
             failed: false,
@@ -118,6 +125,8 @@ impl Cands {
         self.split = 0;
         self.pager.reset(0);
         self.highlight = 0;
+        self.rect = None;
+        self.flipped = false;
         self.hide();
     }
 
@@ -131,6 +140,28 @@ impl Cands {
     pub fn word_on_page(&self, i: usize) -> Option<String> {
         let global = self.pager.global(i)?;
         self.words.get(global).cloned()
+    }
+
+    /// 本页第 `i` 条（0 起）的**五笔码**（§6.3 的码提示数据，键位图要用它）。
+    ///
+    /// `Some("")` = 这一条没有码（五笔段的候选就是这样，查询串本身就是码）；
+    /// `None` = 本页没有这一条。
+    pub fn code_on_page(&self, i: usize) -> Option<String> {
+        let global = self.pager.global(i)?;
+        Some(self.codes.get(global).cloned().unwrap_or_default())
+    }
+
+    /// 候选窗**当前**矩形（屏幕坐标）。`None` = 没有窗口。
+    ///
+    /// 键位图贴着它排（§6.7）——贴**光标**会挤在候选窗与正文之间，正好挡住
+    /// 用户正在看的那一行。
+    pub fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
+
+    /// 候选窗是否翻到了光标上方。
+    pub fn flipped(&self) -> bool {
+        self.flipped
     }
 
     /// 全部候选里第 `global` 条的文字。点选提交走这条——窗口给的就是全局序号。
@@ -210,19 +241,25 @@ impl Cands {
                 let gap = CARET_GAP * prepared.dpi_scale;
                 let placed = place(caret, prepared.layout.size, work_area_at(anchor), gap);
                 match win.show(&prepared, (placed.rect.x as i32, placed.rect.y as i32)) {
-                    Ok(()) => tsf_debug!(
-                        "#{} 候选窗 {}×{} @ ({}, {}){}",
-                        self.seq,
-                        prepared.layout.size.w,
-                        prepared.layout.size.h,
-                        placed.rect.x as i32,
-                        placed.rect.y as i32,
-                        if placed.flipped {
-                            "（翻到光标上方）"
-                        } else {
-                            ""
-                        }
-                    ),
+                    Ok(()) => {
+                        // 记下窗口实际落在哪：键位图要贴着它往下排（§6.7），
+                        // 而那时早已不在这次 `redraw` 的栈上了。
+                        self.rect = Some(placed.rect);
+                        self.flipped = placed.flipped;
+                        tsf_debug!(
+                            "#{} 候选窗 {}×{} @ ({}, {}){}",
+                            self.seq,
+                            prepared.layout.size.w,
+                            prepared.layout.size.h,
+                            placed.rect.x as i32,
+                            placed.rect.y as i32,
+                            if placed.flipped {
+                                "（翻到光标上方）"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
                     Err(e) => tsf_error!("#{} 候选窗显示失败：{e}", self.seq),
                 }
             }

@@ -45,6 +45,11 @@ pub enum Action {
     Punct(char),
     /// 吃掉并选**本页**第 n 条候选（0 起，数字键 1–9）。
     Select(usize),
+    /// 吃掉并显示**本页**第 n 条候选的码位键位图（0 起，`Ctrl+Shift+1..9`）。
+    ///
+    /// 与 [`Action::Select`] 分开而不是加个布尔参数：两者做的事完全不同
+    /// （一个上屏、一个只画参考图），混在一个变体里早晚会有人写错分支。
+    Keycaps(usize),
     /// 吃掉并往前翻一页。已经首页时调用方什么也不做（D38）。
     PagePrev,
     /// 吃掉并往后翻一页。
@@ -282,6 +287,33 @@ pub fn is_text_key(vk: u16) -> bool {
 /// 被输入法吃掉。只有组合态（窗口里有候选）时它们才变成「选第 n 条」与「翻页」：
 /// 那一刻用户的意图已经被组合串与前缀锁定了，放行反而会破坏组合（D38）。
 pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
+    // Ctrl+Shift+1..9：调出本页第 n 条的**码位键位图**（§6.7 / D50）。
+    //
+    // 必须坐在最前面。下面那条 `if mods.ctrl || mods.alt { Action::Pass }` 会把
+    // 所有带 Ctrl 的键一律放行——写在它后面等于写了一段死代码。**而且**它还得
+    // 排在「数字键 = 选字」之前，那一支不看修饰键（D38）。两条顺序要求合起来，
+    // 只剩这一个位置。
+    //
+    // 只在有候选窗时接管：没有候选窗，用户手上没有「正在打的码」，键位图无从
+    // 展开，`Ctrl+Shift+1` 就该还给宿主。英文模式同理——那一模式下一个键都不该吃。
+    //
+    // 超出本页条数时**吃掉不动**（`Noop`）而不是放行：放行会让宿主在组合串中间
+    // 插字符、终止组合串，把打了一半的编码弄丢——与数字键同一取舍（D38）。
+    if mods.ctrl
+        && mods.shift
+        && !mods.alt
+        && input.mode == Mode::Chinese
+        && input.has_candidates()
+        && (0x31..=0x39).contains(&vk)
+    {
+        let nth = (vk - 0x31) as usize;
+        return if nth < input.page_len {
+            Action::Keycaps(nth)
+        } else {
+            Action::Noop
+        };
+    }
+
     // Ctrl / Alt 组合一律放行：Ctrl+C、Ctrl+V、Alt+Tab 被输入法吞掉是灾难性的，
     // 而且用户对它们有强预期。
     if mods.ctrl || mods.alt {
@@ -482,6 +514,14 @@ mod tests {
     fn shift() -> Mods {
         Mods {
             ctrl: false,
+            alt: false,
+            shift: true,
+        }
+    }
+    /// Ctrl+Shift，其余不按。
+    fn ctrl_shift() -> Mods {
+        Mods {
+            ctrl: true,
             alt: false,
             shift: true,
         }
@@ -711,6 +751,51 @@ mod tests {
         assert_eq!(decide(zh(3), TAB, c), Action::Pass);
         // 英文模式照旧全放行
         assert_eq!(decide(en(3), TAB, m()), Action::Pass);
+    }
+
+    /// `Ctrl+Shift+1..9` 调出键位图（§6.7）。三条边界：
+    /// 必须越过 `mods.ctrl` 那一关、必须排在「数字键 = 选字」之前、没有候选窗时放行。
+    #[test]
+    fn ctrl_shift_digit_opens_keycaps() {
+        // 本页 5 条时按 1/3 分别指向第 1/3 条
+        assert_eq!(
+            decide(zh_page(3, 5), 0x31, ctrl_shift()),
+            Action::Keycaps(0)
+        );
+        assert_eq!(
+            decide(zh_page(3, 5), 0x33, ctrl_shift()),
+            Action::Keycaps(2)
+        );
+        // 超出本页条数：吃掉不动，绝不能放行（放行会把组合串打断）
+        assert_eq!(decide(zh_page(3, 2), 0x35, ctrl_shift()), Action::Noop);
+        // 没有候选窗：还给宿主
+        assert_eq!(decide(zh(3), 0x31, ctrl_shift()), Action::Pass);
+        assert_eq!(decide(zh(0), 0x31, ctrl_shift()), Action::Pass);
+        // 只按 Ctrl（没有 Shift）仍是宿主的键
+        let c = Mods {
+            ctrl: true,
+            alt: false,
+            shift: false,
+        };
+        assert_eq!(decide(zh_page(3, 5), 0x31, c), Action::Pass);
+        // 加上 Alt 就还回去（`Ctrl+Alt+Shift+1` 是别的东西）
+        let ca = Mods {
+            ctrl: true,
+            alt: true,
+            shift: true,
+        };
+        assert_eq!(decide(zh_page(3, 5), 0x31, ca), Action::Pass);
+        // 英文模式下一个键都不吃
+        assert_eq!(
+            decide(Input::new(Mode::English).with_page(5), 0x31, ctrl_shift()),
+            Action::Pass
+        );
+    }
+
+    /// 普通数字键不受影响：不按 Ctrl 时仍然是「选第 n 条」。
+    #[test]
+    fn plain_digit_still_selects() {
+        assert_eq!(decide(zh_page(3, 5), 0x32, m()), Action::Select(1));
     }
 
     #[test]

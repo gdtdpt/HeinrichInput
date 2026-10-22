@@ -284,6 +284,68 @@ fn check(name: &str, ok: bool, detail: String) -> i32 {
     }
 }
 
+/// 字根表自测（§6.7）。这一帧是 `Ctrl+Shift+N` 的唯一数据来源，
+/// 它错了键位图就画不出来——而那种失败在真机上表现为「按了没反应」，最难查。
+fn selftest_roots(host: &mut Host) -> i32 {
+    let Some(heinrich_proto::Frame::Roots { keys }) = host.roots_frame() else {
+        println!("  字根表 → 未装载  ✗");
+        return 1;
+    };
+    let mut failed = 0;
+
+    // ① 25 个字母键齐全、无重复
+    let mut letters: Vec<char> = keys.iter().map(|k| k.key).collect();
+    letters.sort_unstable();
+    letters.dedup();
+    failed += check(
+        "字根表键位",
+        keys.len() == 25 && letters.len() == 25,
+        format!("{} 键，{} 个不同字母", keys.len(), letters.len()),
+    );
+
+    // ② 每个键都能画：一级简码是单字，字根非空，主字根个数不越界
+    let bad: Vec<char> = keys
+        .iter()
+        .filter(|k| {
+            k.roots.chars().count() == 0
+                || k.main_len as usize > k.roots.chars().count()
+                || k.primary == '\0'
+        })
+        .map(|k| k.key)
+        .collect();
+    failed += check(
+        "字根表可绘制",
+        bad.is_empty(),
+        if bad.is_empty() {
+            "每键都有字根、简码、合法主字根数".to_string()
+        } else {
+            format!("异常键：{}", bad.iter().collect::<String>())
+        },
+    );
+
+    // ③ 一级简码与码表一致：`v` → 发、`b` → 了、`g` → 一（§6.7 的第五项校验
+    //    在这里再走一遍真实路径，防止「roots.toml 改了、码表没跟上」）
+    let mut mismatch = Vec::new();
+    for want in [('v', '发'), ('b', '了'), ('g', '一'), ('k', '中')] {
+        match keys.iter().find(|k| k.key == want.0) {
+            Some(k) if k.primary == want.1 => {}
+            Some(k) => mismatch.push(format!("{} 应为 {} 实为 {}", want.0, want.1, k.primary)),
+            None => mismatch.push(format!("缺键 {}", want.0)),
+        }
+    }
+    failed += check(
+        "一级简码抽查",
+        mismatch.is_empty(),
+        if mismatch.is_empty() {
+            "v/b/g/k 与码表一致".to_string()
+        } else {
+            mismatch.join("；")
+        },
+    );
+
+    failed
+}
+
 /// 码提示自测（§6.3）。三档必须**各有不同的可观测行为**，否则「配置项存在但不生效」
 /// 这种状态也会被当成通过。
 ///
@@ -496,6 +558,9 @@ fn selftest(host: &mut Host) -> i32 {
 
     // ---- 码提示（§6.3）：提示跟随「这一段是怎么出来的」，三档各验一次 ----
     failed += selftest_hint(host);
+
+    // ---- 字根表（§6.7）：键位图的唯一数据来源 ----
+    failed += selftest_roots(host);
 
     // ---- 学习（§5）：第一次不计分，用够次数就该翻过来 ----
     // 记基线：上面的码提示用例也会回报一次上屏（first_time 需要它），

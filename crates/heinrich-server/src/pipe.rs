@@ -218,6 +218,8 @@ fn serve(handle: PipeHandle, shared: &Mutex<Host>, debug_sleep: Duration, activi
     // 把裸句柄交给 std 的 File 只是为了能用 Read/Write；所有权仍归本函数，
     // 结尾用 into_raw_handle 取回来继续 Disconnect/复用。
     let mut file = unsafe { File::from_raw_handle(handle.0) };
+    // 字根表每条连接只发一次：客户端断线重连会开一条新连接，那时再给。
+    let mut roots_sent = false;
 
     loop {
         let frame = match read_frame(&mut file) {
@@ -245,8 +247,18 @@ fn serve(handle: PipeHandle, shared: &Mutex<Host>, debug_sleep: Duration, activi
                 srv_debug!("按 --debug-sleep 睡 {:?}", debug_sleep);
                 thread::sleep(debug_sleep);
             }
-            host.handle(frame)
+            let reply = host.handle(frame);
+            // 握手成功后紧跟一帧字根表（v5 起）。**必须在同一次持锁里取**：
+            // `roots_frame` 只是读，但它和 `handle` 之间若松开锁，另一条连接的
+            // 线程可能插进来，那时再看 `roots_sent` 已经是别人的决定了。
+            let roots = if !roots_sent && matches!(reply, Some(Frame::Welcome { .. })) {
+                host.roots_frame()
+            } else {
+                None
+            };
+            (reply, roots)
         };
+        let (reply, roots) = reply;
 
         let Some(reply) = reply else { continue };
         srv_debug!("回 {reply:?}");
@@ -256,6 +268,19 @@ fn serve(handle: PipeHandle, shared: &Mutex<Host>, debug_sleep: Duration, activi
             break;
         }
         activity.touch();
+
+        // 字根表跟在 `Welcome` **后面**发：客户端握手是「发 Hello、读一帧」，
+        // 先发它会让 `open()` 把字根表当成握手应答（`握手收到意外应答`）。
+        // 放在后面，那帧就静静躺在管道里，等客户端下一次读应答时跳过去（ipc.rs）。
+        if let Some(roots) = roots {
+            let bytes = roots.encode();
+            if let Err(e) = file.write_all(&bytes).and_then(|()| file.flush()) {
+                srv_warn!("字根表发送失败：{e}");
+                break;
+            }
+            roots_sent = true;
+            srv_debug!("已下发字根表 {} 字节", bytes.len());
+        }
 
         if matches!(reply, Frame::Bye { .. }) {
             break;
