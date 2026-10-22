@@ -8,6 +8,7 @@
 //! heinrich-cand-preview.exe                          # 100% DPI，第 1 页
 //! heinrich-cand-preview.exe --dpi 1.5 --page 1       # 150% DPI，第 2 页
 //! heinrich-cand-preview.exe --selftest               # 自动校验，不打扰人
+//! heinrich-cand-preview.exe --keycaps vbg            # 码位键位图（§6.7）
 //! ```
 //!
 //! 它走的路径与 M2.3 接进 TSF 后**完全一样**（`prepare` → `place` → `show`），
@@ -15,8 +16,12 @@
 
 use std::sync::mpsc::{channel, Receiver};
 
-use heinrich_ui::{place, Rect};
-use heinrich_win_ui::{work_area_at, CandidateWindow, Candidates, Event, Hit, Theme};
+use heinrich_scheme::Roots;
+use heinrich_ui::{place, place_keycaps, Rect};
+use heinrich_win_ui::{
+    work_area_at, CandidateWindow, Candidates, CapData, Event, Hit, KeycapWindow, Keycaps, Theme,
+    KEYCAP_FOOTNOTE,
+};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -53,6 +58,10 @@ fn run(args: &Args) -> windows::core::Result<bool> {
         Err(e) => eprintln!("DPI 感知设置失败：{e}"),
     }
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
+
+    if args.keycaps {
+        return run_keycaps(args);
+    }
 
     let mut window = CandidateWindow::new(Theme::default())?;
 
@@ -161,6 +170,200 @@ fn run(args: &Args) -> windows::core::Result<bool> {
     message_loop(window.hwnd());
     window.hide();
     Ok(true)
+}
+
+/// `--keycaps`：弹键位图。数据来自真实的 `roots.toml`，与真机走同一份。
+fn run_keycaps(args: &Args) -> windows::core::Result<bool> {
+    let roots = match Roots::load(std::path::Path::new(&args.data)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            return Ok(false);
+        }
+    };
+    let Some(keys) = roots.lookup(&args.keys) else {
+        eprintln!(
+            "`{}` 里含有不是 a–y 的字符（`z` 是学习键，没有字根）",
+            args.keys
+        );
+        return Ok(false);
+    };
+    let caps: Vec<CapData> = keys
+        .iter()
+        .map(|k| CapData {
+            key: k.key,
+            roots: k.display_roots().collect(),
+            main_root_count: k.roots.len(),
+            primary: k.primary,
+        })
+        .collect();
+
+    let mut window = KeycapWindow::new(Theme::default())?;
+    let content = Keycaps {
+        caps: &caps,
+        footnote: KEYCAP_FOOTNOTE,
+        anchor: args.at,
+    };
+    let prepared = match args.scale {
+        Some(scale) => window.prepare_scaled(&content, scale)?,
+        None => window.prepare(&content)?,
+    };
+
+    // 键位图的锚点是**候选窗**，不是光标：这里造一个假候选窗矩形贴在 `--at`。
+    let cand = Rect::new(args.at.0 as f32, args.at.1 as f32, 300.0, 36.0);
+    let placement = place_keycaps(
+        cand,
+        prepared.layout.size,
+        work_area_at(args.at),
+        4.0,
+        false,
+    );
+
+    let foreground_before = unsafe { GetForegroundWindow() };
+    window.show(
+        &prepared,
+        (placement.rect.x as i32, placement.rect.y as i32),
+    )?;
+
+    println!(
+        "键位图 `{}` {}×{} @ ({}, {})　DPI {:.2}　键帽 {} 枚　说明 {} 行{}",
+        args.keys,
+        prepared.layout.size.w,
+        prepared.layout.size.h,
+        placement.rect.x as i32,
+        placement.rect.y as i32,
+        prepared.dpi_scale,
+        prepared.layout.caps.len(),
+        prepared.footnote_lines.len(),
+        if placement.flipped {
+            "　（翻到候选窗上方）"
+        } else {
+            ""
+        },
+    );
+    for cap in &prepared.layout.caps {
+        let shown: String = cap.roots.iter().collect();
+        println!(
+            "  {}　{}　简码 {}　rect=({:.0}, {:.0}, {:.0}×{:.0})",
+            cap.key, shown, cap.primary, cap.rect.x, cap.rect.y, cap.rect.w, cap.rect.h
+        );
+    }
+
+    pump();
+
+    if args.selftest {
+        let ok = keycap_selftest(&window, &prepared, foreground_before, &caps);
+        window.hide();
+        return Ok(ok);
+    }
+
+    if let Some(ms) = args.hold {
+        unsafe { SetTimer(Some(window.hwnd()), 1, ms, None) };
+    }
+
+    message_loop(window.hwnd());
+    window.hide();
+    Ok(true)
+}
+
+/// 键位图自测：尺寸一致、装得下、说明不越界、不抢前台。
+fn keycap_selftest(
+    window: &KeycapWindow,
+    prepared: &heinrich_win_ui::PreparedKeycaps,
+    foreground_before: HWND,
+    caps: &[CapData],
+) -> bool {
+    let mut all_ok = true;
+    let mut check = |name: &str, ok: bool, detail: String| {
+        println!("{} {}　{}", if ok { "✅" } else { "❌" }, name, detail);
+        all_ok &= ok;
+    };
+
+    // ① 窗口实际尺寸 = 布局尺寸（分层窗口的位图与几何错位是最难查的一类 bug）
+    let mut rect = RECT::default();
+    let sized = unsafe { GetWindowRect(window.hwnd(), &mut rect) }.is_ok();
+    let w = (rect.right - rect.left) as f32;
+    let h = (rect.bottom - rect.top) as f32;
+    check(
+        "窗口尺寸 = 布局尺寸",
+        sized
+            && (w - prepared.layout.size.w).abs() < 1.5
+            && (h - prepared.layout.size.h).abs() < 1.5,
+        format!(
+            "窗口 {w}×{h}　布局 {}×{}",
+            prepared.layout.size.w, prepared.layout.size.h
+        ),
+    );
+
+    // ② 键帽数与码长一致（`vbg` → 3 枚）
+    check(
+        "键帽数 = 码长",
+        prepared.layout.caps.len() == caps.len(),
+        format!("{} 枚", prepared.layout.caps.len()),
+    );
+
+    // ③ 每个字的矩形都装在自己的键帽里，键帽之间不重叠
+    let mut inside = true;
+    let mut detail = String::from("全部字在键帽内");
+    for cap in &prepared.layout.caps {
+        let rects = std::iter::once(&cap.key_rect)
+            .chain(cap.root_rects.iter())
+            .chain(std::iter::once(&cap.primary_rect));
+        for r in rects {
+            if r.x < cap.rect.x - 0.5
+                || r.right() > cap.rect.right() + 0.5
+                || r.y < cap.rect.y - 0.5
+                || r.bottom() > cap.rect.bottom() + 0.5
+            {
+                inside = false;
+                detail = format!("{} 的字越出键帽", cap.key);
+            }
+        }
+    }
+    for pair in prepared.layout.caps.windows(2) {
+        if pair[0].rect.right() > pair[1].rect.x + 0.5 {
+            inside = false;
+            detail = format!("{} 与 {} 的键帽重叠", pair[0].key, pair[1].key);
+        }
+    }
+    check("字在键帽内、键帽不重叠", inside, detail);
+
+    // ④ 说明行不越出窗口（它是唯一可能被撑宽的内容）
+    let mut footnote_ok = true;
+    for (line, rect) in prepared
+        .footnote_lines
+        .iter()
+        .zip(&prepared.layout.footnotes)
+    {
+        if rect.x < 0.0 || rect.right() > prepared.layout.size.w + 0.5 {
+            footnote_ok = false;
+        }
+        let _ = line;
+    }
+    check(
+        "说明行不越界",
+        footnote_ok,
+        format!("{} 行", prepared.footnote_lines.len()),
+    );
+
+    // ⑤ 不抢前台。**必须与候选窗同一条判据**：显示后前台窗口没变。
+    pump();
+    let after = unsafe { GetForegroundWindow() };
+    check(
+        "显示与点击都不抢前台",
+        after == foreground_before,
+        format!("显示前 {:?} → 显示后 {:?}", foreground_before.0, after.0),
+    );
+
+    println!(
+        "\n{}",
+        if all_ok {
+            "键位图自测全部通过 ✅"
+        } else {
+            "键位图自测有失败项 ❌"
+        }
+    );
+    all_ok
 }
 
 /// 自动校验：不激活、命中、箭头。
@@ -360,11 +563,19 @@ struct Args {
     split: usize,
     /// 给 `split` 之后的候选加假码提示（§6.3），用来目验 chip 的排版。
     hint: bool,
+    /// 弹**键位图**而不是候选窗（§6.7）。
+    keycaps: bool,
+    /// 键位图要展开的码，如 `vbg`、`vbgu`。
+    keys: String,
+    /// 字根表所在目录。
+    data: String,
     selftest: bool,
 }
 
 impl Args {
-    fn parse(mut args: impl Iterator<Item = String>) -> Self {
+    fn parse(args: impl Iterator<Item = String>) -> Self {
+        // peekable：`--keycaps` 后面跟的码是可选的，要能看一眼再决定吃不吃
+        let mut args = args.peekable();
         let mut out = Self {
             count: 8,
             page: 0,
@@ -374,6 +585,9 @@ impl Args {
             hold: None,
             split: usize::MAX,
             hint: false,
+            keycaps: false,
+            keys: "vbg".to_string(),
+            data: "data/wubi86".to_string(),
             selftest: false,
         };
         while let Some(arg) = args.next() {
@@ -402,12 +616,24 @@ impl Args {
                 }
                 "--selftest" => out.selftest = true,
                 "--hint" => out.hint = true,
+                "--keycaps" => {
+                    out.keycaps = true;
+                    // `--keycaps vbg`：紧跟的值若是纯小写字母串就当码，否则用默认 vbg
+                    let looks_like_code = args.peek().is_some_and(|n| {
+                        !n.starts_with('-') && n.chars().all(|c| c.is_ascii_lowercase())
+                    });
+                    if looks_like_code {
+                        out.keys = args.next().unwrap_or_default();
+                    }
+                }
+                "--data" => out.data = value("--data"),
                 "-h" | "--help" => {
                     println!(
                         "用法：heinrich-cand-preview [--count N] [--page P] [--page-size S]\n\
                          \x20                      [--dpi SCALE] [--at X,Y] [--hold MS]
 \
-                         \x20                      [--split N] [--hint] [--selftest]"
+                         \x20                      [--split N] [--hint] [--selftest]\n\
+                         \x20                      [--keycaps [码]] [--data 目录]"
                     );
                     std::process::exit(0);
                 }

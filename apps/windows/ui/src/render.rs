@@ -36,7 +36,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use crate::text::TextEngine;
-use crate::Prepared;
+use crate::{Prepared, PreparedKeycaps};
 
 /// 配色。候选窗是系统级 UI，v1 只做浅色（跟系统输入法一致）；深色主题留到 M4
 /// 的设置一起做——现在没有配置入口，做了也没人能改。
@@ -57,6 +57,9 @@ pub struct Theme {
     /// 有底色是必要的：没有它，「好vbg」会读成一个词，而它其实是「候选 + 提示」
     /// 两件事。底色也是它区别于候选文字的唯一边界。
     pub chip_bg: [f32; 4],
+    /// 键位图里键帽的底色（§6.7）。比窗口底色略深，让「一枚键」有实体感；
+    /// 与 `chip_bg` 用同一个色值：两者都是「一小块标签底」，深浅应当一致。
+    pub cap_bg: [f32; 4],
     pub border_width: f32,
 }
 
@@ -72,6 +75,7 @@ impl Default for Theme {
             highlight: rgba(0xDB, 0xEA, 0xFE, 0xFF),
             // 比窗口底色略深一点点：够看出是一块「标签」，又不抢候选字的注意力。
             chip_bg: rgba(0xEE, 0xF1, 0xF4, 0xFF),
+            cap_bg: rgba(0xF6, 0xF7, 0xF9, 0xFF),
             border_width: 1.0,
         }
     }
@@ -105,6 +109,11 @@ impl Renderer {
 
     pub fn text_mut(&mut self) -> &mut TextEngine {
         &mut self.text
+    }
+
+    /// 只读的文字引擎。量宽度不需要可变状态，键位图要一次量几十个字。
+    pub fn text(&self) -> &TextEngine {
+        &self.text
     }
 
     /// 画一帧。返回 false 表示底层设备丢了（`D2DERR_RECREATE_TARGET`），
@@ -231,6 +240,117 @@ impl Renderer {
     /// 供 `UpdateLayeredWindow` 使用：位图所在的设备上下文。
     pub fn hdc(&self) -> Option<HDC> {
         self.surface.as_ref().map(|s| s.dc)
+    }
+
+    /// 画一帧键位图（§6.7）。与 [`draw`](Self::draw) 同构：只照几何层的矩形画，
+    /// 自己不重算任何位置。返回 false 的含义也一样（设备丢了，需要重画一次）。
+    pub fn draw_keycaps(&mut self, prepared: &PreparedKeycaps, theme: &Theme) -> Result<bool> {
+        let layout = &prepared.layout;
+        let m = prepared.metrics;
+        let w = layout.size.w.ceil().max(1.0) as u32;
+        let h = layout.size.h.ceil().max(1.0) as u32;
+
+        if self.surface.as_ref().map(|s| (s.w, s.h)) != Some((w, h)) {
+            self.surface = Some(Surface::new(&self.factory, w, h)?);
+        }
+        let surface = self.surface.as_ref().expect("刚刚建好");
+
+        // 四个 format 一次取完再 clone：`keycap_formats` 要 `&mut self`，而量字与
+        // 画字都用 `&self`，借用在 clone 之后就该结束。
+        let (f_key, f_root, f_primary, f_footnote) = {
+            let f = self.text.keycap_formats(
+                m.font_size,
+                m.root_size,
+                m.primary_size,
+                m.footnote_size,
+            )?;
+            (
+                f.key.clone(),
+                f.root.clone(),
+                f.primary.clone(),
+                f.footnote.clone(),
+            )
+        };
+        let target = &surface.target;
+
+        unsafe {
+            target.BeginDraw();
+            let transparent = D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            };
+            target.Clear(Some(&transparent));
+
+            let bg = brush(target, theme.background)?;
+            let border = brush(target, theme.border)?;
+            let ink = brush(target, theme.ink)?;
+            let muted = brush(target, theme.muted)?;
+            let cap_bg = brush(target, theme.cap_bg)?;
+
+            let half = theme.border_width * 0.5;
+            let outer = rounded(w, h, m.corner_radius, half);
+            target.FillRoundedRectangle(&outer, &bg);
+            if theme.border_width > 0.0 {
+                target.DrawRoundedRectangle(
+                    &outer,
+                    &border,
+                    theme.border_width,
+                    None::<&windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle>,
+                );
+            }
+
+            for cap in &layout.caps {
+                // 键帽本体：底色 + 描边。内缩半个线宽，1px 的边才压在边界上。
+                let r = D2D1_ROUNDED_RECT {
+                    rect: to_d2d(cap.rect.inset(half)),
+                    radiusX: m.corner_radius,
+                    radiusY: m.corner_radius,
+                };
+                target.FillRoundedRectangle(&r, &cap_bg);
+                if theme.border_width > 0.0 {
+                    target.DrawRoundedRectangle(
+                        &r,
+                        &border,
+                        theme.border_width,
+                        None::<&windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle>,
+                    );
+                }
+
+                text_in(target, &cap.key.to_string(), &f_key, cap.key_rect, &ink)?;
+                for (i, rect) in cap.root_rects.iter().enumerate() {
+                    // 变体（氵 扌 灬 忄 以及该键的次要字形）淡一档：它是补充信息，
+                    // 与主字根同权会让用户以为「这个键就这么多个字根」。
+                    let color = if i < cap.main_root_count {
+                        &ink
+                    } else {
+                        &muted
+                    };
+                    text_in(target, &cap.roots[i].to_string(), &f_root, *rect, color)?;
+                }
+                text_in(
+                    target,
+                    &cap.primary.to_string(),
+                    &f_primary,
+                    cap.primary_rect,
+                    &muted,
+                )?;
+            }
+
+            for (rect, line) in layout.footnotes.iter().zip(&prepared.footnote_lines) {
+                text_in(target, line, &f_footnote, *rect, &muted)?;
+            }
+
+            match target.EndDraw(None, None) {
+                Ok(()) => Ok(true),
+                Err(e) if e.code() == D2DERR_RECREATE_TARGET => {
+                    self.surface = None;
+                    Ok(false)
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 

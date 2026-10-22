@@ -38,10 +38,29 @@ pub struct Formats {
     pub hint: IDWriteTextFormat,
 }
 
+/// 键位图（§6.7）的四个字号。
+///
+/// 与 [`Formats`] 分开，是因为键位图要**四个不同字号同时出现**（字母 / 字根 /
+/// 简码 / 说明），而候选窗只要一个主字号加三个比例变体。硬塞进 `Formats` 会让
+/// 候选窗每次 `formats()` 都多建三个用不上的 format。
+pub struct KeycapFormats {
+    base: f32,
+    /// 字母。
+    pub key: IDWriteTextFormat,
+    /// 字根（含变体，颜色不同但字号相同）。
+    pub root: IDWriteTextFormat,
+    /// 一级简码。
+    pub primary: IDWriteTextFormat,
+    /// 底部固定说明。左对齐：它是一整句话，居中会让两行的左缘参差。
+    pub footnote: IDWriteTextFormat,
+}
+
 pub struct TextEngine {
     factory: IDWriteFactory,
     /// 按字号缓存。DPI 不变时（绝大多数情况）一次都不重建。
     cached: Option<Formats>,
+    /// 键位图的一套，同样按基数缓存。
+    keycap: Option<KeycapFormats>,
 }
 
 impl TextEngine {
@@ -50,6 +69,7 @@ impl TextEngine {
         Ok(Self {
             factory,
             cached: None,
+            keycap: None,
         })
     }
 
@@ -93,11 +113,20 @@ impl TextEngine {
         } else {
             formats.text.clone()
         };
+        self.measure_in(text, &format)
+    }
+
+    /// 按**指定 format** 量宽度。键位图的四种字号各用各的，不能共用一个 `font_size`
+    /// 参数（`formats()` 按字号只缓存一套，来回切会反复重建）。
+    ///
+    /// 取 `&self`：`factory` 与 `CreateTextLayout` 都不需要可变状态，这样调用方可以先
+    /// `keycap_formats()` 取 format、clone 出来，再调本方法——不会撞上借用冲突。
+    pub fn measure_in(&self, text: &str, format: &IDWriteTextFormat) -> Result<f32> {
         let utf16: Vec<u16> = text.encode_utf16().collect();
         // 上限给足：不换行，只要单行宽度。
         let layout = unsafe {
             self.factory
-                .CreateTextLayout(&utf16, &format, 100_000.0, 100_000.0)?
+                .CreateTextLayout(&utf16, format, 100_000.0, 100_000.0)?
         };
         let mut metrics = DWRITE_TEXT_METRICS::default();
         unsafe { layout.GetMetrics(&mut metrics)? };
@@ -105,6 +134,31 @@ impl TextEngine {
             .widthIncludingTrailingWhitespace
             .max(metrics.width)
             .max(0.0))
+    }
+
+    /// 取（必要时重建）键位图的那一套 format。`base` 是字母字号，其余三个由调用方
+    /// 按 `KeycapMetrics` 的比例算好后传入——本模块不替几何层决定字号比例。
+    pub fn keycap_formats(
+        &mut self,
+        base: f32,
+        root: f32,
+        primary: f32,
+        footnote: f32,
+    ) -> Result<&KeycapFormats> {
+        let stale = match &self.keycap {
+            Some(f) => (f.base - base).abs() > 0.01,
+            None => true,
+        };
+        if stale {
+            self.keycap = Some(KeycapFormats {
+                base,
+                key: make_format(&self.factory, base, true)?,
+                root: make_format(&self.factory, root, true)?,
+                primary: make_format(&self.factory, primary, true)?,
+                footnote: make_format(&self.factory, footnote, false)?,
+            });
+        }
+        Ok(self.keycap.as_ref().expect("刚刚填过"))
     }
 }
 

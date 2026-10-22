@@ -14,6 +14,7 @@ mod config;
 mod hash;
 mod manifest;
 mod pinyin;
+mod roots;
 mod scheme;
 
 pub use code::{pack, prefix_bounds, Code, MAX_CODE_LEN};
@@ -21,4 +22,5 @@ pub use config::{Config, HintMode, CONFIG_VERSION};
 pub use hash::sha256_hex;
 pub use manifest::{Manifest, ManifestError};
 pub use pinyin::{PinyinEntry, PinyinLexicon};
+pub use roots::{CheckItem, KeyRoots, Roots, RootsError, ALPHABET, EXPECTED_ROOT_COUNT};
 pub use scheme::{CodeKind, Entry, LoadError, Scheme, SchemeMeta, SchemeStats};

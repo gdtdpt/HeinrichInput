@@ -35,11 +35,15 @@
 //! 解决的是同一个问题，只是写法不同。
 
 mod geom;
+mod keycaps;
 mod layout;
 mod pager;
 mod place;
 
 pub use geom::{Rect, Size};
+pub use keycaps::{
+    layout_keycaps, place_keycaps, KeycapBox, KeycapInput, KeycapLayout, KeycapMetrics, KeycapText,
+};
 pub use layout::{
     layout, page_count, page_nav, page_slice, CandidateText, Dir, ItemBox, Layout, LayoutInput,
     Metrics, PageArrow, ARROW_NEXT, ARROW_PREV,

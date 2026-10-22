@@ -85,6 +85,7 @@ dependencies = [
 name = "heinrich-cand-preview"
 version = "0.1.0"
 dependencies = [
+ "heinrich-scheme",
  "heinrich-ui",
  "heinrich-win-ui",
  "windows",

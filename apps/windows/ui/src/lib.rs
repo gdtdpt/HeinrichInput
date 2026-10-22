@@ -52,9 +52,11 @@
 //! 由宿主决定（TSF 要求 STA）。`cand-preview.exe` 自己初始化。窗口与所有 D2D/DWrite
 //! 对象都绑定创建它的线程，跨线程使用会出错——TSF 侧只在按键线程用，符合这个前提。
 
+mod keycap_window;
 mod render;
 mod text;
 
+pub use keycap_window::{CapData, KeycapWindow, Keycaps, PreparedKeycaps, KEYCAP_FOOTNOTE};
 pub use render::Theme;
 
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -75,7 +77,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW, RegisterClassW,
     SetWindowLongPtrW, ShowWindow, UpdateLayeredWindow, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
     GWLP_USERDATA, IDC_ARROW, MA_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
+    WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW, WNDPROC,
     WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -355,22 +357,35 @@ static REGISTER_ONCE: Once = Once::new();
 static CLASS_ATOM: AtomicU16 = AtomicU16::new(0);
 
 fn register_class() -> Result<()> {
-    REGISTER_ONCE.call_once(|| {
+    register_window_class(CLASS_NAME, Some(wndproc), &REGISTER_ONCE, &CLASS_ATOM)
+}
+
+/// 注册一个窗口类，把结果记进 `atom`。
+///
+/// 候选窗与键位图各一个类名、各一个窗口过程：两者的鼠标语义相反（一个必须吃掉
+/// 点击以便选词，一个必须放行），共用一个过程只会让里面塞满 `if`。
+pub(crate) fn register_window_class(
+    name: PCWSTR,
+    proc: WNDPROC,
+    once: &Once,
+    atom: &AtomicU16,
+) -> Result<()> {
+    once.call_once(|| {
         let hinstance = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
         let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default();
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
+            lpfnWndProc: proc,
             hInstance: HINSTANCE(hinstance.0),
             hCursor: cursor,
-            lpszClassName: CLASS_NAME,
+            lpszClassName: name,
             ..Default::default()
         };
-        let atom = unsafe { RegisterClassW(&wc) };
-        CLASS_ATOM.store(atom, Ordering::Release);
+        let registered = unsafe { RegisterClassW(&wc) };
+        atom.store(registered, Ordering::Release);
     });
 
-    if CLASS_ATOM.load(Ordering::Acquire) == 0 {
+    if atom.load(Ordering::Acquire) == 0 {
         return Err(windows::core::Error::from(
             windows::Win32::Foundation::E_FAIL,
         ));
@@ -432,7 +447,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 /// 光标所在显示器的有效 DPI（96 = 100%）。
-fn dpi_at(point: (i32, i32)) -> u32 {
+pub(crate) fn dpi_at(point: (i32, i32)) -> u32 {
     unsafe {
         let monitor = MonitorFromPoint(
             POINT {

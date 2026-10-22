@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use heinrich_core::{Engine, MemoryStore, Mixed, RankingConfig, Source, Tier};
-use heinrich_scheme::{Code, PinyinLexicon, Scheme};
+use heinrich_scheme::{Code, PinyinLexicon, Roots, Scheme};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -82,9 +82,35 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "roots" => {
+            let args = positional(rest);
+            match args.first().copied() {
+                Some("check") => match check_roots(&data) {
+                    Ok(true) => ExitCode::SUCCESS,
+                    Ok(false) => ExitCode::FAILURE,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Some(code) => match show_roots(&data, code) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                },
+                None => {
+                    eprintln!(
+                        "用法：\n  heinrich-cli roots <码>   逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  校验字根表（25 键 / 130 条 / 助记 / 重复 / 一级简码）"
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
             );
             ExitCode::SUCCESS
         }
@@ -103,6 +129,94 @@ fn take_arg(args: &[String], flag: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// 取出位置参数，跳过 `--flag <值>` 里的值与被忽略的游离标志。
+fn positional(args: &[String]) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut skip_value = false;
+    for a in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if a.starts_with("--") {
+            skip_value = true;
+            continue;
+        }
+        out.push(a.as_str());
+    }
+    out
+}
+
+/// 终端里的显示宽度：ASCII 一列，其余两列。用于让键位表对齐。
+fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| if (c as u32) < 0x1100 { 1 } else { 2 })
+        .sum()
+}
+
+fn pad_right(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(display_width(s))))
+}
+
+/// `roots <码>`：逐位展开成键位。纯文本，人看得懂，`check.ps1` 也能断言。
+fn show_roots(dir: &Path, code: &str) -> Result<(), String> {
+    let roots = Roots::load(dir).map_err(|e| e.to_string())?;
+    if code.contains('z') {
+        return Err("`z` 是学习键，没有字根（M3.5 才落地）".into());
+    }
+    let keys = roots
+        .lookup(code)
+        .ok_or_else(|| format!("`{code}` 里有不是 a–y 的字符"))?;
+    println!("`{code}` 的键位：");
+    for k in &keys {
+        let shown: String = k.display_roots().collect();
+        println!(
+            "  {}  {}  一级简码 {}   {}",
+            k.key,
+            pad_right(&shown, 18),
+            k.primary,
+            k.mnemonic
+        );
+    }
+    // §6.7 的固定说明：让它成为「可自查」，而不是「我替你判断」
+    println!("\n  不足 4 码时末位可能是末笔识别码——取末笔笔画与字型。");
+    Ok(())
+}
+
+/// `roots check`：四项结构校验 + 一项与码表的交叉校验。
+fn check_roots(dir: &Path) -> Result<bool, String> {
+    let roots = Roots::load(dir).map_err(|e| e.to_string())?;
+    println!(
+        "字根表：{} 键 / {} 条主字根（数据来自 {}）",
+        roots.keys().len(),
+        roots.total_roots(),
+        dir.join("roots.toml").display()
+    );
+    let mut items = roots.validate();
+    // 交叉项要码表；码表装不上就单独报，不让四项结构校验跟着一起失败
+    match Scheme::load(dir) {
+        Ok(scheme) => items.push(roots.check_primary(&scheme)),
+        Err(e) => items.push(heinrich_scheme::CheckItem {
+            name: "一级简码与码表一致",
+            pass: false,
+            detail: format!("码表装载失败：{e}"),
+        }),
+    }
+    let mut ok = true;
+    for item in &items {
+        println!(
+            "[{}] {}：{}",
+            if item.pass { "通过" } else { "未通过" },
+            item.name,
+            item.detail
+        );
+        if !item.pass {
+            ok = false;
+        }
+    }
+    Ok(ok)
 }
 
 fn now_unix() -> i64 {

@@ -47,6 +47,19 @@ impl Rect {
         Size::new(self.w, self.h)
     }
 
+    /// 四边等量内缩（负值即外扩）。
+    ///
+    /// 描边要压在边界上：不内缩半个线宽，1px 的线会被位图边缘裁掉一半，
+    /// 看起来像缺了一条边。宽高夹到 0，避免负尺寸传进 D2D。
+    pub fn inset(self, d: f32) -> Self {
+        Self {
+            x: self.x + d,
+            y: self.y + d,
+            w: (self.w - d * 2.0).max(0.0),
+            h: (self.h - d * 2.0).max(0.0),
+        }
+    }
+
     /// 半开区间：右/下边不算在内。相邻的两个矩形不会同时命中同一个点，
     /// 否则点选落在缝隙上时会选中两个候选里的任一个。
     pub fn contains(self, x: f32, y: f32) -> bool {

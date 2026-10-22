@@ -49,6 +49,9 @@ Invoke-Step '方案数据校验' { & cargo run --release -q -p heinrich-cli -- c
 # 拼音词库与五笔词库是两份独立的产物，各有各的验收项（拼音那条要求常用字 100%）。
 # 缺了这一步，「拼音数据装错了」要等到真机打拼音时才发现。
 Invoke-Step '拼音数据校验' { & cargo run --release -q -p heinrich-cli -- check-pinyin --data $PinyinDir }
+# 字根表是码位键位图（§6.7）的唯一数据源，而且它是**手写**的：130 条里错一条、
+# 少一撇，界面上看不出来，只有「一级简码与码表对不上」这一项能被机器抓住。
+Invoke-Step '字根表校验' { & cargo run --release -q -p heinrich-cli -- roots check --data $DataDir }
 # server 自测要真装载 13.6 万条词库并跑几条查询：能过说明「装得进、查得对」，
 # 这一步不需要真的开管道客户端，所以在 CI/提交前就能跑。
 # 带上拼音目录：混输是 M3 的主路径，自测会在装了拼音时额外断言「hao 判拼音、
@@ -60,6 +63,10 @@ Invoke-Step 'server 自测' { & cargo run --release -q -p heinrich-server -- --s
 # 带 `--hint --split 2`：跑的是「两段 + 码提示 chip」那条最复杂的排版路径，
 # 顺带断言 chip 不越出自己的项、也不压到邻居。
 Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-preview -- --selftest --hint --split 2 }
+# 键位图（§6.7）是第二个分层窗口：尺寸、越界、抢前台这三类问题与候选窗同源，
+# 但数据换成真实字根表，所以它同时验「roots.toml 装得进几何层、13 个字的键帽
+# 也放得下」。`vbg` 覆盖的是最常走的 3 码路径。
+Invoke-Step '键位图自测' { & cargo run --release -q -p heinrich-cand-preview -- --keycaps vbg --selftest }
 
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

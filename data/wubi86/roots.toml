@@ -1,0 +1,230 @@
+# 亨利 / Heinrich —— 五笔 86 版字根表（项目自有数据，手写维护）
+#
+# 用途：`Ctrl+Shift+1..9` 码位键位图（PROJECT.md §6.7 / D50）与 `heinrich-cli roots`。
+# 它回答的是「这几个字母在键盘上属于哪个键区」，**不是**「这个字是怎么拆的」——
+# 逐字拆解需要笔顺与字型数据，R3 已证伪，本文件不承担那个职责。
+#
+# 口径：
+#   roots     主字根，共 **130** 条（86 版公开口径）。含五笔教材按字根并列列出的
+#             常用偏旁（氵 扌 灬 忄 纟 讠 等），但不含「小倒立」「看头」这类
+#             只在部首补充区（U+2E80–U+2EFF）或扩展 B 区（U+20000+）才有的符号
+#             ——那些字形在常规字体里要么缺失、要么与常用字撞脸（`𠂇` 与「𠂇」类）。
+#             它们的含义由 mnemonic（助记口诀）承担，人读得懂，机器不需要。
+#   variants  同键的次要变体，不计入 130，只在键帽上以更淡的字号补充显示。
+#             **所有字段都必须是任意常规字体都能画的字符**，否则键帽上会出现豆腐块。
+#   primary   该键的一级简码字。它与 data/wubi86/lexicon.tsv 里「单字母码 → 字」
+#             必须一一对应，这是本文件唯一可被机器硬校验的正确性来源。
+#
+# 校验：`heinrich-cli roots check`（五项，见 crates/heinrich-scheme/src/roots.rs）。
+# 本文件只由人维护，不由 heinrich-gen 生成——字根不是从码表能推出来的。
+
+# ── 第 1 区（横起笔）：11 G / 12 F / 13 D / 14 S / 15 A ──────────────────
+
+[[key]]
+key = "g"
+zone = 11
+mnemonic = "王旁青头戋(兼)五一"
+primary = "一"
+roots = ["王", "一", "五", "戋"]
+variants = ["龶", "丰"]
+
+[[key]]
+key = "f"
+zone = 12
+mnemonic = "土士二干十寸雨"
+primary = "地"
+roots = ["土", "士", "二", "干", "十", "寸", "雨"]
+variants = []
+
+[[key]]
+key = "d"
+zone = 13
+mnemonic = "大犬三羊古石厂"
+primary = "在"
+roots = ["大", "犬", "三", "羊", "古", "石", "厂"]
+variants = ["丆", "镸"]
+
+[[key]]
+key = "s"
+zone = 14
+mnemonic = "木丁西"
+primary = "要"
+roots = ["木", "丁", "西"]
+variants = ["覀"]
+
+[[key]]
+key = "a"
+zone = 15
+mnemonic = "工戈草头右框七"
+primary = "工"
+roots = ["工", "戈", "艹", "匚", "七"]
+variants = ["弋", "卄", "廾"]
+
+# ── 第 2 区（竖起笔）：21 H / 22 J / 23 K / 24 L / 25 M ──────────────────
+
+[[key]]
+key = "h"
+zone = 21
+mnemonic = "目具上止卜虎皮"
+primary = "上"
+roots = ["目", "上", "止", "卜", "虎", "皮"]
+variants = ["且", "虍"]
+
+[[key]]
+key = "j"
+zone = 22
+mnemonic = "日早两竖与虫依"
+primary = "是"
+roots = ["日", "早", "虫", "刂"]
+variants = ["曰"]
+
+[[key]]
+key = "k"
+zone = 23
+mnemonic = "口与川，字根稀"
+primary = "中"
+roots = ["口", "川"]
+variants = []
+
+[[key]]
+key = "l"
+zone = 24
+mnemonic = "田甲方框四车力"
+primary = "国"
+roots = ["田", "甲", "囗", "四", "车", "力"]
+variants = ["罒"]
+
+[[key]]
+key = "m"
+zone = 25
+mnemonic = "山由贝，下框几"
+primary = "同"
+roots = ["山", "由", "贝", "几", "冂"]
+variants = []
+
+# ── 第 3 区（撇起笔）：31 T / 32 R / 33 E / 34 W / 35 Q ──────────────────
+
+[[key]]
+key = "t"
+zone = 31
+mnemonic = "禾竹一撇双人立，反文条头共三一"
+primary = "和"
+roots = ["禾", "竹", "丿", "彳", "攵"]
+variants = ["夂"]
+
+[[key]]
+key = "r"
+zone = 32
+mnemonic = "白手看头三二斤"
+primary = "的"
+roots = ["白", "手", "斤", "扌"]
+variants = []
+
+[[key]]
+key = "e"
+zone = 33
+mnemonic = "月彡(衫)乃用家衣底"
+primary = "有"
+roots = ["月", "彡", "乃", "用", "豕", "衣"]
+variants = ["舟"]
+
+[[key]]
+key = "w"
+zone = 34
+mnemonic = "人和八，三四里"
+primary = "人"
+roots = ["人", "八"]
+variants = ["亻"]
+
+# 「犬旁」写作 犭：D 键另有「犬」，两者的区别是反犬旁与独体字，不要合并
+[[key]]
+key = "q"
+zone = 35
+mnemonic = "金勺缺点无尾鱼，犬旁留叉儿一点夕，氏无七(妻)"
+primary = "我"
+roots = ["金", "勺", "鱼", "犭", "儿", "夕", "乂", "氏"]
+variants = ["钅"]
+
+# ── 第 4 区（捺起笔）：41 Y / 42 U / 43 I / 44 O / 45 P ──────────────────
+
+[[key]]
+key = "y"
+zone = 41
+mnemonic = "言文方广在四一，高头一捺谁人去"
+primary = "主"
+roots = ["言", "文", "方", "广", "丶", "亠"]
+variants = ["讠"]
+
+[[key]]
+key = "u"
+zone = 42
+mnemonic = "立辛两点六门疒"
+primary = "产"
+roots = ["立", "辛", "丬", "六", "门", "疒", "丷"]
+variants = []
+
+[[key]]
+key = "i"
+zone = 43
+mnemonic = "水旁兴头小倒立"
+primary = "不"
+roots = ["水", "小", "氵"]
+variants = []
+
+[[key]]
+key = "o"
+zone = 44
+mnemonic = "火业头，四点米"
+primary = "为"
+roots = ["火", "业", "米", "灬"]
+variants = []
+
+[[key]]
+key = "p"
+zone = 45
+mnemonic = "之宝盖，摘礻(示)衤(衣)"
+primary = "这"
+roots = ["之", "廴", "宀", "冖", "礻", "衤"]
+variants = ["辶"]
+
+# ── 第 5 区（折起笔）：51 N / 52 B / 53 V / 54 C / 55 X ──────────────────
+
+[[key]]
+key = "n"
+zone = 51
+mnemonic = "已半巳满不出己，左框折尸心和羽"
+primary = "民"
+roots = ["已", "己", "巳", "尸", "心", "羽", "乙", "忄"]
+variants = []
+
+[[key]]
+key = "b"
+zone = 52
+mnemonic = "子耳了也框向上"
+primary = "了"
+roots = ["子", "耳", "了", "也", "凵", "卩", "阝"]
+variants = []
+
+[[key]]
+key = "v"
+zone = 53
+mnemonic = "女刀九臼山朝西"
+primary = "发"
+roots = ["女", "刀", "九", "臼", "彐", "巛"]
+variants = []
+
+[[key]]
+key = "c"
+zone = 54
+mnemonic = "又巴马，丢矢矣"
+primary = "以"
+roots = ["又", "巴", "马", "厶"]
+variants = []
+
+[[key]]
+key = "x"
+zone = 55
+mnemonic = "慈母无心弓和匕，幼无力"
+primary = "经"
+roots = ["幺", "母", "弓", "匕", "纟"]
+variants = []
