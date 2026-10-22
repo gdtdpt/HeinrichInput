@@ -123,6 +123,10 @@ struct HintState {
     /// 命令行强制值，压过配置文件。
     forced: Option<HintMode>,
     mode: HintMode,
+    /// 配置文件里的 `ranking.learning_gain` / `ranking.half_life_days`。
+    /// `None` = 没写，沿用当前值（§5 / D58）。
+    ranking_gain: Option<f64>,
+    ranking_half_life: Option<f64>,
     /// 上次检查文件的时刻（节流，见 [`HINT_RECHECK`]）。
     checked_at: Instant,
     /// 上次看到的 `(长度, 修改时间)`。**只有它变了才重读内容**：stat 比 read 便宜得多，
@@ -136,6 +140,8 @@ impl HintState {
             path,
             forced,
             mode: forced.unwrap_or_default(),
+            ranking_gain: None,
+            ranking_half_life: None,
             checked_at: Instant::now(),
             stamp: None,
         };
@@ -145,7 +151,7 @@ impl HintState {
 
     /// 当前模式，顺便按节流检查配置文件有没有被改过。
     fn mode(&mut self) -> HintMode {
-        if self.forced.is_some() || self.path.is_none() {
+        if self.path.is_none() {
             return self.mode;
         }
         if self.checked_at.elapsed() < HINT_RECHECK {
@@ -187,6 +193,11 @@ impl HintState {
             );
         }
         self.mode = mode;
+
+        // 排序参数同理热更新。`None`（没写这一行）不覆盖，继续用上次/默认值——
+        // 否则用户删掉这行会以为「恢复默认」，实际是被静默改成 0（永不学习）。
+        self.ranking_gain = cfg.ranking_gain();
+        self.ranking_half_life = cfg.ranking_half_life_days();
     }
 }
 
@@ -277,6 +288,28 @@ impl Host {
     /// 当前生效的码提示模式（读它会顺手做一次配置热检查）。
     pub fn hint_mode(&mut self) -> HintMode {
         self.hint.mode()
+    }
+
+    /// 把配置文件里的排序参数搬进 `cfg`（§5 / D58）。
+    ///
+    /// **`None` 不覆盖**：配置里没写这一行，就沿用 `open` 时的默认值。若把
+    /// 「没有」当成 0 处理，用户删掉那行想恢复默认，实际会变成「永不学习」。
+    ///
+    /// 变化时打一行日志——这两个参数决定「词序多快变」，改了没反应时这一行
+    /// 是唯一的抓手（DLL 侧还有缓存，见 D57）。
+    fn sync_ranking(&mut self) {
+        if let Some(g) = self.hint.ranking_gain {
+            if (self.cfg.learning_gain - g).abs() > f64::EPSILON {
+                self.cfg.learning_gain = g;
+                srv_info!("学习增益 g = {g}（来自配置文件）");
+            }
+        }
+        if let Some(h) = self.hint.ranking_half_life {
+            if (self.cfg.half_life_days - h).abs() > f64::EPSILON {
+                self.cfg.half_life_days = h;
+                srv_info!("半衰期 H = {h} 天（来自配置文件）");
+            }
+        }
     }
 
     pub fn scheme_id(&self) -> &str {
@@ -397,6 +430,10 @@ impl Host {
     pub fn query(&mut self, code: &str, limit: u8) -> QueryReply {
         let limit = (limit as usize).clamp(1, MAX_ENTRIES);
         let now = unix_now();
+        // 先做一次配置热检查：`hint.mode()` 内部会 reload（含换位门槛），
+        // 所以必须在排序之前调用，否则这一拍仍在用上一份配置。
+        let hint = self.hint.mode();
+        self.sync_ranking();
         let mixed = pinyin::query_with_limit(
             &self.scheme,
             self.pinyin.as_ref(),
@@ -419,7 +456,6 @@ impl Host {
 
         // 码提示的裁决全在 server：DLL 只画非空的 `code`（§6.3）。
         // 规则是「提示跟随这一段是怎么出来的」——拼音段给码、五笔段不给。
-        let hint = self.hint.mode();
         let primary_is_pinyin = source == Source::Pinyin;
         let entries: Vec<Entry> = mixed
             .into_all()
@@ -638,12 +674,13 @@ mod tests {
             .collect()
     }
 
-    /// 上屏回报要真的进排序：用一次「蒿」之后它越过「呵」，但抢不走「号」的首位。
+    /// 上屏回报要真的进排序：**第一次不计分**（D58），第二次起才动。
     ///
-    /// 这就是 M2.4 验收项 ① 的自动化版本——「偶用一次抢不走首位」不是靠人盯三天，
-    /// 而是靠 §5.2 的 K=1.5 门槛；这里验的就是那条规则真的接在 server 上了。
+    /// 这是 M2.4 验收项 ① 的自动化版本。三个阶段的含义各不相同：
+    /// ① 一次不改顺序（防误选）；② 两次就开始动（学了要看得见）；
+    /// ③ 用到十次能越过码表首位（「越用越顺手」不是空话）。
     #[test]
-    fn record_reorders_but_keeps_the_throne() {
+    fn record_reorders_from_the_second_use() {
         let mut h = host();
         assert_eq!(words(&mut h, "vbgd"), ["号", "豪", "呵", "蒿"]);
 
@@ -652,11 +689,33 @@ mod tests {
             word: "蒿".into(),
             at_unix: now(),
         });
-
-        let after = words(&mut h, "vbgd");
-        assert_eq!(after[0], "号", "偶用一次不许抢首位");
-        assert_eq!(after, ["号", "豪", "蒿", "呵"], "蒿应上浮一位");
+        assert_eq!(
+            words(&mut h, "vbgd"),
+            ["号", "豪", "呵", "蒿"],
+            "第一次上屏不计分，顺序不动"
+        );
         assert_eq!(h.recorded(), 1);
+
+        // 第二次起开始加分：越过静态权重更低的「呵」。
+        h.handle(Frame::Record {
+            code: "vbgd".into(),
+            word: "蒿".into(),
+            at_unix: now(),
+        });
+        assert_eq!(words(&mut h, "vbgd"), ["号", "豪", "蒿", "呵"]);
+        assert_eq!(h.recorded(), 2);
+
+        // 打到十次：越过码表首位。旧设计的 1.5 倍门槛与 D54 的 δ 都做不到这一点
+        // ——蒿的静态权重只有号的 45%，攒分攒不到那个份上。
+        for _ in 0..8 {
+            h.handle(Frame::Record {
+                code: "vbgd".into(),
+                word: "蒿".into(),
+                at_unix: now(),
+            });
+        }
+        assert_eq!(words(&mut h, "vbgd")[0], "蒿", "常用就该排前面");
+        assert_eq!(h.recorded(), 10);
     }
 
     /// 上屏回报是**单向**帧：不该回任何东西（回了会让 DLL 读到错位的帧）。
@@ -882,9 +941,9 @@ mod tests {
 
     /// 拼音的上屏回报与五笔共用一份学习数据：学过的词在拼音候选里也上浮。
     ///
-    /// 连打三次「浩」应当越过同音的「号」，但仍被 1.5 倍门槛拦在「好」后面——
-    /// 与五笔那条 `record_reorders_but_keeps_the_throne` 是同一个规则，
-    /// 这里验的是它在**拼音候选**上同样成立（§5.2 不区分语言）。
+    /// 连打三次「浩」越过同音的「号」；主段「虚」不动，因为它在五笔那一段里，
+    /// 两条区各自独立排序（§6.2）。学习分不区分语言，也不区分这一段是五笔还是
+    /// 拼音查出来的——与 `record_reorders_from_the_second_use` 是同一套规则。
     #[test]
     fn learning_is_shared_between_wubi_and_pinyin() {
         let mut h = mixed_host();
@@ -904,7 +963,7 @@ mod tests {
         }
 
         let after = words(&mut h, "hao");
-        assert_eq!(after[0], "虚", "偶用三次不许抢主段首位");
+        assert_eq!(after[0], "虚", "主段是五笔区，与拼音区各自排序");
         let hao = after.iter().position(|w| w == "浩").unwrap();
         let hao2 = after.iter().position(|w| w == "号").unwrap();
         assert!(hao < hao2, "「浩」应上浮越过「号」：{after:?}");

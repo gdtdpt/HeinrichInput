@@ -219,7 +219,6 @@ fn command(
              :suppress <n>   抑制第 n 个候选（永不出现）\n  \
              :clear-tier <n> 恢复第 n 个候选为学习档\n  \
              :stats          最常用的词\n  \
-             :k <值>         设置晋升阈值 K（默认 1.5）\n  \
              :gain <值>      设置学习增益 g（默认 0.35）\n  \
              :half <天>      设置半衰期 H（默认 45）"
         ),
@@ -259,8 +258,8 @@ fn command(
                         days,
                         c.learning,
                         c.total,
-                        if c.throne_held {
-                            "  ← 首位受保护"
+                        if c.n == 1 {
+                            "  ← 首次上屏，不计分"
                         } else {
                             ""
                         }
@@ -299,23 +298,19 @@ fn command(
                 }
             }
         }
-        "k" | "gain" | "half" => {
+        "gain" | "half" => {
             let Some(v) = arg.and_then(|a| a.parse::<f64>().ok()) else {
                 println!("  需要一个数字");
                 return Flow::Continue;
             };
             let mut cfg = eng.config();
             match head {
-                "k" => cfg.promote_k = v,
                 "gain" => cfg.learning_gain = v,
                 _ => cfg.half_life_days = v,
             }
             eng.set_config(cfg);
             let c = eng.config();
-            println!(
-                "  K={} g={} H={} 天",
-                c.promote_k, c.learning_gain, c.half_life_days
-            );
+            println!("  g={} H={} 天", c.learning_gain, c.half_life_days);
         }
         other => println!("  未知命令 `:{other}`，用 `:help` 查看"),
     }
@@ -342,7 +337,7 @@ fn print_candidates(buffer: &str, m: &Mixed) {
     let mut shown = 0usize;
     for c in m.primary.iter().take(PRINT_LIMIT) {
         shown += 1;
-        let marker = if c.throne_held { " ←" } else { "" };
+        let marker = if c.n == 1 { " ←首次" } else { "" };
         println!(
             "   {}. {:<6} {:<12} {}{}",
             shown, c.word, c.code, c.kind_label, marker

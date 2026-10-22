@@ -1,24 +1,38 @@
-//! 候选排序（§5）：静态权重 + 学习分，带「第一名保护」阈值。
+//! 候选排序（§5）：静态权重 + 学习分，纯分数降序。
 //!
 //! ```text
-//! 学习分 learning = ln(1 + n) × 0.5 ^ (Δt / H)
-//! 综合分 total    = w + g × learning
-//!   w : 码表权重，已归一化到 [0,1]；n = 0 时 total = w，即码表序
+//! 有效次数 e     = max(0, n − 1)
+//! 学习分 learning = ln(1 + e) × 0.5 ^ (Δt / H)
+//! 综合分 total   = w + g × learning
+//!   w : 码表权重，已归一化到 [0,1]；n ≤ 1 时 total = w，即码表序
 //!   g : 学习增益，默认 0.35（可配）
 //!   H : 半衰期，默认 45 天（可配 7–365）
 //! ```
 //!
-//! 为什么需要 `w` 这一项：只有 `ln(1+n)` 的话，任何词的首次使用都会得到正分，
+//! 为什么需要 `w` 这一项：只有 `ln(1+e)` 的话，任何词的首次使用都会得到正分，
 //! 而从未用过的候选恒为 0 分——「选一次就置顶」正是这么来的。加上静态项后，
 //! 未使用过的候选仍按码表序排列，学习只在原有次序上做增量扰动。
 //!
 //! 为什么 `g = 0.35` 而不是 1.0：码表权重经对数归一化后，相邻候选的差距通常在
 //! 0.1–0.2 量级；而 `ln 2 ≈ 0.69`，`g = 1` 时一次误选就能跨过 4–6 个位置。
-//! `g = 0.35` 让单次使用只挪动约一位，连续使用（n ≥ 5）才明显上浮——这正是
-//! 「低频词偶用一次不该改顺序」的量化表达。参数可配，写在 `config.toml` 里。
+//! `g = 0.35` 让单次使用只挪动约一位，连续使用（n ≥ 5）才明显上浮。
 //!
-//! 第一名保护（§5.2）：候选要越过当前第一名，需 `total ≥ K × total(第一名)`，
-//! `K` 默认 1.5。低频词偶用一次够不着门槛，只能上浮到第二名。
+//! **为什么是 `n − 1` 而不是 `n`（D58）**：`n = 1` 表示「点过一次」，它既可能是
+//! 真的要用，也可能是按错了位置。让第一次上屏得 0 分，等于把「偶用一次不该改
+//! 顺序」直接写成次数约束——比用分数门槛表达安全得多。
+//!
+//! 这一段是两次试错的终点，留个记录，免得再绕回去：
+//!
+//! - **D44 的王座**：门槛 = `1.5 × 第一名的动态总分`。第一名每被上屏一次门槛就涨
+//!   一次，形成正反馈：实测连打 12 次才上位、误选一次后要再打 11 次才复位。
+//! - **D54 的绝对分差 δ = 0.35**：去掉了身份与正反馈，但「0.35 分」折合几次按键
+//!   会随 `n` 急剧膨胀（n≈1 时两三次，n≈26 时五十次）。结果是用得多的词反而被
+//!   用得少的词压住，且两个分差小于 δ 的词会随每次上屏来回跨线（实测 `fcu` 的
+//!   「去 / 云」每按一次就交换一次位置）。
+//!
+//! 两者的共同错误是**拿一个固定分数去表达「按几次」**。在对数模型下这两件事不成
+//! 比例：`g × ln((n+2)/(n+1))` 在 n = 0 时是 0.2426，n = 26 时只剩 0.0127。
+//! 所以规则的严格度必须绑在 `n` 上，不能绑在分数上。
 
 use heinrich_scheme::{CodeKind, Scheme};
 
@@ -29,8 +43,6 @@ use crate::usage::{Tier, Usage, UsageStore};
 pub struct RankingConfig {
     /// 半衰期（天）
     pub half_life_days: f64,
-    /// 晋升阈值系数 K
-    pub promote_k: f64,
     /// 学习增益 g
     pub learning_gain: f64,
 }
@@ -39,7 +51,6 @@ impl Default for RankingConfig {
     fn default() -> Self {
         Self {
             half_life_days: 45.0,
-            promote_k: 1.5,
             learning_gain: 0.35,
         }
     }
@@ -50,7 +61,6 @@ impl RankingConfig {
     pub fn sanitized(self) -> Self {
         Self {
             half_life_days: self.half_life_days.clamp(7.0, 365.0),
-            promote_k: self.promote_k.clamp(1.0, 10.0),
             learning_gain: self.learning_gain.clamp(0.0, 10.0),
         }
     }
@@ -64,7 +74,7 @@ pub struct Candidate {
     /// 这个词的**五笔全码**（拼音候选才有；码提示 chip 画它，§6.3）。
     ///
     /// 与 `code` 分开而不是复用，是因为两者语义不同：`code` 是「这条候选是怎么
-    /// 被查出来的」（拼音下是拼音串，还参与同分次序与首位判定），`wubi` 是
+    /// 被查出来的」（拼音下是拼音串，还参与同分次序），`wubi` 是
     /// 「这个词用五笔该怎么打」。用拼音查 `hao` 得到「好」时，前者是 `hao`、
     /// 后者是 `vbg`——合并成一个字段等于把两个问题混成一个。
     pub wubi: String,
@@ -80,17 +90,20 @@ pub struct Candidate {
     /// 距上次使用天数（从未使用为 `f64::INFINITY`）
     pub days_since: f64,
     pub tier: Tier,
-    /// 是否因第一名保护被压回原位
-    pub throne_held: bool,
 }
 
-/// 学习分：`ln(1+n) × 0.5^(Δt/H)`。
+/// 学习分：`ln(1 + max(0, n−1)) × 0.5^(Δt/H)`。
+///
+/// **第一次上屏不加分**（D58）：`n = 1` 只说明「你点过它一次」，那既可能是要用
+/// 它，也可能是按错了位置。让这一次得 0 分，「偶用一次不改顺序」就成了次数约束
+/// 而不是分数门槛——不会随 `n` 变严，也不需要记「谁在位」。
 pub fn learning_score(n: u32, days_since: f64, cfg: &RankingConfig) -> f64 {
-    if n == 0 {
+    let effective = n.saturating_sub(1);
+    if effective == 0 {
         return 0.0;
     }
     let decay = 0.5_f64.powf(days_since / cfg.half_life_days.max(f64::MIN_POSITIVE));
-    (1.0 + n as f64).ln() * decay
+    (1.0 + effective as f64).ln() * decay
 }
 
 fn days_between(last_used: i64, now: i64) -> f64 {
@@ -145,12 +158,12 @@ pub fn lookup<S: UsageStore + ?Sized>(
 
 /// 排序的输入：一条候选的身份与静态权重。
 ///
-/// 抽出来是为了让**五笔词库与拼音词库共用同一套排序**——学习分、首位保护、
+/// 抽出来是为了让**五笔词库与拼音词库共用同一套排序**——学习分、
 /// 抑制与固顶都是按「词」而不是按「哪个词典查出来的」生效的。用户在拼音下
 /// 多打了几次某个字，切回五笔时它同样更靠前，这才是符合直觉的行为。
 pub struct RankInput<'a> {
     pub word: &'a str,
-    /// 五笔是编码，拼音是拼音串——它只用于同分时稳定次序与 `throne` 的身份判定
+    /// 五笔是编码，拼音是拼音串——它只用于同分时的稳定次序
     pub code: &'a str,
     /// 这个词的五笔全码。空串 = 不知道（五笔侧候选不需要它：能拆出来的人不用提示）
     pub wubi: &'a str,
@@ -159,7 +172,7 @@ pub struct RankInput<'a> {
     pub kind_label: &'static str,
 }
 
-/// 对给定的词条下标集合排序（固顶 → 学习区，首位受阈值保护）。
+/// 对给定的词条下标集合排序（固顶 → 学习区，按综合分降序）。
 pub fn rank_indices<S: UsageStore + ?Sized>(
     scheme: &Scheme,
     indices: &[u32],
@@ -204,11 +217,9 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
         let usage: Usage = store.usage(item.word);
         let days_since = days_between(usage.last_used, now);
         let learning = learning_score(usage.n, days_since, &cfg);
-        let total = if usage.n == 0 {
-            item.w_norm as f64
-        } else {
-            item.w_norm as f64 + cfg.learning_gain * learning
-        };
+        // n = 0 与 n = 1 时 `learning` 都是 0，所以两种「还没学到东西」的状态
+        // 自然退化成码表序，不需要分支。
+        let total = item.w_norm as f64 + cfg.learning_gain * learning;
         let cand = Candidate {
             word: item.word.to_string(),
             code: item.code.to_string(),
@@ -220,7 +231,6 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
             n: usage.n,
             days_since,
             tier,
-            throne_held: false,
         };
         match tier {
             Tier::Pinned => pinned.push(cand),
@@ -231,12 +241,12 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
     // 固顶：静态权重降序（稳定）
     pinned.sort_by(|a, b| b.w_norm.total_cmp(&a.w_norm));
 
-    // 基线序 = 码表序：静态权重降序，同权重保持码表先后。
-    // 基线第一名即「王座」持有者——它是用户肌肉记忆里的首候选。
-    learn.sort_by(|a, b| b.w_norm.total_cmp(&a.w_norm));
-    let throne: Option<(String, String)> = learn.first().map(|c| (c.code.clone(), c.word.clone()));
-
-    // 学习区：综合分降序
+    // 学习区：综合分降序。同分按静态权重、再按词与码定序，保证顺序可预测
+    // ——`sort_by` 本身稳定，但显式写全次序，换个词库也不会漂。
+    //
+    // 这里**没有门槛**：一次使用不改顺序已由 `learning_score` 的 `n − 1` 保证
+    // （见文件头 D58）。正因为门槛没了，排序关系重新满足严格弱序，可以交给
+    // `sort_by` —— D54 那个手写的插入式前移连同它的不传递性一并删掉了。
     learn.sort_by(|a, b| {
         b.total
             .total_cmp(&a.total)
@@ -244,29 +254,6 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
             .then_with(|| a.word.cmp(&b.word))
             .then_with(|| a.code.cmp(&b.code))
     });
-
-    // 第一名保护：挑战者必须够 K 倍才能夺位
-    if let Some((t_code, t_word)) = throne {
-        let first_is_throne = learn[0].code == t_code && learn[0].word == t_word;
-        if !first_is_throne {
-            let leader_total = learn
-                .iter()
-                .find(|c| c.code == t_code && c.word == t_word)
-                .map(|c| c.total)
-                .unwrap_or(0.0)
-                .max(f64::EPSILON);
-            if learn[0].total < cfg.promote_k * leader_total {
-                if let Some(pos) = learn
-                    .iter()
-                    .position(|c| c.code == t_code && c.word == t_word)
-                {
-                    let mut held = learn.remove(pos);
-                    held.throne_held = true;
-                    learn.insert(0, held);
-                }
-            }
-        }
-    }
 
     pinned.extend(learn);
     pinned
@@ -285,12 +272,16 @@ mod tests {
     fn learning_score_matches_formula() {
         let cfg = RankingConfig::default();
         assert_eq!(learning_score(0, 0.0, &cfg), 0.0);
-        // n=1, 刚用过 → ln 2
-        assert!((learning_score(1, 0.0, &cfg) - std::f64::consts::LN_2).abs() < 1e-12);
+        // 第一次上屏不加分（D58）——它只说明「点过」，不说明「要用」
+        assert_eq!(learning_score(1, 0.0, &cfg), 0.0);
+        // 第二次起才算：n=2, 刚用过 → ln 2
+        assert!((learning_score(2, 0.0, &cfg) - std::f64::consts::LN_2).abs() < 1e-12);
         // 恰好一个半衰期 → 学习分减半
-        let half = learning_score(1, 45.0, &cfg);
+        let half = learning_score(2, 45.0, &cfg);
         assert!((half - std::f64::consts::LN_2 / 2.0).abs() < 1e-12);
-        // 单调：次数越多分越高
+        // 单调不减：次数越多分越高（n=1 与 n=0 同为 0，是刻意的）
+        assert_eq!(learning_score(1, 0.0, &cfg), learning_score(0, 0.0, &cfg));
+        assert!(learning_score(3, 0.0, &cfg) > learning_score(2, 0.0, &cfg));
         assert!(learning_score(10, 0.0, &cfg) > learning_score(9, 0.0, &cfg));
     }
 
@@ -298,12 +289,10 @@ mod tests {
     fn config_is_clamped() {
         let cfg = RankingConfig {
             half_life_days: 0.0,
-            promote_k: 0.1,
             learning_gain: 99.0,
         }
         .sanitized();
         assert_eq!(cfg.half_life_days, 7.0);
-        assert_eq!(cfg.promote_k, 1.0);
         assert_eq!(cfg.learning_gain, 10.0);
     }
 }

@@ -326,7 +326,7 @@ if ($Check) {
 Write-Host ''
 Write-Host '== 脚本验不了的三件事（要手工）' -ForegroundColor Cyan
 Write-Host '  1. 词序真的变了：连打某个次候选 5 次，再打同一个码，看它有没有上移。'
-Write-Host '     首位不该被抢走 —— K=1.5 就是干这个的（§5.2）。'
+Write-Host '     第一次上屏不计分（§5.1 / D58）：打一次不会改顺序，第二次起才动。'
 Write-Host '  2. 三条不报路径：打一个死码（如 abc）、Shift 吐字母、断开 server 后打字，'
 Write-Host '     这三种都不该让任何词的 n 上涨。'
 Write-Host '  3. 跨重启：tsf.ps1 server stop → 再打同一个码 → 顺序应保持上次学到的样子。'

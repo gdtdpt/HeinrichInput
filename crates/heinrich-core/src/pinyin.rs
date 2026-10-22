@@ -458,8 +458,8 @@ mod tests {
         let hao_pos = order.iter().position(|w| w == "浩").expect("浩 应在候选里");
         let hao2_pos = order.iter().position(|w| w == "号").expect("号 应在候选里");
         assert!(
-            hao_pos < hao2_pos || r.folded[hao_pos].throne_held,
-            "学习分应当让「浩」上浮（被首位保护压住也是一种合法结果）：{order:?}"
+            hao_pos < hao2_pos,
+            "连打三次应当让「浩」越过「号」（D58 之后没有分数门槛，谁分高谁在前）：{order:?}"
         );
     }
 

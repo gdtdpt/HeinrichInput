@@ -69,54 +69,85 @@ fn unused_candidates_follow_static_weight() {
     assert!(cands.iter().all(|c| c.n == 0 && c.learning == 0.0));
 }
 
+/// 第一次上屏**完全不计分**（D58）：它只说明「点过」，不说明「要用」。
+///
+/// 这条替代了 D54 的 `single_use_does_not_reorder`——那个版本靠「一次最多加
+/// 0.2426 分、够不到 δ=0.35」实现，机制是对的但代价太大：δ 折合几次按键会随 n
+/// 膨胀（n≈26 时要五十次），结果用得多的词反而被用得少的词压住。
 #[test]
-fn single_use_moves_at_most_one_slot() {
+fn single_use_does_not_reorder() {
     let s = scheme();
     let mut store = MemoryStore::new();
     let before = ranked(&s, "vbgd", &store);
 
     record(&mut store, "蒿", 1);
     let after = ranked(&s, "vbgd", &store);
+    assert_eq!(after, before, "偶用一次不该改顺序");
 
-    assert_eq!(after, ["号", "豪", "蒿", "呵"]);
-    let pos_before = before.iter().position(|w| w == "蒿").unwrap();
-    let pos_after = after.iter().position(|w| w == "蒿").unwrap();
-    assert_eq!(pos_before - pos_after, 1, "一次使用只应前进一位");
+    // 换一个权重最低的词也一样——不看分差，只看次数
+    record(&mut store, "呵", 1);
+    assert_eq!(ranked(&s, "vbgd", &store), before);
 }
 
+/// 第二次上屏就开始起作用：从这一次起，加分规则与以前完全一样。
 #[test]
-fn leader_holds_against_a_few_uses() {
+fn second_use_reorders() {
     let s = scheme();
     let mut store = MemoryStore::new();
-    record(&mut store, "呵", 3);
-
-    let cands = lookup(&s, "vbgd", &store, NOW, &RankingConfig::default()).0;
-    assert_eq!(cands[0].word, "号", "第一名不得被三次使用夺走");
-    assert!(cands[0].throne_held, "应标记为「因阈值保住首位」");
-    assert_eq!(cands[1].word, "呵", "未过阈值的挑战者只能上浮到第二位");
+    record(&mut store, "蒿", 2);
+    assert_eq!(
+        ranked(&s, "vbgd", &store),
+        ["号", "豪", "蒿", "呵"],
+        "蒿（0.690）越过呵（0.578），还够不到豪（0.941）"
+    );
 }
 
+/// 用得少就停在少数——不会因为「按了三次」就跳到前面去。
 #[test]
-fn sustained_use_can_take_the_throne() {
+fn three_uses_stop_where_the_scores_say() {
     let s = scheme();
     let mut store = MemoryStore::new();
-    record(&mut store, "豪", 6);
-
-    let cands = lookup(&s, "vbgd", &store, NOW, &RankingConfig::default()).0;
-    assert_eq!(cands[0].word, "豪", "持续使用应能越过 1.5 倍阈值");
-    assert!(!cands[0].throne_held);
+    record(&mut store, "蒿", 3);
+    assert_eq!(
+        ranked(&s, "vbgd", &store),
+        ["号", "豪", "蒿", "呵"],
+        "蒿（0.832）仍低于豪（0.941）"
+    );
 }
 
+/// **用户核心诉求的回归**：用得多的词必须赢过用得少的。
+///
+/// 蒿的静态权重只有号的 45%，但用十次就该排第一（1.253 > 1.000）。
+/// D54 的 δ=0.35 下它够不到门槛（1.253 < 1.000+0.35），打十次也上不去——
+/// 这正是「输入法在手上越用越舒服」失灵的地方。
 #[test]
-fn low_frequency_word_never_reaches_first() {
+fn heavy_use_beats_a_heavier_static_weight() {
     let s = scheme();
     let mut store = MemoryStore::new();
     record(&mut store, "蒿", 10);
 
     let cands = lookup(&s, "vbgd", &store, NOW, &RankingConfig::default()).0;
-    assert_eq!(cands[0].word, "号");
-    assert!(cands[0].throne_held);
-    assert_eq!(cands[1].word, "蒿", "低权重词可以上浮，但到不了第一位");
+    assert_eq!(cands[0].word, "蒿", "十次使用应当越过码表首位");
+    assert_eq!(cands[1].word, "号");
+}
+
+/// 刚上位的词不该被原首位「打一次就夺回」。
+///
+/// 这是 D44 王座设计的核心缺陷的回归测试：那时门槛是「原首位动态总分的 1.5 倍」，
+/// 它每被打一次门槛就抬一次，挑战者刚上位就会被踢回去（实测要再打 11 次）。
+/// 现在原首位打一次得 0 分（n=1），连门槛都不需要。
+#[test]
+fn the_challenger_is_not_pushed_back() {
+    let s = scheme();
+    let mut store = MemoryStore::new();
+
+    record(&mut store, "豪", 6);
+    assert_eq!(ranked(&s, "vbgd", &store)[0], "豪", "六次后已上位");
+
+    record(&mut store, "号", 1);
+    let after = ranked(&s, "vbgd", &store);
+    assert_eq!(after[0], "豪", "原首位打一次不该夺回");
+    assert_eq!(after[1], "号");
 }
 
 #[test]
@@ -143,7 +174,7 @@ fn pinned_leads_and_suppressed_disappears() {
     store.set_tier("号", Tier::Suppressed);
 
     let cands = lookup(&s, "vbgd", &store, NOW, &RankingConfig::default()).0;
-    assert_eq!(cands[0].word, "蒿", "固顶词无视权重与阈值");
+    assert_eq!(cands[0].word, "蒿", "固顶词无视权重与分数");
     assert!(!cands.iter().any(|c| c.word == "号"), "抑制词不得出现");
 }
 

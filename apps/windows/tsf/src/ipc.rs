@@ -20,7 +20,7 @@
 //! 错位的连接比没有连接难查得多。直接把句柄关掉：server 那边看到断开，
 //! 后台线程在 200 ms 内重连。代价是这一键降级成「原样上屏」。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -102,7 +102,7 @@ impl Drop for Conn {
 }
 
 static CONN: Mutex<Option<Conn>> = Mutex::new(None);
-static CACHE: Mutex<Option<HashMap<String, Reply>>> = Mutex::new(None);
+static CACHE: Mutex<Option<CacheState>> = Mutex::new(None);
 static PENDING_MODE: Mutex<Option<Mode>> = Mutex::new(None);
 /// 服务端最近一次握手声明的能力位（`Frame::Welcome::features`）。
 ///
@@ -263,9 +263,9 @@ pub fn record(code: &str, word: &str) {
         }
         q.push_back((code.to_string(), word.to_string(), at));
     }
-    // 本地缓存里这一份已经过时：同码下次查必须重新问 server，否则学习排序
-    // 要等缓存被别的码挤掉才生效（用户会觉得「学了半天不涨」）。
-    cache_drop(code);
+    // 本地缓存里这一份已经过时，但**不立刻删**（D55）：连打同一个码时顺序必须
+    // 稳定，否则用户按着「2」而第 2 条换了人。标脏，等他打别的码再让它失效。
+    cache_mark_stale(code);
 }
 
 fn request(frame: &Frame, budget: Duration) -> Option<Frame> {
@@ -701,34 +701,162 @@ fn to_wide(s: &str) -> Vec<u16> {
 // 候选缓存
 // ---------------------------------------------------------------------------
 
+/// 候选缓存的全部状态。
+///
+/// 合在一个结构里而不是拆成几个 `static`：`query` 要做「判断能不能用这份缓存 →
+/// 清脏 → 取」，这几步必须在同一个视图下完成，否则两个会话线程会互相踩。
+#[derive(Default)]
+struct CacheState {
+    map: HashMap<String, Reply>,
+    /// 上屏后标脏的码——排序已过时，但连打期间先不刷新（D57）。
+    stale: HashSet<String>,
+    /// 上一次**提交**的码（`record` 时才更新）。
+    ///
+    /// 判据是「提交过」而不是「查过」：D55 用「查了别的码」当信号，结果打 `fcu`
+    /// 之后第一个字母 `f` 就已经算是「别的码」，脏标记当场被清掉，连打期间位置
+    /// 照样会跳。提交才是那个真正改变了学习数据的动作。
+    last_commit: Option<String>,
+}
+
 fn cache_get(code: &str) -> Option<Reply> {
-    CACHE
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().and_then(|m| m.get(code).cloned()))
+    let mut g = CACHE.lock().ok()?;
+    let st = g.get_or_insert_with(CacheState::default);
+    // 这条被提交过 ⇒ 它的排序可能已经变了。只有「提交后用户已经去打过别的码」
+    // 才重问；否则就是连打同一个码，此时换顺序等于让手指按错位置。
+    if st.stale.contains(code) && st.last_commit.as_deref() != Some(code) {
+        st.stale.remove(code);
+        st.map.remove(code);
+        return None;
+    }
+    st.map.get(code).cloned()
 }
 
 fn cache_put(code: &str, reply: &Reply) {
     if let Ok(mut g) = CACHE.lock() {
-        let map = g.get_or_insert_with(HashMap::new);
-        if map.len() >= CACHE_CAP {
-            map.clear();
+        let st = g.get_or_insert_with(CacheState::default);
+        if st.map.len() >= CACHE_CAP {
+            st.map.clear();
+            st.stale.clear();
         }
-        map.insert(code.to_string(), reply.clone());
+        st.map.insert(code.to_string(), reply.clone());
+        // 刚查到的是一手数据，顺手把脏标记去掉。
+        st.stale.remove(code);
     }
 }
 
-/// 丢掉某个码的缓存条目。上屏之后必须调——否则用户「学了」却看不到效果，
-/// 要等这条缓存被别的码挤掉（最多 64 个码）才重新查。
-fn cache_drop(code: &str) {
+/// 上屏之后调用：把这个码的缓存**标脏**，等提交过别的码之后再真正丢掉。
+///
+/// 不能立刻 `remove`——那会让连打同一个码时每次查询都重新问 server，而 server
+/// 那边刚好因为这次上屏改了顺序，于是用户还按着「2」的时候第 2 条已经变成别的
+/// 词了（真机实测：连打「云」到第 12 次它上位，用户继续按 2 选到了「去」，反而
+/// 把「云」打回第 2）。延迟到「提交过别的码」，排序改动仍然生效，只是不在连打
+/// 中途生效。
+fn cache_mark_stale(code: &str) {
     if let Ok(mut g) = CACHE.lock() {
-        if let Some(map) = g.as_mut() {
-            map.remove(code);
-        }
+        let st = g.get_or_insert_with(CacheState::default);
+        st.stale.insert(code.to_string());
+        st.last_commit = Some(code.to_string());
     }
 }
 
 /// 仅供排错：当前是否连上（`UnadviseSink` 之类的地方会用）。
 pub fn is_connected() -> bool {
     CONN.try_lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试之间共享 `CACHE` 这个 `static`，串行化一下（只影响这一个模块）。
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn reply(words: &[&str]) -> Reply {
+        Reply {
+            words: words.iter().map(|w| w.to_string()).collect(),
+            codes: vec![String::new(); words.len()],
+            pinyin: false,
+            primary_len: words.len(),
+        }
+    }
+
+    fn reset() {
+        if let Ok(mut g) = CACHE.lock() {
+            *g = None;
+        }
+    }
+
+    /// D57 的核心：上屏标脏之后，**同一个码**继续命中旧缓存（连打不跳位），
+    /// 只有「提交过别的码」之后回去才重问。
+    #[test]
+    fn stale_entry_survives_the_same_code_and_expires_after_another_commit() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+
+        cache_put("fcu", &reply(&["去", "云"]));
+        assert_eq!(
+            cache_get("fcu").map(|r| r.words),
+            Some(vec!["去".into(), "云".into()])
+        );
+
+        // 上屏一次：只标脏，不删。
+        cache_mark_stale("fcu");
+        assert!(
+            cache_get("fcu").is_some(),
+            "连打同一个码时必须继续用旧序，否则用户按着「2」而第 2 条换了人"
+        );
+
+        // 又打一次并上屏（还是同一个码）——依旧不刷新。
+        cache_mark_stale("fcu");
+        assert!(cache_get("fcu").is_some(), "连打期间顺序绝对不动");
+
+        // 去打了别的码并上屏 ⇒ fcu 的脏条目才算真的过时。
+        cache_mark_stale("vbg");
+        assert!(
+            cache_get("fcu").is_none(),
+            "提交过别的码之后，回去才看到新序"
+        );
+
+        reset();
+    }
+
+    /// D55 → D57 修的就是这一条：**只是查了别的码**不该让脏条目失效。
+    ///
+    /// 打 `fcu` 之后第一个字母 `f` 在缓存里就是「另一个码」，D55 拿它当换码信号，
+    /// 于是脏标记在用户还没提交任何东西的时候就被清掉了——连打照样跳位。
+    #[test]
+    fn querying_another_code_does_not_expire_it() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+
+        cache_put("fcu", &reply(&["去", "云"]));
+        cache_mark_stale("fcu");
+
+        // 打下一个词时先输入的是 f、fc——它们都是「别的码」，但没有提交。
+        assert!(cache_get("f").is_none(), "没查过的码本来就该 miss");
+        assert!(cache_get("fc").is_none());
+        assert!(
+            cache_get("fcu").is_some(),
+            "只查不提交，不算换码；否则连打期间照样跳位"
+        );
+
+        reset();
+    }
+
+    /// 从没被提交过的码永远有效——它的排序不会因为别人上屏而变。
+    #[test]
+    fn clean_entries_are_never_invalidated() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+
+        cache_put("vbg", &reply(&["好"]));
+        cache_put("fcu", &reply(&["去"]));
+        cache_mark_stale("fcu");
+        cache_mark_stale("hao");
+
+        assert!(cache_get("vbg").is_some(), "没上屏过的码不该被清");
+        assert!(cache_get("fcu").is_none(), "上屏过的那个才该清");
+
+        reset();
+    }
 }

@@ -72,6 +72,10 @@ pub struct Config {
     /// 扁平化的键 → 值（`[hint] mode` 存成 `hint.mode`）。
     map: BTreeMap<String, String>,
     hint_mode: HintMode,
+    /// `ranking.learning_gain`，缺省或非法为 `None`（由调用方取默认）。
+    ranking_gain: Option<f64>,
+    /// `ranking.half_life_days`，同上。
+    ranking_half_life: Option<f64>,
     /// 磁盘上是否真有这个文件。`false` 表示全用默认值。
     found: bool,
     warnings: Vec<String>,
@@ -163,9 +167,30 @@ impl Config {
             }),
         };
 
+        // 排序参数（§5）。这里只管「是不是有限数、够不够下界」，上界交给
+        // `RankingConfig::sanitized` 夹——两处都夹一次会分成两套规则。
+        let ranking_gain = read_number(&map, "ranking.learning_gain", 0.0, &mut warnings);
+        let ranking_half_life = read_number(&map, "ranking.half_life_days", 1.0, &mut warnings);
+
+        // 已退役的排序键。它们都曾经真的生效过，用户照旧文档写了会以为还在起作用，
+        // 所以必须逐个说清楚「这行被忽略」——静默吞掉比报错更难查。
+        for (key, why) in [
+            ("ranking.promote_k", "王座式动态门槛，D54 已废除"),
+            (
+                "ranking.promote_margin",
+                "绝对分差门槛，D58 已废除——「一次上屏不改顺序」改由「第一次上屏不计分」保证",
+            ),
+        ] {
+            if map.contains_key(key) {
+                warnings.push(format!("{key} 已废弃（{why}），这行被忽略"));
+            }
+        }
+
         Self {
             map,
             hint_mode,
+            ranking_gain,
+            ranking_half_life,
             found: false,
             warnings,
         }
@@ -177,6 +202,16 @@ impl Config {
 
     pub fn hint_mode(&self) -> HintMode {
         self.hint_mode
+    }
+
+    /// 配置文件里写的学习增益 `g`；没写或写坏为 `None`。
+    pub fn ranking_gain(&self) -> Option<f64> {
+        self.ranking_gain
+    }
+
+    /// 配置文件里写的半衰期（天）；没写或写坏为 `None`。
+    pub fn ranking_half_life_days(&self) -> Option<f64> {
+        self.ranking_half_life
     }
 
     pub fn found(&self) -> bool {
@@ -211,6 +246,32 @@ fn unquote(v: &str) -> String {
         return inner.to_string();
     }
     v.to_string()
+}
+
+/// 读一个数值键：没写 ⇒ `None`（调用方取默认）；写坏 ⇒ `None` + 一条 warning。
+///
+/// 写坏时**不能**退回 0 之类的「看起来合理」的值：`learning_gain = 0` 意味着
+/// 彻底不学习，用户把一个字写错就再也不会学任何东西，而且完全没有提示。
+fn read_number(
+    map: &BTreeMap<String, String>,
+    key: &str,
+    min: f64,
+    warnings: &mut Vec<String>,
+) -> Option<f64> {
+    let raw = map.get(key)?;
+    match raw.parse::<f64>() {
+        Ok(v) if v.is_finite() && v >= min => Some(v),
+        Ok(_) => {
+            warnings.push(format!(
+                "{key} 的值 `{raw}` 不合理（要 ≥ {min} 的数），已忽略"
+            ));
+            None
+        }
+        Err(_) => {
+            warnings.push(format!("{key} 不是数字：`{raw}`，已忽略"));
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +351,59 @@ mod tests {
         let cfg = Config::parse("hint.mode = \"off\"\nhint.mode = \"mixed\"");
         assert_eq!(cfg.hint_mode(), HintMode::Mixed);
         assert_eq!(cfg.warnings().len(), 1);
+    }
+
+    #[test]
+    fn 排序参数两种写法都认() {
+        assert_eq!(
+            Config::parse("ranking.learning_gain = 0.5").ranking_gain(),
+            Some(0.5)
+        );
+        assert_eq!(
+            Config::parse("[ranking]\nhalf_life_days = 30").ranking_half_life_days(),
+            Some(30.0)
+        );
+        let none = Config::parse("hint.mode = \"off\"");
+        assert_eq!(none.ranking_gain(), None);
+        assert_eq!(none.ranking_half_life_days(), None, "没写就是取默认");
+    }
+
+    /// 参数写坏不该让输入法起不来，也**不该悄悄变成 0**（gain = 0 等于永不学习）。
+    #[test]
+    fn 排序参数写坏时取默认而不是零() {
+        let not_num = Config::parse("ranking.learning_gain = 大一点");
+        assert_eq!(not_num.ranking_gain(), None);
+        assert!(
+            not_num.warnings()[0].contains("不是数字"),
+            "{:?}",
+            not_num.warnings()
+        );
+
+        let negative = Config::parse("ranking.half_life_days = -1");
+        assert_eq!(negative.ranking_half_life_days(), None);
+        assert!(negative.warnings()[0].contains("不合理"));
+
+        // 0 对 gain 合法（就是关掉学习），对半衰期不合法（除零）。
+        assert_eq!(
+            Config::parse("ranking.learning_gain = 0").ranking_gain(),
+            Some(0.0)
+        );
+        assert_eq!(
+            Config::parse("ranking.half_life_days = 0").ranking_half_life_days(),
+            None
+        );
+    }
+
+    /// 两个已退役的门槛键都必须显式警告：用户按旧文档写了 0.35，不警告就以为生效了。
+    #[test]
+    fn 退役的门槛键会提示() {
+        for key in ["ranking.promote_k", "ranking.promote_margin"] {
+            let cfg = Config::parse(&format!("{key} = 2.0"));
+            assert!(
+                cfg.warnings().iter().any(|w| w.contains("已废弃")),
+                "{key} 应当报废弃：{:?}",
+                cfg.warnings()
+            );
+        }
     }
 }

@@ -497,7 +497,7 @@ fn selftest(host: &mut Host) -> i32 {
     // ---- 码提示（§6.3）：提示跟随「这一段是怎么出来的」，三档各验一次 ----
     failed += selftest_hint(host);
 
-    // ---- 学习（§5.1 / §5.2）：偶用一次抢不走首位，次数真的记上了 ----
+    // ---- 学习（§5）：第一次不计分，用够次数就该翻过来 ----
     // 记基线：上面的码提示用例也会回报一次上屏（first_time 需要它），
     // 那条记录不该算进「学习用例收了几条」。
     let recorded_before = host.recorded();
@@ -511,7 +511,7 @@ fn selftest(host: &mut Host) -> i32 {
         println!("  学习   → 跳过（vbg 候选不足 2 条）");
         return if failed == 0 { 0 } else { 1 };
     }
-    let throne = base[0].clone();
+    let front = base[0].clone();
     let challenger = base[base.len() - 1].clone();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -528,9 +528,9 @@ fn selftest(host: &mut Host) -> i32 {
         .into_iter()
         .map(|e| e.word)
         .collect();
-    let held = after.first() == Some(&throne);
+    let held = after.first() == Some(&front);
     println!(
-        "  学习   → 用一次「{challenger}」后首位仍是「{throne}」  {}",
+        "  学习   → 用一次「{challenger}」后首位仍是「{front}」  {}",
         if held { "✓" } else { "✗" }
     );
     if !held {
@@ -552,21 +552,23 @@ fn selftest(host: &mut Host) -> i32 {
     if !counted {
         failed += 1;
     }
-    // 连用 20 次仍抢不走首位，这正是 §5.2 的量化表达：`vbg` 的次候选「㛅」
-    // 权重远低于「好」，`w + 0.35×ln21 ≈ 1.45 < 1.5 × 1.0`，所以哪怕用 20 次
-    // 也停在次席。**这不是缺陷，是设计**——低频词不该因为常用就爬到首位。
+    // 连用 20 次就该翻过来（D58）。这一条最容易被误判成 bug：
+    // 「㛅」的 `w` 只有 0.3714，比「好」低 0.59，但用满 20 次能加
+    // `0.35 × ln 20 ≈ 1.05` 分，足够越过码表序。「用得多的词排前面」正是
+    // 用户要的那个行为，所以这里断言的是**翻转**而不是保持。
+    // 反方向（第一次不改顺序）在上一段已经验过了。
     let later: Vec<String> = host
         .query("vbg", 9)
         .entries
         .into_iter()
         .map(|e| e.word)
         .collect();
-    let still = later.first() == Some(&throne);
+    let flipped = later.first() == Some(&challenger);
     println!(
-        "  学习   → 连用 20 次后首位仍是「{throne}」  {}",
-        if still { "✓" } else { "✗" }
+        "  学习   → 连用 20 次后「{challenger}」升到首位  {}",
+        if flipped { "✓" } else { "✗" }
     );
-    if !still {
+    if !flipped {
         failed += 1;
     }
 
