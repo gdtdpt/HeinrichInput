@@ -1118,7 +1118,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
 | M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
-| M3.4b 码位键位图 | 🟡 **代码与自测完成，待真机验收**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
+| M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
 | M3.5 | 未开始（`z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地。外链查询已降为 M5 可选，见 §6.6） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
