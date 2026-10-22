@@ -1,8 +1,9 @@
 //! `heinrich-cli`：在没有 TSF 壳的情况下先让引擎「能打字」。
 //!
-//! 两个子命令：
+//! 子命令：
 //! - `repl`：逐行模拟键盘——输入字母组成缓冲区、数字选词，打印候选与打分依据。
 //!   这是 M0b 的唯一验收手段：词序是否按 §5 浮动，只能靠连续打字看出来。
+//! - `look`：查一次就退出（`look vbz` / `look "hao'vb"`），给脚本与回归用。
 //! - `check`：装载方案并复核完整性（哈希、计数、前缀索引、一级简码键位）。
 
 use std::io::{self, BufRead, Write};
@@ -82,6 +83,36 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "look" => {
+            let args = positional(rest);
+            let Some(code) = args.first().copied() else {
+                eprintln!(
+                    "用法：\n  heinrich-cli look <码> [--data <目录>] [--pinyin <目录>]\n\n  例：look vbz（通配）· look hao'vb（多段，注意加引号）"
+                );
+                return ExitCode::FAILURE;
+            };
+            match Scheme::load(&data) {
+                Ok(scheme) => {
+                    let mut eng = Engine::new(scheme, MemoryStore::new(), RankingConfig::default());
+                    if let Some(dir) = &pinyin_dir {
+                        match PinyinLexicon::load(dir) {
+                            Ok(lex) => eng = eng.with_pinyin(lex),
+                            Err(e) => {
+                                eprintln!("拼音词库装载失败（{}）：{e}", dir.display());
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    }
+                    let mixed = eng.mixed(code, now_unix());
+                    print_candidates(code, mixed);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("装载失败：{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "roots" => {
             let args = positional(rest);
             match args.first().copied() {
@@ -110,7 +141,7 @@ fn main() -> ExitCode {
         }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
             );
             ExitCode::SUCCESS
         }
@@ -288,7 +319,7 @@ fn repl(mut eng: Engine<MemoryStore>) {
                     continue;
                 }
                 buffer.push(ch);
-                if !mixed && Code::parse(&buffer).is_none() {
+                if !mixed && Code::parse(&buffer).is_none() && !wildcard_ok(&buffer) {
                     println!("  编码 `{buffer}` 含非法字符或超长（五笔码只含 a–y，最长 4）");
                     buffer.pop();
                 }
@@ -433,6 +464,15 @@ fn command(
 
 const PRINT_LIMIT: usize = 12;
 
+/// 纯五笔下 `Code::parse` 会拒掉 `z`（它不是字根键），但 CLI 要能验 `vbz`
+/// 这类通配（M3.5）：末位 `z` 且前面是合法码就放行。真正的通配判定在 core 里
+/// （`wildcard_stem`），这里只是别让 repl 把它当成打字错误。
+fn wildcard_ok(buffer: &str) -> bool {
+    buffer
+        .strip_suffix('z')
+        .is_some_and(|stem| !stem.is_empty() && Code::parse(stem).is_some())
+}
+
 fn print_candidates(buffer: &str, m: &Mixed) {
     if buffer.is_empty() {
         println!("  （空缓冲区）");
@@ -448,6 +488,9 @@ fn print_candidates(buffer: &str, m: &Mixed) {
         m.source.label(),
         total
     );
+    if m.show_codes {
+        println!("   （每条都带码：通配 / 多段下，码本身就是筛选依据）");
+    }
     let mut shown = 0usize;
     for c in m.primary.iter().take(PRINT_LIMIT) {
         shown += 1;

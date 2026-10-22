@@ -81,11 +81,11 @@ pub struct Input {
     ///
     /// 它改变**两条**规则，两条都是「五笔的约束在拼音下不成立」：
     ///
-    /// 1. `z` 从「万能学习键」变回普通字母——拼音里 `zhuang`、`zao`、`zhe` 都以它开头。
-    /// 2. 码长上限从 4 放开：拼音是变长的，`linchuangzhengzhuang` 有 20 个字母。
+    /// 1. 码长上限从 4 放开：拼音是变长的，`linchuangzhengzhuang` 有 20 个字母。
+    /// 2. `'` 才进缓冲——没有拼音词库时它没有任何含义（§6.5）。
     ///
-    /// 服务端没装拼音就保持五笔的老行为（D42），所以这一位必须由 server 告诉 DLL，
-    /// DLL 自己猜不出来。
+    /// **`z` 不再由它决定**（M3.5 / D62）：`z` 一律进缓冲，由 server 解释成
+    /// 拼音声母还是末位通配。这一位必须由 server 告诉 DLL，DLL 自己猜不出来。
     pub pinyin: bool,
 }
 
@@ -128,10 +128,13 @@ impl Input {
 
 /// 五笔 86 的字根键：`a`–`y`，共 25 个。
 ///
-/// `z` 不在其中——86 版的 `z` 是「万能学习键」，查任意位置的字根（计划在 M3 与
-/// 码提示一起做）。它的**暂定归属**见 `decide` 里那一支：组合态内吃掉不动，
-/// 空缓冲时放行。放行会让宿主在组合串中间插一个 `z` 并终止组合串，等于把用户
-/// 已经打出的编码按残留删掉——「吃掉没反应」远比「打的字被打断」轻（D42）。
+/// `z` 不在其中——86 版的 `z` 是「万能学习键」。它的语义在 M3.5 落地（D62）：
+/// **组合态内进缓冲**，由 server 判断它这一段是拼音声母（`zh…`）还是末位通配
+/// （`vbz` = 「`vb` 开头的字」）。
+///
+/// 早先（D42）它是「吃掉不动」，理由是「z 不是字根键，进了缓冲没人解释」。
+/// 现在有人解释了，所以那一版的前提失效——但它留下的两条例外仍然成立：
+/// 空缓冲放行（没有组合串可打断）、`Shift+z` 放行（临时英文要出大写）。
 pub const VK_A: u16 = 0x41;
 pub const VK_Y: u16 = 0x59;
 
@@ -151,6 +154,18 @@ pub const MAX_PINYIN_CODE_LEN: usize = 24;
 /// 编译期就把「上限必须覆盖最长词条」钉住：万一有人为了省事把它改回 4，
 /// 这条断言会在编译时炸，而不是等真机上打 `linchuang…` 打到一半被上屏。
 const _: () = assert!(MAX_PINYIN_CODE_LEN >= 20);
+
+/// 含多段标记或通配时的缓冲上限（M3.5）。
+///
+/// 两段各 4 码加一个 `'` 正好 9，`vbgv'vbgv` 这类打满的组合也装得下。
+/// 只在**缓冲里出现过 `'`、或正要输入的字符是 `'` / `z`** 时启用：
+/// 否则纯五笔「满 4 码就原样上屏」会被悄悄放宽，打错 5 个字母不再自动收场。
+pub const MAX_EXTENDED_CODE_LEN: usize = MAX_CODE_LEN * 2 + 1;
+
+// 关系用编译期断言钉住，不写成单测里的 `assert!`：常量之间的比较没有运行时信息，
+// clippy 会直接判 `assertions_on_constants`，而在 const 块里失败反而更早暴露。
+const _: () = assert!(MAX_EXTENDED_CODE_LEN > MAX_CODE_LEN);
+const _: () = assert!(MAX_EXTENDED_CODE_LEN < MAX_PINYIN_CODE_LEN);
 
 /// 当前的码长上限。`pinyin` 指服务端是否装了拼音词库。
 pub fn max_code_len(pinyin: bool) -> usize {
@@ -191,21 +206,6 @@ pub fn wubi_letter(vk: u16) -> Option<char> {
     } else {
         None
     }
-}
-
-/// vkey → **编码缓冲**字母。与 [`wubi_letter`] 只差 `z`。
-///
-/// `pinyin = true`（服务端装了拼音词库）时 `z` 是普通字母：拼音里 `zhuang`、`zao`、
-/// `zhe`、`zui` 都以它开头，吃掉它等于整片 z 声母的字打不出来。
-/// `pinyin = false` 时保持五笔老行为，`z` 不进缓冲（D42）。
-pub fn code_letter(pinyin: bool, vk: u16) -> Option<char> {
-    if let Some(ch) = wubi_letter(vk) {
-        return Some(ch);
-    }
-    if pinyin && vk == VK_Z {
-        return Some('z');
-    }
-    None
 }
 
 /// 中文模式下要接管的标点：`vkey + 是否按住 Shift` → 全角字符。
@@ -333,28 +333,30 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
 
     let empty = input.buffer_len == 0;
 
-    if let Some(ch) = code_letter(input.pinyin, vk) {
+    // `z`：万能学习键（M3.5 / D62）。组合态内**一律进缓冲**，由 server 解释成
+    // 拼音声母（`zh…`）还是末位通配（`vbz` = 「`vb` 开头的字」）。
+    //
+    // D42 原本让它「吃掉不动」，理由是「`z` 不是字根键，进了缓冲没人解释」。
+    // 现在 server 会解释，那条理由失效——而「吃掉不动」的代价是 `vbz` 永远打不出来。
+    //
+    // 两条例外放行：空缓冲（没有组合串可打断，`z` 就是个普通字母）、`Shift+z`
+    // （临时英文，要输出大写 `Z`）。组合态内的 `z` 一律不放行——放行会让宿主在
+    // 组合串中间插字符、终止组合串，把已经打出的编码当残留删掉。
+    if vk == VK_Z && !mods.shift {
+        return if empty {
+            Action::Pass
+        } else {
+            Action::Buffer('z')
+        };
+    }
+
+    if let Some(ch) = wubi_letter(vk) {
         // 按住 Shift 打字母 → 放行，宿主会输出大写字母。
         // 这等于一个「临时英文」逃生口，比切模式快，也不占额外按键。
         if mods.shift {
             return Action::Pass;
         }
         return Action::Buffer(ch);
-    }
-
-    // `z`：服务端**没装**拼音词库时它是万能学习键，v1 还没做（M3.5 与码提示一起）。
-    // 装了拼音词库的 `z` 已经在上面走 `code_letter` 进了缓冲，到不了这里。
-    //
-    // **组合态内必须吃掉**。放行给宿主的实际后果是打断输入：宿主在组合串中间
-    // 插入 `z`，TSF 随即终止组合串，`OnCompositionTerminated` 把已经打出的编码
-    // 当残留删掉——用户看到的是「按 z 直接把内容弄没了 / 直接上屏了」。
-    // 吃掉但不动，缓冲与候选窗都原样留着，用户可以接着打下一个字母或按空格提交；
-    // 代价只是这一下没反馈，日志里记一行说明（D42）。
-    //
-    // 两个例外都放行：`Shift+z` 是临时英文（要输出大写 `Z`），空缓冲时没有组合串
-    // 可打断，`z` 就是个普通字母。
-    if vk == VK_Z && !empty && !mods.shift {
-        return Action::Noop;
     }
 
     // 单引号 = 显式拼音标记（§6.5 / D48）。只有装了拼音词库它才有意义：
@@ -558,44 +560,40 @@ mod tests {
         }
     }
 
-    /// `z` 是万能学习键，暂时只做到「不打断输入」：组合态内吃掉不动，空缓冲与
-    /// `Shift+z` 放行（D42）。
+    /// `z` 是万能学习键（M3.5 / D62）：**组合态内一律进缓冲**，由 server 判断
+    /// 它是拼音声母还是末位通配。与装没装拼音词库无关——D42 的「吃掉不动」
+    /// 让 `vbz` 永远打不出来，现在那条前提已经失效。
     #[test]
-    fn z_is_eaten_inside_a_composition_only() {
-        assert_eq!(decide(zh(0), Z, m()), Action::Pass);
-        assert_eq!(decide(zh(3), Z, m()), Action::Noop);
-        // Shift+z 是临时英文，要出大写 Z。
-        assert_eq!(decide(zh(3), Z, shift()), Action::Pass);
-        // 英文模式下 z 是普通字母。
-        assert_eq!(decide(en(0), Z, m()), Action::Pass);
-    }
-
-    /// 装了拼音词库后 `z` 回到普通字母：`zhuang`、`zao`、`zhe` 都以它开头，
-    /// 吃掉它等于整片 z 声母的字打不出来。
-    #[test]
-    fn z_is_a_letter_when_pinyin_is_available() {
-        let py = zh(0).with_pinyin();
-        assert_eq!(decide(py, Z, m()), Action::Buffer('z'), "空缓冲");
-        assert_eq!(
-            decide(py.with_buffer(3), Z, m()),
-            Action::Buffer('z'),
-            "组合态内"
-        );
-        // Shift+z 永远是临时英文，与有没有拼音无关
-        assert_eq!(decide(py, Z, shift()), Action::Pass);
-        // 英文模式照旧放行
+    fn z_always_enters_the_buffer() {
+        for has_pinyin in [false, true] {
+            let base = zh(0);
+            let input = if has_pinyin { base.with_pinyin() } else { base };
+            assert_eq!(
+                decide(input, Z, m()),
+                Action::Pass,
+                "空缓冲放行：这时 `z` 就是个普通字母，进缓冲只会挂一个空组合串 \
+                 （`vbz` 的第一个键是 `v`，轮不到空缓冲）（pinyin={has_pinyin}）"
+            );
+            assert_eq!(
+                decide(input.with_buffer(3), Z, m()),
+                Action::Buffer('z'),
+                "组合态内（pinyin={has_pinyin}）"
+            );
+        }
+        // 这两条例外与拼音无关：Shift+z 是临时英文，英文模式一个键都不吃
+        assert_eq!(decide(zh(0).with_pinyin(), Z, shift()), Action::Pass);
         assert_eq!(
             decide(Input::new(Mode::English).with_pinyin(), Z, m()),
             Action::Pass
         );
     }
 
+    /// `wubi_letter` 只管 25 个五笔字根键，`z` 不归它——`z` 走 `decide` 里单独一支。
     #[test]
-    fn code_letter_adds_z_only_with_pinyin() {
-        assert_eq!(code_letter(false, Z), None, "纯五笔时 z 不进缓冲");
-        assert_eq!(code_letter(true, Z), Some('z'));
-        assert_eq!(code_letter(true, V), Some('v'));
-        assert_eq!(code_letter(true, SHIFT), None);
+    fn wubi_letter_excludes_z() {
+        assert_eq!(wubi_letter(Z), None);
+        assert_eq!(wubi_letter(V), Some('v'));
+        assert_eq!(wubi_letter(VK_Y + 1), None, "y 之后就是 z，不在字根键里");
     }
 
     /// 码长上限随拼音放开：拼音词条最长 20 个字母（`linchuangzhengzhuang`），
@@ -605,6 +603,8 @@ mod tests {
         assert_eq!(max_code_len(false), MAX_CODE_LEN);
         assert_eq!(max_code_len(true), MAX_PINYIN_CODE_LEN);
         assert!(max_code_len(true) > max_code_len(false), "混输必须放开码长");
+        // 多段 / 通配专用上限（与 MAX_CODE_LEN 的关系由文件头的编译期断言钉住）
+        assert_eq!(MAX_EXTENDED_CODE_LEN, 9, "两段各 4 码 + 一个 '");
     }
 
     #[test]

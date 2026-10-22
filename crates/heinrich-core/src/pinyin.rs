@@ -18,16 +18,22 @@
 //! 五笔码绝大多数是 3–4 码，而 3–4 个字母几乎总能切成一串合法音节（`hao`、`ni`、
 //! `xian` 全都切得开），于是「同分判拼音」实际等价于「只要长得像拼音就判拼音」。
 //!
-//! **为什么只做单段**：真正的多段输入（`haovb` = 拼音段 + 五笔段，组合出「好我」）
-//! 需要各段候选做笛卡尔积，而它的实际使用频率极低——用户要么在打五笔、要么在打
-//! 拼音，中途切换是少数。多段留到 §6.1 的完整 DP 落地时补。
+//! **多段（§6.5，M3.5）**：`hao'vb` = 拼音段「好」+ 五笔段。分段的边界是用户用
+//! `'` **写出来**的，所以这里不需要 §6.1 的 DP——DP 是用来猜边界的（`haovb` 这种
+//! 没标记的串），而显式标记已经把答案给了。真正需要的完整 DP（自动分段）仍然不做：
+//! 用户想切换语言时本来就要按一个 `'`，为一个已经表达清楚的意图去猜，只会误判。
+//!
+//! **通配（M3.5）**：`vbz` = 「`vb` 开头、末码待定」，由 [`wildcard_stem`] 识别。
+//! 只认**末位**，理由见那个函数的文档。
 //!
 //! 判定之外的排序一律交给 [`crate::rank`]，拼音与五笔共用同一份学习数据。
 
 use heinrich_scheme::{PinyinLexicon, Scheme};
 
-use crate::rank::{lookup, rank_inputs, Candidate, LookupMode, RankInput, RankingConfig};
-use crate::usage::UsageStore;
+use crate::rank::{
+    lookup, rank_indices, rank_inputs, Candidate, LookupMode, RankInput, RankingConfig,
+};
+use crate::usage::{Tier, UsageStore};
 
 /// 显式拼音标记（§6.5 / D11 / D48）。
 ///
@@ -38,6 +44,26 @@ use crate::usage::UsageStore;
 /// 标记本身不参与查询：`hao'` 与 `hao` 查的是同一份拼音数据，候选必须一模一样，
 /// 否则用户会觉得「加了个标记反而查不到了」。
 pub const MARK: char = '\'';
+
+/// 万能学习键（§6.5 / M3.5）：出现在**组合串末位**时表示「末码待定」。
+///
+/// 只认末位，是因为它同时是拼音的声母。拼音里 `z` 只做声母、只出现在音节开头，
+/// 但连续拼音（`niza` = 你咋）的第二个音节正以它开头——若允许出现在任意位置，
+/// 打到 `niz` 那一刻就会被当成通配符，候选窗整片跳成五笔前缀。只认末位把冲突
+/// 压到「用户还在往下打的那一瞬间」：`niz` 会闪一下五笔前缀，按下一个字母就好了。
+pub const WILDCARD: char = 'z';
+
+/// 多段标记（§6.5）最多支持几段。
+///
+/// 2 段覆盖绝大多数真实场景（先拼音确认一个字、再切五笔打下一个）。
+/// 3 段以上按 5³ 涨到 125 条组合，翻页翻不过来，且用户真正想要的是「分两次打」。
+const MAX_SEGMENTS: usize = 2;
+
+/// 每一段最多取几条候选参与笛卡尔积。
+///
+/// 取 5 是因为候选窗一页就是 5 条：段 1 的第 1 条配上段 2 的 5 条正好铺满首屏，
+/// 用户按顺序按 1–5 就能拿到「第一个字定了、第二个字换一个」的全部组合。
+const SEGMENT_LIMIT: usize = 5;
 
 /// 当前首屏候选来自哪种语言。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,9 +90,30 @@ pub struct Mixed {
     pub primary: Vec<Candidate>,
     /// 折叠区候选——另一种语言的，排在主段之后（D48）
     pub folded: Vec<Candidate>,
+    /// **强制显示码提示**，内容取 `Candidate.code`（不是 `wubi`）。
+    ///
+    /// 两种情况下必须显示，理由都是「不显示用户就不知道这是怎么来的」：
+    ///
+    /// 1. **通配**（`vbz`）：这一段本来就是「我要找 `vb` 开头的字」，看不清
+    ///    每条字自己的码，就等于看了一屏无关的字。
+    /// 2. **多段**（`hao'vb`）：码是各段的码用 `'` 连起来的，它同时也说明了
+    ///    「这是几段拼的」——不显示的话，用户分不清候选是「好我」还是某个两字词。
+    ///
+    /// 单段时这一位是 `false`，码提示仍按 §6.3 的「拼音段给码、五笔段不给」走。
+    pub show_codes: bool,
 }
 
 impl Mixed {
+    /// 空结果（不出窗）。
+    fn none(source: Source) -> Self {
+        Self {
+            source,
+            primary: Vec::new(),
+            folded: Vec::new(),
+            show_codes: false,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.primary.is_empty() && self.folded.is_empty()
     }
@@ -77,6 +124,59 @@ impl Mixed {
         out.extend(self.folded);
         out
     }
+}
+
+/// 通配模式：`vbz` → `vb`。不是通配就返回 `None`。
+///
+/// 三个约束，每个都对应一种「不该通配」的情形：
+///
+/// - **末位是 `z`**：见 [`WILDCARD`]。
+/// - **前缀非空且 ≤ 3 位**：空前缀（单独一个 `z`）没有「待定」可言；4 位前缀加 `z`
+///   等于问「第 5 码是什么」，而五笔没有第 5 码（单字全码 3 或 4 码，词组一律 4 码）。
+/// - **前缀全在 `a`–`y`**：`z` 不在五笔字根键里，`vzz` 这种串不是通配，是打错了。
+fn wildcard_stem(input: &str) -> Option<&str> {
+    let stem = input.strip_suffix(WILDCARD)?;
+    if stem.is_empty() || stem.len() > 3 {
+        return None;
+    }
+    if !stem.bytes().all(|b| (b'a'..=b'y').contains(&b)) {
+        return None;
+    }
+    Some(stem)
+}
+
+/// 按 `'` 切分多段（§6.5）。返回每段与「这一段是不是拼音」。
+///
+/// `'` 标记它**前面**那一段是拼音；末尾的 `'` 标记最后一段也是拼音。于是：
+///
+/// | 输入 | 段 | 含义 |
+/// |---|---|---|
+/// | `hao'vb` | `hao` 拼音 + `vb` 自动 | 拼音打「好」，再切五笔打 |
+/// | `hao'ni'` | 两段都拼音 | 两段都要拼音 |
+/// | `hao'` | 单段 | 老写法：整串纯拼音 |
+///
+/// 返回 `None` 表示「不是多段语法」，交给单段逻辑：没有 `'`、只有一段（`hao'`）、
+/// 有空段（`'hao` / `hao''vb`）、超过 [`MAX_SEGMENTS`] 段。
+fn split_segments(input: &str) -> Option<Vec<(&str, bool)>> {
+    if !input.contains(MARK) {
+        return None;
+    }
+    let mut parts: Vec<&str> = input.split(MARK).collect();
+    let trailing = input.ends_with(MARK);
+    if trailing {
+        parts.pop();
+    }
+    if parts.len() < 2 || parts.len() > MAX_SEGMENTS || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let n = parts.len();
+    Some(
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| (p, i + 1 < n || trailing))
+            .collect(),
+    )
 }
 
 /// 拼音候选的默认上限。拼音前缀区间可能有几千条，取够翻几页的量就够，
@@ -174,13 +274,22 @@ pub fn query_with_limit<S: UsageStore + ?Sized>(
     cfg: &RankingConfig,
     limit: usize,
 ) -> Mixed {
-    let nothing = Mixed {
-        source: Source::Wubi,
-        primary: Vec::new(),
-        folded: Vec::new(),
-    };
+    let nothing = Mixed::none(Source::Wubi);
     if input.is_empty() {
         return nothing;
+    }
+
+    // ---- 多段（§6.5 / M3.5）----
+    // 边界是用户用 `'` 写出来的，不需要猜，所以这里没有 DP。
+    if let Some(segs) = split_segments(input) {
+        return segment_query(scheme, pinyin, &segs, store, now, cfg, limit);
+    }
+
+    // ---- 通配（M3.5）----
+    // 必须排在单段判定之前：`vbz` 里的 `z` 不属于任何拼音音节序列，
+    // 交给拼音去切只会得到一堆以 `vb` 开头的无关词。
+    if let Some(stem) = wildcard_stem(input) {
+        return wildcard_query(scheme, pinyin, stem, store, now, cfg, limit);
     }
 
     // `'` 是显式拼音标记（D48）。标记本身不参与查询，两种写法查同一份数据。
@@ -206,6 +315,7 @@ pub fn query_with_limit<S: UsageStore + ?Sized>(
             source: Source::Wubi,
             primary: wubi,
             folded: Vec::new(),
+            show_codes: false,
         };
     };
 
@@ -216,7 +326,7 @@ pub fn query_with_limit<S: UsageStore + ?Sized>(
         return Mixed {
             source: Source::Pinyin,
             primary: py,
-            folded: Vec::new(),
+            ..Mixed::none(Source::Pinyin)
         };
     }
     if !wubi.is_empty() {
@@ -227,16 +337,155 @@ pub fn query_with_limit<S: UsageStore + ?Sized>(
             source: Source::Wubi,
             primary: wubi,
             folded,
+            show_codes: false,
         };
     }
     if !py.is_empty() {
         return Mixed {
             source: Source::Pinyin,
             primary: py,
-            folded: Vec::new(),
+            ..Mixed::none(Source::Pinyin)
         };
     }
     nothing
+}
+
+/// 通配查询：`stem` 开头的全部词，带各自的五笔码。
+///
+/// 主段永远是五笔——会按 `z` 的人都在打五笔；拼音前缀放在折叠区，是为了照顾
+/// 「连续拼音刚好停在 `z` 上」（`niza` 打到 `niz`）时不至于让候选窗整片变成五笔。
+fn wildcard_query<S: UsageStore + ?Sized>(
+    scheme: &Scheme,
+    pinyin: Option<&PinyinLexicon>,
+    stem: &str,
+    store: &S,
+    now: i64,
+    cfg: &RankingConfig,
+    limit: usize,
+) -> Mixed {
+    let indices = scheme.match_indices(stem);
+    if indices.is_empty() {
+        return Mixed::none(Source::Wubi);
+    }
+    let ranked = rank_indices(scheme, indices, store, now, cfg);
+
+    // 同一个字常常挂在多条词条上（`vb` 二级简码与 `vbg` 三级简码都是「好」）。
+    // 通配问的是「有哪些**字**」，不是「有哪些词条」——不去重的话首屏会被同一个字占满，
+    // 而用户想看的正是「`vb` 下面都有谁」。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let wubi: Vec<Candidate> = ranked
+        .into_iter()
+        .filter(|c| seen.insert(c.word.clone()))
+        .take(limit)
+        .collect();
+
+    let folded = match pinyin {
+        Some(lex) => without_seen(pinyin_candidates(lex, stem, store, now, cfg, limit), &wubi),
+        None => Vec::new(),
+    };
+    Mixed {
+        source: Source::Wubi,
+        primary: wubi,
+        folded,
+        show_codes: true,
+    }
+}
+
+/// 多段查询（§6.5）：每段独立取候选，再按「段 1 主序、段 2 次序」铺成组合。
+///
+/// 顺序是刻意的：用户先确定的总是第一段，所以段 1 的第 1 条配上段 2 的 5 条正好
+/// 铺满首屏——按 1–5 就是在「第一个字定了，第二个字换一个」。
+/// 不按组合分重排，是因为重排会让「我选的第一个字」散落在各页，反而难找。
+fn segment_query<S: UsageStore + ?Sized>(
+    scheme: &Scheme,
+    pinyin: Option<&PinyinLexicon>,
+    segs: &[(&str, bool)],
+    store: &S,
+    now: i64,
+    cfg: &RankingConfig,
+    limit: usize,
+) -> Mixed {
+    let mut pools: Vec<Vec<Candidate>> = Vec::with_capacity(segs.len());
+    for (text, is_pinyin) in segs {
+        let pool = segment_pool(scheme, pinyin, text, *is_pinyin, store, now, cfg);
+        if pool.is_empty() {
+            // 任何一段没候选就整体不出窗。只弹「好」再让用户猜第二段，
+            // 用户会以为第二段打错了；不如什么都不弹，编码原样留在缓冲里。
+            return Mixed::none(Source::Wubi);
+        }
+        pools.push(pool);
+    }
+    // `split_segments` 保证段数是 2，这里用模式匹配而不是下标，是为了万一
+    // 以后放宽 `MAX_SEGMENTS` 时编译器能提醒，而不是运行时 panic。
+    let [first, second] = pools.as_slice() else {
+        return Mixed::none(Source::Wubi);
+    };
+
+    let mut primary = Vec::new();
+    'outer: for a in first {
+        for b in second {
+            primary.push(join_parts(a, b));
+            if primary.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+    Mixed {
+        source: if segs.first().is_some_and(|s| s.1) {
+            Source::Pinyin
+        } else {
+            Source::Wubi
+        },
+        primary,
+        folded: Vec::new(),
+        show_codes: true,
+    }
+}
+
+/// 单段候选池。`is_pinyin` 为真时只查拼音；为假时**五笔优先、没命中再试拼音**
+/// （与单段判定的第 ③ 条一致：没标记的段仍然按「这是五笔输入法」来判）。
+fn segment_pool<S: UsageStore + ?Sized>(
+    scheme: &Scheme,
+    pinyin: Option<&PinyinLexicon>,
+    text: &str,
+    is_pinyin: bool,
+    store: &S,
+    now: i64,
+    cfg: &RankingConfig,
+) -> Vec<Candidate> {
+    let by_pinyin = || match pinyin {
+        Some(lex) => pinyin_candidates(lex, text, store, now, cfg, SEGMENT_LIMIT),
+        None => Vec::new(),
+    };
+    if is_pinyin {
+        return by_pinyin();
+    }
+    let wubi = wubi_candidates(scheme, text, store, now, cfg);
+    if wubi.is_empty() {
+        by_pinyin()
+    } else {
+        wubi.into_iter().take(SEGMENT_LIMIT).collect()
+    }
+}
+
+/// 把两段的候选拼成一条：词直接拼、码用 `'` 连起来（`show_codes` 时它上 chip）。
+fn join_parts(a: &Candidate, b: &Candidate) -> Candidate {
+    Candidate {
+        word: format!("{}{}", a.word, b.word),
+        code: format!("{}{}{}", a.code, MARK, b.code),
+        // 多段没有「词 → 五笔全码」可言：整串码就是用户手上那串，而 chip 取的是
+        // `code`（`show_codes = true`）。留空，免得以后有人误用它去反查。
+        wubi: String::new(),
+        kind_label: "多段",
+        // 排序字段只影响「候选区怎么排」，而多段的顺序已经由上面的双循环定死；
+        // 取两段里较小的那个，纯粹是给日志与调试一个说得过去的数。
+        w_norm: a.w_norm.min(b.w_norm),
+        learning: 0.0,
+        total: a.total.min(b.total),
+        n: 0,
+        days_since: f64::INFINITY,
+        tier: Tier::Learning,
+    }
 }
 
 /// 从 `cands` 里剔掉 `seen` 已经有的词，保持原顺序。
@@ -471,5 +720,116 @@ mod tests {
         let cfg = RankingConfig::default();
         let r = query(&s, Some(&lex), "", &store, 1_000, &cfg);
         assert!(r.is_empty());
+    }
+
+    // ---------- 通配（M3.5 / D62） ----------
+
+    /// 三个「不该通配」的边界：单个 `z`、4 位前缀、前缀里又出现 `z`。
+    #[test]
+    fn wildcard_stem_only_accepts_short_lower_letters() {
+        assert_eq!(wildcard_stem("vbz"), Some("vb"));
+        assert_eq!(wildcard_stem("vz"), Some("v"));
+        assert_eq!(wildcard_stem("vbgz"), Some("vbg"));
+        // 单独一个 z：没有「待定」可言，空缓冲时 DLL 直接放行
+        assert_eq!(wildcard_stem("z"), None);
+        // 五位前缀 + z：等于问「第 5 码是什么」，五笔没有第 5 码
+        assert_eq!(wildcard_stem("vbguz"), None);
+        // z 不在 a–y：`vzz` 是打错了，不是通配
+        assert_eq!(wildcard_stem("vzz"), None);
+        // 不以 z 结尾就不是通配
+        assert_eq!(wildcard_stem("vbg"), None);
+    }
+
+    /// `vbz` = 「`vb` 开头的字」。同一字挂在多条词条上（二级简码 + 三级简码）
+    /// 只出现一次，并且**每条都带自己的五笔码**（chip 靠它）。
+    #[test]
+    fn wildcard_lists_words_once_with_codes() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "vbz", &store, 1_000, &cfg);
+
+        assert_eq!(r.source, Source::Wubi);
+        assert!(r.show_codes, "通配必须显示码：不显示就等于看了一屏无关的字");
+        let ws = words(&r.primary);
+        assert!(ws.contains(&"好".to_string()), "vb 下必须有「好」：{ws:?}");
+        let mut uniq = ws.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), ws.len(), "同一个字不该出现两次：{ws:?}");
+        assert!(
+            r.primary.iter().all(|c| c.code.starts_with("vb")),
+            "每条候选的码都必须以 vb 开头：{:?}",
+            r.primary.iter().map(|c| &c.code).collect::<Vec<_>>()
+        );
+    }
+
+    /// `z` 只认末位：`vzgu` 不是通配，按普通串走单段判定（夹具里查不到东西）。
+    #[test]
+    fn wildcard_z_must_be_last() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "vzgu", &store, 1_000, &cfg);
+        assert!(!r.show_codes, "中间位置的 z 不该走通配");
+    }
+
+    // ---------- 多段（M3.5 / §6.5） ----------
+
+    /// `hao'vb` = 拼音段「hao」× 五笔段「vb」。段 1 做主序：首屏先是
+    /// 「第一个字换着来」，这正是用户确定第一段之后的自然问法。
+    #[test]
+    fn segments_join_pinyin_and_wubi() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "hao'vb", &store, 1_000, &cfg);
+
+        assert_eq!(r.source, Source::Pinyin, "段 1 是拼音");
+        assert!(r.show_codes, "多段必须显示码，它同时说明了「这是几段拼的」");
+        assert!(r.folded.is_empty(), "多段没有折叠区");
+        assert_eq!(
+            &words(&r.primary)[..3],
+            ["好好", "号好", "浩好"],
+            "段 1 主序、段 2 次序"
+        );
+        // chip 内容：各段码用 ' 连起来
+        assert_eq!(r.primary[0].code, "hao'vb");
+    }
+
+    /// 任何一段没候选就整体不出窗：只弹半截会让用户以为第二段打错了。
+    #[test]
+    fn segments_need_every_part() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        // 第二段 `qqq` 五笔拼音都没有
+        let r = query(&s, Some(&lex), "hao'qqq", &store, 1_000, &cfg);
+        assert!(r.is_empty(), "第二段没候选时不能只出第一段");
+    }
+
+    /// 没有拼音词库时，拼音段无从查起——整串退回不出窗，而不是把 `hao` 当五笔硬查。
+    #[test]
+    fn segments_degrade_without_pinyin_lexicon() {
+        let s = scheme();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, None, "hao'vb", &store, 1_000, &cfg);
+        assert!(r.is_empty());
+    }
+
+    /// 超过两段不处理：`a'b'c` 落回单段逻辑（去掉 `'` 当纯拼音），查不到就不出窗。
+    #[test]
+    fn more_than_two_segments_fall_back() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "hao'ni'xian", &store, 1_000, &cfg);
+        assert!(r.is_empty(), "三段以上不参与组合，也不该给出假的组合");
     }
 }

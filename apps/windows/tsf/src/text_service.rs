@@ -187,9 +187,26 @@ impl Core {
         std::mem::take(&mut *self.buffer.borrow_mut())
     }
 
-    /// 当前码长上限。混输时拼音最长词条有 20 个字母，5 笔的 4 码上限会把它截断。
-    fn max_code_len(&self) -> usize {
-        keys::max_code_len(ipc::has_pinyin())
+    /// 当前允许的缓冲长度。`next` 是**即将进入缓冲**的那个字符。
+    ///
+    /// 三条规则，按「这段编码最可能有多长」排：
+    ///
+    /// | 情形 | 上限 |
+    /// |---|---|
+    /// | 缓冲里出现过 `'`，或正要输入的字符是 `'` / `z` | [`keys::MAX_EXTENDED_CODE_LEN`]（多段 / 通配） |
+    /// | 装了拼音词库 | [`keys::MAX_PINYIN_CODE_LEN`]（拼音最长词条 20 个字母） |
+    /// | 纯五笔 | 4（五笔全码定长） |
+    ///
+    /// 第一行必须看 `next` 而不能只看已有缓冲：`hao'` 的 `'` 是在第 4 个键进来的，
+    /// 那时纯五笔的 4 码上限已经满了，不放宽就永远打不出第二段。
+    /// 反过来，一旦缓冲里有过 `'` 就**一直**放宽——第二段还得打完。
+    fn max_code_len(&self, next: char) -> usize {
+        let buf = self.buffer.borrow();
+        if next == '\'' || next == 'z' || buf.contains('\'') {
+            keys::MAX_EXTENDED_CODE_LEN
+        } else {
+            keys::max_code_len(ipc::has_pinyin())
+        }
     }
 
     /// 当前位置的修饰键快照。`GetKeyState` 读本线程输入队列，开销可忽略。
@@ -350,17 +367,14 @@ impl Core {
             None
         };
 
-        if self.buffer_len() >= self.max_code_len() {
+        let limit = self.max_code_len(ch);
+        if self.buffer_len() + 1 > limit {
             // 已满码还来下一个键：纯五笔是「五笔全码最长 4 位，不可能命中」，
             // 混输时是「拼音 24 个字母还查不到，基本是打错了」。
             // 原样上屏再重新开始，比「忽略这个键」或「卡住不响应」都好——
             // 用户至少能看出发生了什么。
             let prev = self.clear_buffer();
-            tsf_info!(
-                "#{} 已满 {} 码，原样上屏 {prev:?}",
-                self.seq,
-                self.max_code_len()
-            );
+            tsf_info!("#{} 已满 {} 码，原样上屏 {prev:?}", self.seq, limit);
             self.finish(context, prev);
         }
         self.buffer.borrow_mut().push(ch);

@@ -943,6 +943,41 @@ DLL   : ipc::exchange() 读到 Roots 就缓存、继续读真正的应答
    `Ctrl+Alt+1` / `Ctrl+Alt+2`，两条候选各有自己的码，键帽才会不同。顺带确认按
    `Ctrl+Shift+1` **不弹**（那是 Windows 切换输入法的键，见踩坑 34）
 
+### 4.15 `z` 通配与段级多段（M3.5 / D62）
+
+两块功能有一个共同点：**它们都不需要猜**。`z` 的位置是用户打的，段的边界是用户用 `'` 写的。
+
+**`z` 通配（§6.8）**：`wildcard_stem` 只认「末位 `z` + 前缀 1–3 位全在 a–y」。去掉 `z` 后走
+`Scheme::match_indices`（前缀二分），排序仍按 §5，然后**按字去重**——`vb` 与 `vbg` 都是「好」，
+不去重首屏会被同一个字占满。拼音前缀结果放折叠区，免得「打 `niza` 停在 `niz`」时候选窗整片变五笔。
+
+**多段（§6.5）**：`split_segments` 按 `'` 切，`'` 标记它前面那段是拼音；末尾 `'` 标记最后一段。
+`MAX_SEGMENTS = 2`。每段取前 5 条做笛卡尔积，顺序是「段 1 主序、段 2 次序」。
+组合后的 `Candidate.code` 是各段码用 `'` 连接，`word` 直接拼接。
+
+**码提示的例外**：`Mixed.show_codes` 为真时，host 取 `Candidate.code` 而不是 `wubi`。
+新增这个开关而不是复用 `wubi`：通配时 `code` 是那条词自己的五笔全码，多段时 `code` 是分段码——
+两者都**不是**「拼音串反查出来的五笔码」，硬塞进 `wubi` 会让字段名彻底失去意义。
+
+**调参与验法**
+
+| 位置 | 值 | 改了会怎样 |
+|---|---|---|
+| `wildcard_stem` 前缀上限 | 3 | 放到 4 等于问「第 5 码」，五笔没有第 5 码 |
+| `MAX_SEGMENTS` | 2 | 3 段按 5³ 涨到 125 条组合，翻不过来 |
+| `SEGMENT_LIMIT` | 5 | 段 1 第 1 条 × 段 2 的 5 条正好铺满首屏 |
+| `MAX_EXTENDED_CODE_LEN` | 9 | 两段各 4 码 + `'`；只在含 `'` 或末位 `z` 时启用 |
+
+验法（都不用真机）：
+
+```
+cargo run -q -p heinrich-cli -- look vbz --data data/wubi86
+cargo run -q -p heinrich-cli -- look "hao'vb" --data data/wubi86 --pinyin data/pinyin
+```
+
+真机（先重启宿主）：打 `vbz` 应看到「好 vbg / 好友 vbdc / 她 vbn …」且每条都有码；
+打 `hao'vb` 应看到「好好 / 号好 / 浩好…」且 chip 是 `hao'vb`；空格上屏应得到两个字。
+
 ## 5. 数据管线
 
 ```
@@ -1078,6 +1113,14 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     输入法自己占没占、宿主占没占。`Ctrl+Alt` 没有系统级绑定（AltGr 只存在于带 AltGr 的
     拉丁布局，中文环境的美式 / 中文布局没有这个键），顺带把「Excel 的 `Ctrl+Shift+1..5`
     是数字格式」这条顾虑也一起消掉了（D61）。
+35. **`z` 既是五笔万能键又是拼音声母，通配只能认末位。** 拼音音节不以 `z` 结尾，但**连续拼音**
+    的第二个音节以它开头（`niza`）。若允许 `z` 出现在任意位置，打到 `niz` 那一刻就会被判成通配，
+    候选窗整片跳成五笔前缀。只认末位把冲突压到「用户还在往下打的那一瞬间」——闪一下，下一个字母
+    就恢复。判据写死在 `wildcard_stem`，改它之前先想清楚连续拼音这条路径（D62）。
+36. **五笔前缀查询的结果必须按字去重。** 同一个字常挂在多条词条上（`vb` 二级简码与 `vbg` 三级
+    简码都是「好」，更长的码上还有三四条重码字）。通配问的是「有哪些**字**」，不去重的话首屏
+    五条可能是同一个字的不同码——用户看不出「`vb` 下面还有谁」。去重后仍要保留各自的全码，
+    否则 `vbz` 就退化成「一屏没有码的字」（D62）。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -1116,10 +1159,10 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M2.4 学习落库 | ✅ 已真机验收（2026-10-22 三轮日志：连打不跳位 / 换码后升位 / 原首位上屏一次不夺回；交叉点 n=23 与解析解一致）。真实库与日志已核（177 词 / 累计 400+ 次）；按实测三次修正：D54 绝对分差 → **D58 废除门槛、第一次上屏不计分** → **D59 抖动区写成规格**；连打缓存判据 D55 → **D57 提交别的码才失效**（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9 / §4.13） |
 | M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
-| M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
+| M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 24 码上限（`z` 的归属在 v1.31 由 D62 改为「一律进缓冲」，不再看能力位）；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
 | M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
-| M3.5 | 未开始（`z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地。外链查询已降为 M5 可选，见 §6.6） |
+| M3.5 `z` 通配 + 段级多段 | 🟡 **代码与自测完成，待真机验收**（D62 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments` + `Mixed.show_codes`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配自测） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

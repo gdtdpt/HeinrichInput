@@ -68,5 +68,27 @@ Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-previe
 # 也放得下」。`vbg` 覆盖的是最常走的 3 码路径。
 Invoke-Step '键位图自测' { & cargo run --release -q -p heinrich-cand-preview -- --keycaps vbg --selftest }
 
+# 通配与多段（M3.5）是纯逻辑，CLI 的 `look` 一次查询就能验，不需要真机：
+# `vbz` 要列出 `vb` 开头的字且**每条带自己的全码**（不带码等于看了一屏无关的字）；
+# `hao'vb` 要给出两段拼接的候选、码里带 `'`（它同时说明「这是几段拼的」）。
+Invoke-Step '通配 / 多段自测' {
+    $w = & cargo run --release -q -p heinrich-cli -- look vbz --data $DataDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not ($w -match '好\s+vbg')) {
+        Write-Host "通配没给出「好 -> vbg」：`n$w" -ForegroundColor Red
+        exit 1
+    }
+    if (-not ($w -match '每条都带码')) {
+        Write-Host "通配没标记 show_codes：`n$w" -ForegroundColor Red
+        exit 1
+    }
+    $m = & cargo run --release -q -p heinrich-cli -- look "hao'vb" --data $DataDir --pinyin $PinyinDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not ($m -match "好好\s+hao'vb")) {
+        Write-Host "多段没给出「好好 + hao'vb」：`n$m" -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

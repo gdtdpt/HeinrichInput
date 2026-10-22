@@ -265,17 +265,29 @@ pub fn set_mode(chinese: bool) {
 /// 调用方只在「真的上屏了一个候选词」时调它：原样吐字母（无命中 / server 不可用 /
 /// Shift 切模式）不算，那些不是用户的选择，记进去会把 n 灌成噪声。
 pub fn record(code: &str, word: &str) {
-    let at = unix_now();
-    if let Ok(mut q) = PENDING_RECORDS.lock() {
-        if q.len() >= RECORD_QUEUE_CAP {
-            q.pop_front();
-            RECORDS_DROPPED.fetch_add(1, Ordering::Relaxed);
-            // 只在第一次丢时记一条，避免 server 长时间不在时刷满日志。
-            if RECORDS_DROPPED.load(Ordering::Relaxed) == 1 {
-                tsf_error!("上屏记录队列已满（{RECORD_QUEUE_CAP} 条），开始丢最旧的");
+    // 多段编码（`hao'vb`）**只标脏、不上报**（M3.5 / D62）。
+    //
+    // `Record` 的语义是「这个码 → 这个词」，server 拿它按 `(码, 词)` 累加学习分。
+    // 而多段那次查询用的码是 `hao'vb`，之后用户再打永远是单段的 `hao` 或 `vb`，
+    // 这条记录再也命中不了——它不参与任何排序，只会在学习库里堆垃圾行。
+    // 各段单独打时本来就会各自记分，多段不记不会丢信息。
+    //
+    // 缓存仍要标脏：那一份 `hao'vb` 的结果已经过时，留着会让同一个码的连打顺序
+    // 与「刚刚选过什么」脱节。
+    let report = !code.contains('\'');
+    if report {
+        let at = unix_now();
+        if let Ok(mut q) = PENDING_RECORDS.lock() {
+            if q.len() >= RECORD_QUEUE_CAP {
+                q.pop_front();
+                RECORDS_DROPPED.fetch_add(1, Ordering::Relaxed);
+                // 只在第一次丢时记一条，避免 server 长时间不在时刷满日志。
+                if RECORDS_DROPPED.load(Ordering::Relaxed) == 1 {
+                    tsf_error!("上屏记录队列已满（{RECORD_QUEUE_CAP} 条），开始丢最旧的");
+                }
             }
+            q.push_back((code.to_string(), word.to_string(), at));
         }
-        q.push_back((code.to_string(), word.to_string(), at));
     }
     // 本地缓存里这一份已经过时，但**不立刻删**（D55）：连打同一个码时顺序必须
     // 稳定，否则用户按着「2」而第 2 条换了人。标脏，等他打别的码再让它失效。

@@ -503,6 +503,13 @@ impl Host {
 
         // 码提示的裁决全在 server：DLL 只画非空的 `code`（§6.3）。
         // 规则是「提示跟随这一段是怎么出来的」——拼音段给码、五笔段不给。
+        //
+        // 两个例外（`show_codes`，M3.5 / D62）：**通配**（`vbz`）与**多段**（`hao'vb`）
+        // 必须显示码，而且显示的是 `Candidate.code` 而不是 `wubi`：
+        // 通配时 `code` 就是那条词自己的五笔全码（用户要的正是「这些字怎么打」），
+        // 多段时 `code` 是各段码用 `'` 连起来（它同时说明「这是几段拼的」）。
+        // 这两种模式下 `wubi` 是空串，沿用老路径会画出空 chip。
+        let show_codes = mixed.show_codes;
         let primary_is_pinyin = source == Source::Pinyin;
         let entries: Vec<Entry> = mixed
             .into_all()
@@ -516,20 +523,26 @@ impl Host {
                 } else {
                     !primary_is_pinyin
                 };
-                let show = pinyin_segment
-                    && match hint {
-                        HintMode::Mixed => true,
-                        // 「第一次」按**这个词还没上过屏**判定，不区分当初是用拼音
-                        // 还是五笔打出来的。严格版要记录每次上屏的输入来源（协议
-                        // `Record` 里其实带着 `code`，但学习库没存），属于 M3.5 的
-                        // 范围；这里的近似对用户更宽容：用过的词就是认识的。
-                        HintMode::FirstTime => self.store.usage(&c.word).n == 0,
-                        HintMode::Off => false,
-                    };
+                let show = show_codes
+                    || pinyin_segment
+                        && match hint {
+                            HintMode::Mixed => true,
+                            // 「第一次」按**这个词还没上过屏**判定，不区分当初是用拼音
+                            // 还是五笔打出来的。这里的近似对用户更宽容：用过的词就是认识的。
+                            HintMode::FirstTime => self.store.usage(&c.word).n == 0,
+                            HintMode::Off => false,
+                        };
+                let code = if show_codes {
+                    c.code
+                } else if show {
+                    c.wubi
+                } else {
+                    String::new()
+                };
                 Entry {
                     word: c.word,
                     label: c.kind_label.to_string(),
-                    code: if show { c.wubi } else { String::new() },
+                    code,
                 }
             })
             .collect();
@@ -1014,5 +1027,65 @@ mod tests {
         let hao = after.iter().position(|w| w == "浩").unwrap();
         let hao2 = after.iter().position(|w| w == "号").unwrap();
         assert!(hao < hao2, "「浩」应上浮越过「号」：{after:?}");
+    }
+
+    /// 通配（`vbz`）：每一条候选都带上**它自己的五笔码**（M3.5 / D62）。
+    ///
+    /// 这是「提示跟随这一段是怎么出来的」的唯一例外：五笔段平常不给码，但通配问的
+    /// 就是「这些字怎么打」，不给码等于看了一屏无关的字。
+    #[test]
+    fn wildcard_entries_carry_their_own_code() {
+        let mut h = mixed_host();
+        let (entries, primary_len) = match h.handle(Frame::Query {
+            code: "vbz".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                primary_len,
+                ..
+            }) => (entries, primary_len),
+            other => panic!("期望 Result，得到 {other:?}"),
+        };
+        assert!(!entries.is_empty(), "vb 下面必须有字");
+        assert_eq!(primary_len as usize, entries.len(), "通配没有折叠区");
+        for e in &entries {
+            assert!(
+                e.code.starts_with("vb"),
+                "「{}」的码应是它自己的全码：{:?}",
+                e.word,
+                e.code
+            );
+        }
+        // 同一个字不重复出现（`vb` 与 `vbg` 都是「好」）
+        let mut ws: Vec<&str> = entries.iter().map(|e| e.word.as_str()).collect();
+        ws.sort_unstable();
+        let n = ws.len();
+        ws.dedup();
+        assert_eq!(ws.len(), n, "通配结果按字去重");
+    }
+
+    /// 多段（`hao'vb`）：chip 里是各段码用 `'` 连起来，首屏全部算主段（没有折叠区）。
+    #[test]
+    fn multi_segment_chip_carries_both_codes() {
+        let mut h = mixed_host();
+        let (entries, source, primary_len) = match h.handle(Frame::Query {
+            code: "hao'vb".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result {
+                entries,
+                source,
+                primary_len,
+                ..
+            }) => (entries, source, primary_len),
+            other => panic!("期望 Result，得到 {other:?}"),
+        };
+        assert_eq!(source, proto_source::PINYIN, "段 1 是拼音");
+        assert_eq!(primary_len as usize, entries.len(), "多段没有折叠区");
+        assert_eq!(entries[0].word, "好好", "段 1 首条 × 段 2 首条");
+        assert_eq!(entries[0].code, "hao'vb", "chip 要说明这是几段拼的");
+        // 段 2 只有一条（`vb` = 好），所以条数等于段 1 的候选数
+        assert!(entries.iter().all(|e| e.code.ends_with("'vb")));
     }
 }
