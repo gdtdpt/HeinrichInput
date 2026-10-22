@@ -42,8 +42,6 @@ pub struct CapData {
     pub roots: Vec<char>,
     /// `roots` 里前几枚是主字根，其余绘制时淡一档。
     pub main_root_count: usize,
-    /// 一级简码字。
-    pub primary: char,
 }
 
 /// 要显示的内容。
@@ -138,20 +136,14 @@ impl KeycapWindow {
         let scale = if scale > 0.0 { scale } else { 1.0 };
         let m = KeycapMetrics::new(self.state.theme.font_size).scaled(scale);
 
-        // 四个 format 先取再 clone：`keycap_formats` 要 `&mut`，量字要 `&`。
-        let (f_key, f_root, f_primary, f_footnote) = {
+        // format 先取再 clone：`keycap_formats` 要 `&mut`，量字要 `&`。
+        let (f_key, f_root, f_footnote) = {
             let f = self.state.renderer.text_mut().keycap_formats(
                 m.font_size,
                 m.root_size,
-                m.primary_size,
                 m.footnote_size,
             )?;
-            (
-                f.key.clone(),
-                f.root.clone(),
-                f.primary.clone(),
-                f.footnote.clone(),
-            )
+            (f.key.clone(), f.root.clone(), f.footnote.clone())
         };
 
         let mut caps = Vec::with_capacity(k.caps.len());
@@ -161,17 +153,9 @@ impl KeycapWindow {
             for r in &c.roots {
                 widths.push(self.measure(&r.to_string(), &f_root)?);
             }
-            let primary_width = self.measure(&c.primary.to_string(), &f_primary)?;
             caps.push(
-                KeycapText::new(
-                    c.key,
-                    key_width,
-                    c.roots.clone(),
-                    widths,
-                    c.primary,
-                    primary_width,
-                )
-                .with_main_roots(c.main_root_count),
+                KeycapText::new(c.key, key_width, c.roots.clone(), widths)
+                    .with_main_roots(c.main_root_count),
             );
         }
 

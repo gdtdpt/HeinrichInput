@@ -32,21 +32,13 @@ fn width_of(s: &str, size: f32) -> f32 {
         .sum()
 }
 
-fn cap(key: char, roots: &[char], primary: char, m: KeycapMetrics) -> KeycapText {
+fn cap(key: char, roots: &[char], m: KeycapMetrics) -> KeycapText {
     let key_width = width_of(&key.to_string(), m.font_size);
     let widths: Vec<f32> = roots
         .iter()
         .map(|r| width_of(&r.to_string(), m.root_size))
         .collect();
-    let primary_width = width_of(&primary.to_string(), m.primary_size);
-    KeycapText::new(
-        key,
-        key_width,
-        roots.to_vec(),
-        widths,
-        primary,
-        primary_width,
-    )
+    KeycapText::new(key, key_width, roots.to_vec(), widths)
 }
 
 fn main() {
@@ -56,9 +48,9 @@ fn main() {
     // ① vbg：真实数据（roots.toml）
     let m = KeycapMetrics::new(16.0);
     let caps = vec![
-        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], '发', m),
-        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], '了', m),
-        cap('g', &['王', '一', '五', '戋', '龶', '丰'], '一', m).with_main_roots(4),
+        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], m),
+        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], m),
+        cap('g', &['王', '一', '五', '戋', '龶', '丰'], m).with_main_roots(4),
     ];
     let note = "不足 4 码时末位可能是末笔识别码——取末笔笔画与字型";
     let note_w = width_of(note, m.footnote_size);
@@ -74,19 +66,9 @@ fn main() {
 
     // ② q 与 n：各 8 个字根，高度与折行的最坏情况
     let caps = vec![
-        cap(
-            'q',
-            &['金', '勺', '鱼', '犭', '儿', '夕', '乂', '氏'],
-            '我',
-            m,
-        ),
-        cap(
-            'n',
-            &['已', '己', '巳', '尸', '心', '羽', '乙', '忄'],
-            '民',
-            m,
-        ),
-        cap('k', &['口', '川'], '中', m),
+        cap('q', &['金', '勺', '鱼', '犭', '儿', '夕', '乂', '氏'], m),
+        cap('n', &['已', '己', '巳', '尸', '心', '羽', '乙', '忄'], m),
+        cap('k', &['口', '川'], m),
     ];
     y = panel(
         &mut body,
@@ -101,9 +83,9 @@ fn main() {
     // ③ 150% DPI：整套参数乘 1.5，框必须等比
     let m15 = KeycapMetrics::new(16.0).scaled(1.5);
     let caps = vec![
-        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], '发', m15),
-        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], '了', m15),
-        cap('g', &['王', '一', '五', '戋', '龶', '丰'], '一', m15).with_main_roots(4),
+        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], m15),
+        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], m15),
+        cap('g', &['王', '一', '五', '戋', '龶', '丰'], m15).with_main_roots(4),
     ];
     let note_w = width_of(note, m15.footnote_size);
     y = panel(
@@ -118,10 +100,10 @@ fn main() {
 
     // ④ 词组 vbgu：平铺四枚，不标归属
     let caps = vec![
-        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], '发', m),
-        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], '了', m),
-        cap('g', &['王', '一', '五', '戋', '龶', '丰'], '一', m).with_main_roots(4),
-        cap('u', &['立', '辛', '丬', '六', '门', '疒', '丷'], '产', m),
+        cap('v', &['女', '刀', '九', '臼', '彐', '巛'], m),
+        cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], m),
+        cap('g', &['王', '一', '五', '戋', '龶', '丰'], m).with_main_roots(4),
+        cap('u', &['立', '辛', '丬', '六', '门', '疒', '丷'], m),
     ];
     y = panel(
         &mut body,
@@ -206,14 +188,6 @@ fn panel(
                 t = c.roots[i]
             ));
         }
-        // 一级简码
-        body.push_str(&format!(
-            r##"<text x="{x}" y="{y}" font-family="{FONT}" font-size="{fs}" fill="{MUTED}" dominant-baseline="text-before-edge">{t}</text>"##,
-            x = ox + c.primary_rect.x,
-            y = oy + c.primary_rect.y,
-            fs = m.primary_size,
-            t = c.primary
-        ));
         // 命中矩形（红）：核对「框」与「字」是否对齐
         body.push_str(&format!(
             r##"<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" stroke="{HIT}" stroke-width="0.6" opacity="0.5"/>"##,

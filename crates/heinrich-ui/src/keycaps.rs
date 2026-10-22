@@ -12,9 +12,17 @@
 //! v1.21 定的是只画**用到的 3–4 枚**键帽，不画整块 25 键键盘：整块键盘要占满
 //! 半个屏幕、挡住文档，为「看方位」付这个代价不值（§6.7 的「明确不做」表）。
 //!
-//! 每枚键帽内部自上而下是：字母 → 字根（每行两枚，自动折行）→ 一级简码。
+//! 每枚键帽内部自上而下是：字母 → 字根（每行三枚，自动折行）。
 //! 字根包含变体（氵 扌 灬 忄 等），变体由绘制端画淡一档——几何不关心颜色，
 //! 只按传入顺序排。
+//!
+//! ## 为什么不再画一级简码
+//!
+//! v1.28 之前每枚键帽底部还有一行「该键的一级简码」（`H` = 上、`A` = 工）。
+//! 真机一看就废：它回答的是「这个键单独一按出什么字」，与「这个字由哪些字根拼成」
+//! 毫无关系，放在字根正下方只会被读成「这个字在这一位取的是上」。用户的原话是
+//! 「这行没什么意义」——去掉的不是一条信息，而是一条**会被误读的信息**。
+//! 真正的逐字拆解要字根级拆解数据，R3 已证伪，所以这里也不打算换个说法糊上去。
 
 use crate::geom::{Rect, Size};
 use crate::place::Placement;
@@ -30,9 +38,6 @@ pub struct KeycapText {
     pub roots: Vec<char>,
     /// 与 `roots` 一一对应的宽度。
     pub root_widths: Vec<f32>,
-    /// 一级简码字（`V` = 发）。
-    pub primary: char,
-    pub primary_width: f32,
     /// `roots` 里前几枚是**主字根**，其余是变体。绘制端据此把变体画淡一档。
     ///
     /// 默认等于 `roots.len()`（全部当主字根）——把变体当主字根只是不够淡，
@@ -42,14 +47,7 @@ pub struct KeycapText {
 
 impl KeycapText {
     /// 从字符序列与宽度表构造；宽度表长度不足时按 0 补齐，多余部分忽略。
-    pub fn new(
-        key: char,
-        key_width: f32,
-        roots: Vec<char>,
-        root_widths: Vec<f32>,
-        primary: char,
-        primary_width: f32,
-    ) -> Self {
+    pub fn new(key: char, key_width: f32, roots: Vec<char>, root_widths: Vec<f32>) -> Self {
         let mut widths = root_widths;
         widths.resize(roots.len(), 0.0);
         let main_root_count = roots.len();
@@ -58,8 +56,6 @@ impl KeycapText {
             key_width,
             roots,
             root_widths: widths,
-            primary,
-            primary_width,
             main_root_count,
         }
     }
@@ -80,8 +76,6 @@ pub struct KeycapMetrics {
     /// 字根字号（比字母小一档）。
     pub root_size: f32,
     pub root_line_height: f32,
-    pub primary_size: f32,
-    pub primary_line_height: f32,
     /// 键帽内的左右内边距。
     pub padding_x: f32,
     /// 键帽内的上下内边距。
@@ -111,14 +105,11 @@ impl KeycapMetrics {
     pub fn new(font_size: f32) -> Self {
         let font_size = font_size.max(8.0);
         let root_size = (font_size * 0.68).round().max(8.0);
-        let primary_size = (font_size * 0.62).round().max(8.0);
         Self {
             font_size,
             key_line_height: (font_size * 1.45).round(),
             root_size,
             root_line_height: (root_size * 1.5).round(),
-            primary_size,
-            primary_line_height: (primary_size * 1.5).round(),
             padding_x: (font_size * 0.50).round(),
             padding_y: (font_size * 0.35).round(),
             cap_gap: (font_size * 0.35).round(),
@@ -142,8 +133,6 @@ impl KeycapMetrics {
             key_line_height: self.key_line_height * s,
             root_size: self.root_size * s,
             root_line_height: self.root_line_height * s,
-            primary_size: self.primary_size * s,
-            primary_line_height: self.primary_line_height * s,
             padding_x: self.padding_x * s,
             padding_y: self.padding_y * s,
             cap_gap: self.cap_gap * s,
@@ -177,13 +166,11 @@ pub struct KeycapBox {
     pub roots: Vec<char>,
     /// 前几枚是主字根，其余是变体（绘制端据此把变体画淡一档）。
     pub main_root_count: usize,
-    pub primary: char,
     /// 键帽矩形（画圆角底与边）。
     pub rect: Rect,
     pub key_rect: Rect,
     /// 字根矩形，与 `roots` 一一对应。
     pub root_rects: Vec<Rect>,
-    pub primary_rect: Rect,
 }
 
 /// 布局结果。
@@ -214,12 +201,12 @@ pub fn layout_keycaps(input: &KeycapInput<'_>) -> KeycapLayout {
         };
     }
 
-    // 每枚键帽的内容宽：字母 / 每行字根 / 简码三者取最大
+    // 每枚键帽的内容宽：字母 / 每行字根两者取最大
     let cap_width = input
         .caps
         .iter()
         .map(|c| {
-            let mut inner = c.key_width.max(0.0).max(c.primary_width.max(0.0));
+            let mut inner = c.key_width.max(0.0);
             for chunk in c.root_widths.chunks(per) {
                 let row: f32 =
                     chunk.iter().sum::<f32>() + m.root_gap * chunk.len().saturating_sub(1) as f32;
@@ -236,12 +223,8 @@ pub fn layout_keycaps(input: &KeycapInput<'_>) -> KeycapLayout {
         .map(|c| c.root_widths.len().div_ceil(per))
         .max()
         .unwrap_or(0);
-    let cap_h = m.padding_y * 2.0
-        + m.key_line_height
-        + m.inner_gap
-        + max_rows as f32 * m.root_line_height
-        + m.inner_gap
-        + m.primary_line_height;
+    let cap_h =
+        m.padding_y * 2.0 + m.key_line_height + m.inner_gap + max_rows as f32 * m.root_line_height;
 
     let caps_w = n as f32 * cap_width + (n - 1) as f32 * m.cap_gap;
     let footnote_h = if input.footnote_widths.is_empty() {
@@ -292,22 +275,13 @@ pub fn layout_keycaps(input: &KeycapInput<'_>) -> KeycapLayout {
             }
         }
 
-        let primary_rect = Rect::new(
-            x + (cap_width - c.primary_width.max(0.0)) / 2.0,
-            rect.bottom() - m.padding_y - m.primary_line_height,
-            c.primary_width.max(0.0),
-            m.primary_line_height,
-        );
-
         caps.push(KeycapBox {
             key: c.key,
             roots: c.roots.clone(),
             main_root_count: c.main_root_count,
-            primary: c.primary,
             rect,
             key_rect,
             root_rects,
-            primary_rect,
         });
     }
 
@@ -376,22 +350,20 @@ pub fn place_keycaps(
 mod tests {
     use super::*;
 
-    fn cap(key: char, roots: &[char], primary: char) -> KeycapText {
+    fn cap(key: char, roots: &[char]) -> KeycapText {
         KeycapText::new(
             key,
             9.0,
             roots.to_vec(),
             roots.iter().map(|_| 12.0).collect(),
-            primary,
-            10.0,
         )
     }
 
     fn sample() -> Vec<KeycapText> {
         vec![
-            cap('v', &['女', '刀', '九', '臼', '彐', '巛'], '发'),
-            cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝'], '了'),
-            cap('g', &['王', '一', '五', '戋'], '一'),
+            cap('v', &['女', '刀', '九', '臼', '彐', '巛']),
+            cap('b', &['子', '耳', '了', '也', '凵', '卩', '阝']),
+            cap('g', &['王', '一', '五', '戋']),
         ]
     }
 
@@ -443,16 +415,13 @@ mod tests {
     }
 
     #[test]
-    fn 简码贴在键帽底部且不压字根() {
+    fn 字根不越出键帽() {
         let caps = sample();
         let l = layout_keycaps(&input_with(&caps));
         for c in &l.caps {
-            assert!(c.primary_rect.bottom() <= c.rect.bottom() + 0.01);
             for r in &c.root_rects {
-                assert!(r.bottom() <= c.primary_rect.y + 0.01);
-            }
-            // 字母在全部字根之上
-            for r in &c.root_rects {
+                assert!(r.bottom() <= c.rect.bottom() + 0.01);
+                // 字母在全部字根之上
                 assert!(c.key_rect.bottom() <= r.y + 0.01);
             }
         }
@@ -493,7 +462,7 @@ mod tests {
 
     #[test]
     fn 只有一个字根时用最小宽度() {
-        let caps = vec![cap('k', &['口', '川'], '中')];
+        let caps = vec![cap('k', &['口', '川'])];
         let l = layout_keycaps(&input_with(&caps));
         let m = KeycapMetrics::new(14.0);
         assert!(l.caps[0].rect.w >= m.min_cap_width);
@@ -506,8 +475,6 @@ mod tests {
             9.0,
             vec!['王', '一', '五', '戋', '龶', '丰'],
             vec![12.0; 6],
-            '一',
-            10.0,
         )
         .with_main_roots(4)];
         let l = layout_keycaps(&input_with(&caps));
@@ -515,7 +482,7 @@ mod tests {
         assert_eq!(l.caps[0].roots.len(), 6);
 
         // 不声明时默认全部当主字根（宁可不淡，也不把正经字根画淡）
-        let plain = cap('v', &['女', '刀'], '发');
+        let plain = cap('v', &['女', '刀']);
         assert_eq!(plain.main_root_count, 2);
         // 超出范围夹紧
         assert_eq!(plain.clone().with_main_roots(9).main_root_count, 2);
@@ -560,7 +527,6 @@ mod tests {
             .map(|c| KeycapText {
                 key_width: c.key_width * 1.5,
                 root_widths: c.root_widths.iter().map(|w| w * 1.5).collect(),
-                primary_width: c.primary_width * 1.5,
                 ..c.clone()
             })
             .collect();

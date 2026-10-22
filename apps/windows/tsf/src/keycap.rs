@@ -46,7 +46,6 @@ pub fn expand(code: &str, roots: &[ProtoKeyRoots]) -> Option<Vec<CapData>> {
             roots: k.roots.chars().collect(),
             // `main_len` 是**字符数**：主字根之后的变体在键帽上淡一档。
             main_root_count: (k.main_len as usize).min(k.roots.chars().count()),
-            primary: k.primary,
         });
     }
     Some(caps)
@@ -201,7 +200,6 @@ mod tests {
         let caps = expand("vbg", &roots()).unwrap();
         assert_eq!(caps.len(), 3);
         assert_eq!(caps[0].key, 'v');
-        assert_eq!(caps[0].primary, '发');
         assert_eq!(
             caps[0].roots,
             vec!['女', '刀', '九', '臼', '山', '彐', '曰']

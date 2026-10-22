@@ -287,7 +287,15 @@ pub fn is_text_key(vk: u16) -> bool {
 /// 被输入法吃掉。只有组合态（窗口里有候选）时它们才变成「选第 n 条」与「翻页」：
 /// 那一刻用户的意图已经被组合串与前缀锁定了，放行反而会破坏组合（D38）。
 pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
-    // Ctrl+Shift+1..9：调出本页第 n 条的**码位键位图**（§6.7 / D50）。
+    // Ctrl+Alt+1..9：调出本页第 n 条的**码位键位图**（§6.7 / D50）。
+    //
+    // ## 为什么是 Ctrl+Alt 而不是 Ctrl+Shift（D61）
+    //
+    // v1.28 用的是 `Ctrl+Shift+1..9`，真机上第一次按就把输入法切走了：`Ctrl+Shift`
+    // 是 Windows「在输入语言之间切换」的经典热键，老系统与装了多个输入法/键盘布局
+    // 的机器上仍然生效。用户按完弹图，手一松输入法已经换人——比不弹糟糕得多。
+    // `Ctrl+Alt` 没有系统级绑定（AltGr 只存在于有 AltGr 的拉丁键盘布局，中文环境
+    // 用的是美式/中文布局，两者都没有 AltGr 键）。
     //
     // 必须坐在最前面。下面那条 `if mods.ctrl || mods.alt { Action::Pass }` 会把
     // 所有带 Ctrl 的键一律放行——写在它后面等于写了一段死代码。**而且**它还得
@@ -295,13 +303,13 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     // 只剩这一个位置。
     //
     // 只在有候选窗时接管：没有候选窗，用户手上没有「正在打的码」，键位图无从
-    // 展开，`Ctrl+Shift+1` 就该还给宿主。英文模式同理——那一模式下一个键都不该吃。
+    // 展开，`Ctrl+Alt+1` 就该还给宿主。英文模式同理——那一模式下一个键都不该吃。
     //
     // 超出本页条数时**吃掉不动**（`Noop`）而不是放行：放行会让宿主在组合串中间
     // 插字符、终止组合串，把打了一半的编码弄丢——与数字键同一取舍（D38）。
     if mods.ctrl
-        && mods.shift
-        && !mods.alt
+        && mods.alt
+        && !mods.shift
         && input.mode == Mode::Chinese
         && input.has_candidates()
         && (0x31..=0x39).contains(&vk)
@@ -518,7 +526,15 @@ mod tests {
             shift: true,
         }
     }
-    /// Ctrl+Shift，其余不按。
+    /// Ctrl+Alt，其余不按。键位图的触发组合（D61）。
+    fn ctrl_alt() -> Mods {
+        Mods {
+            ctrl: true,
+            alt: true,
+            shift: false,
+        }
+    }
+    /// Ctrl+Shift，其余不按。**曾经**是键位图的触发组合（D61 换掉）。
     fn ctrl_shift() -> Mods {
         Mods {
             ctrl: true,
@@ -630,7 +646,13 @@ mod tests {
             assert_eq!(decide(cands, V, mods), Action::Pass, "字母");
             assert_eq!(decide(cands, SPACE, mods), Action::Pass, "空格");
             assert_eq!(decide(cands, BACK, mods), Action::Pass, "退格");
-            assert_eq!(decide(cands, 0x31, mods), Action::Pass, "数字键");
+            // 数字键唯一的例外：`Ctrl+Alt+1..9` 是键位图（D61）。其余组合照旧放行。
+            let digit = if ctrl && alt {
+                Action::Keycaps(0)
+            } else {
+                Action::Pass
+            };
+            assert_eq!(decide(cands, 0x31, mods), digit, "数字键");
             assert_eq!(decide(cands, 0x27, mods), Action::Pass, "右方向");
         }
     }
@@ -753,41 +775,37 @@ mod tests {
         assert_eq!(decide(en(3), TAB, m()), Action::Pass);
     }
 
-    /// `Ctrl+Shift+1..9` 调出键位图（§6.7）。三条边界：
+    /// `Ctrl+Alt+1..9` 调出键位图（§6.7 / D61）。三条边界：
     /// 必须越过 `mods.ctrl` 那一关、必须排在「数字键 = 选字」之前、没有候选窗时放行。
     #[test]
-    fn ctrl_shift_digit_opens_keycaps() {
+    fn ctrl_alt_digit_opens_keycaps() {
         // 本页 5 条时按 1/3 分别指向第 1/3 条
-        assert_eq!(
-            decide(zh_page(3, 5), 0x31, ctrl_shift()),
-            Action::Keycaps(0)
-        );
-        assert_eq!(
-            decide(zh_page(3, 5), 0x33, ctrl_shift()),
-            Action::Keycaps(2)
-        );
+        assert_eq!(decide(zh_page(3, 5), 0x31, ctrl_alt()), Action::Keycaps(0));
+        assert_eq!(decide(zh_page(3, 5), 0x33, ctrl_alt()), Action::Keycaps(2));
         // 超出本页条数：吃掉不动，绝不能放行（放行会把组合串打断）
-        assert_eq!(decide(zh_page(3, 2), 0x35, ctrl_shift()), Action::Noop);
+        assert_eq!(decide(zh_page(3, 2), 0x35, ctrl_alt()), Action::Noop);
         // 没有候选窗：还给宿主
-        assert_eq!(decide(zh(3), 0x31, ctrl_shift()), Action::Pass);
-        assert_eq!(decide(zh(0), 0x31, ctrl_shift()), Action::Pass);
-        // 只按 Ctrl（没有 Shift）仍是宿主的键
+        assert_eq!(decide(zh(3), 0x31, ctrl_alt()), Action::Pass);
+        assert_eq!(decide(zh(0), 0x31, ctrl_alt()), Action::Pass);
+        // 只按 Ctrl（没有 Alt）仍是宿主的键
         let c = Mods {
             ctrl: true,
             alt: false,
             shift: false,
         };
         assert_eq!(decide(zh_page(3, 5), 0x31, c), Action::Pass);
-        // 加上 Alt 就还回去（`Ctrl+Alt+Shift+1` 是别的东西）
-        let ca = Mods {
+        // 旧的 Ctrl+Shift 必须彻底让开：它是 Windows 切换输入语言的热键（D61）
+        assert_eq!(decide(zh_page(3, 5), 0x31, ctrl_shift()), Action::Pass);
+        // 加上 Shift 就还回去（`Ctrl+Alt+Shift+1` 是别的东西）
+        let cas = Mods {
             ctrl: true,
             alt: true,
             shift: true,
         };
-        assert_eq!(decide(zh_page(3, 5), 0x31, ca), Action::Pass);
+        assert_eq!(decide(zh_page(3, 5), 0x31, cas), Action::Pass);
         // 英文模式下一个键都不吃
         assert_eq!(
-            decide(Input::new(Mode::English).with_page(5), 0x31, ctrl_shift()),
+            decide(Input::new(Mode::English).with_page(5), 0x31, ctrl_alt()),
             Action::Pass
         );
     }

@@ -194,7 +194,6 @@ fn run_keycaps(args: &Args) -> windows::core::Result<bool> {
             key: k.key,
             roots: k.display_roots().collect(),
             main_root_count: k.roots.len(),
-            primary: k.primary,
         })
         .collect();
 
@@ -244,8 +243,8 @@ fn run_keycaps(args: &Args) -> windows::core::Result<bool> {
     for cap in &prepared.layout.caps {
         let shown: String = cap.roots.iter().collect();
         println!(
-            "  {}　{}　简码 {}　rect=({:.0}, {:.0}, {:.0}×{:.0})",
-            cap.key, shown, cap.primary, cap.rect.x, cap.rect.y, cap.rect.w, cap.rect.h
+            "  {}　{}　rect=({:.0}, {:.0}, {:.0}×{:.0})",
+            cap.key, shown, cap.rect.x, cap.rect.y, cap.rect.w, cap.rect.h
         );
     }
 
@@ -306,9 +305,7 @@ fn keycap_selftest(
     let mut inside = true;
     let mut detail = String::from("全部字在键帽内");
     for cap in &prepared.layout.caps {
-        let rects = std::iter::once(&cap.key_rect)
-            .chain(cap.root_rects.iter())
-            .chain(std::iter::once(&cap.primary_rect));
+        let rects = std::iter::once(&cap.key_rect).chain(cap.root_rects.iter());
         for r in rects {
             if r.x < cap.rect.x - 0.5
                 || r.right() > cap.rect.right() + 0.5

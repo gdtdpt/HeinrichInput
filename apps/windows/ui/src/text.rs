@@ -38,10 +38,10 @@ pub struct Formats {
     pub hint: IDWriteTextFormat,
 }
 
-/// 键位图（§6.7）的四个字号。
+/// 键位图（§6.7）的三个字号。
 ///
-/// 与 [`Formats`] 分开，是因为键位图要**四个不同字号同时出现**（字母 / 字根 /
-/// 简码 / 说明），而候选窗只要一个主字号加三个比例变体。硬塞进 `Formats` 会让
+/// 与 [`Formats`] 分开，是因为键位图要**三个不同字号同时出现**（字母 / 字根 /
+/// 说明），而候选窗只要一个主字号加三个比例变体。硬塞进 `Formats` 会让
 /// 候选窗每次 `formats()` 都多建三个用不上的 format。
 pub struct KeycapFormats {
     base: f32,
@@ -49,8 +49,6 @@ pub struct KeycapFormats {
     pub key: IDWriteTextFormat,
     /// 字根（含变体，颜色不同但字号相同）。
     pub root: IDWriteTextFormat,
-    /// 一级简码。
-    pub primary: IDWriteTextFormat,
     /// 底部固定说明。左对齐：它是一整句话，居中会让两行的左缘参差。
     pub footnote: IDWriteTextFormat,
 }
@@ -136,13 +134,12 @@ impl TextEngine {
             .max(0.0))
     }
 
-    /// 取（必要时重建）键位图的那一套 format。`base` 是字母字号，其余三个由调用方
+    /// 取（必要时重建）键位图的那一套 format。`base` 是字母字号，其余两个由调用方
     /// 按 `KeycapMetrics` 的比例算好后传入——本模块不替几何层决定字号比例。
     pub fn keycap_formats(
         &mut self,
         base: f32,
         root: f32,
-        primary: f32,
         footnote: f32,
     ) -> Result<&KeycapFormats> {
         let stale = match &self.keycap {
@@ -154,7 +151,6 @@ impl TextEngine {
                 base,
                 key: make_format(&self.factory, base, true)?,
                 root: make_format(&self.factory, root, true)?,
-                primary: make_format(&self.factory, primary, true)?,
                 footnote: make_format(&self.factory, footnote, false)?,
             });
         }

@@ -255,21 +255,13 @@ impl Renderer {
         }
         let surface = self.surface.as_ref().expect("刚刚建好");
 
-        // 四个 format 一次取完再 clone：`keycap_formats` 要 `&mut self`，而量字与
+        // 三个 format 一次取完再 clone：`keycap_formats` 要 `&mut self`，而量字与
         // 画字都用 `&self`，借用在 clone 之后就该结束。
-        let (f_key, f_root, f_primary, f_footnote) = {
-            let f = self.text.keycap_formats(
-                m.font_size,
-                m.root_size,
-                m.primary_size,
-                m.footnote_size,
-            )?;
-            (
-                f.key.clone(),
-                f.root.clone(),
-                f.primary.clone(),
-                f.footnote.clone(),
-            )
+        let (f_key, f_root, f_footnote) = {
+            let f = self
+                .text
+                .keycap_formats(m.font_size, m.root_size, m.footnote_size)?;
+            (f.key.clone(), f.root.clone(), f.footnote.clone())
         };
         let target = &surface.target;
 
@@ -329,13 +321,6 @@ impl Renderer {
                     };
                     text_in(target, &cap.roots[i].to_string(), &f_root, *rect, color)?;
                 }
-                text_in(
-                    target,
-                    &cap.primary.to_string(),
-                    &f_primary,
-                    cap.primary_rect,
-                    &muted,
-                )?;
             }
 
             for (rect, line) in layout.footnotes.iter().zip(&prepared.footnote_lines) {

@@ -847,11 +847,16 @@ Get-Process | ForEach-Object { try { if ($_.Modules.ModuleName -contains 'heinri
    真实库里「去」的码表权重比「云」高 0.0638（折合 n≈30 处 5–6 次按键），所以云要到 35 次
    左右才稳定压过 28 次的「去」
 
-### 4.14 码位键位图（M3.4b / D50 / D60）
+### 4.14 码位键位图（M3.4b / D50 / D60 / D61）
 
-一句话：`Ctrl+Shift+N` 把候选的码**逐位摊成键帽**，每枚写着「这个键上有哪些字根、
-一级简码是什么」。它回答的是「v 键为什么是 v」，**不回答**「好 这个字怎么拆」——
-后者被 `docs/design/probe-report.md` 证伪过（R3）。
+一句话：`Ctrl+Alt+N` 把候选的码**逐位摊成键帽**，每枚写着「这个键上有哪些字根」。
+它回答的是「v 键为什么是 v」，**不回答**「好 这个字怎么拆」——后者被
+`docs/design/probe-report.md` 证伪过（R3）。
+
+v1.29 之前每枚键帽底部还有一行「该键的一级简码」（`H`=上、`V`=发），真机一看就废：
+它答的是「这个键单独一按出什么字」，摆在字根正下方只会被读成「这一位取的是上」。
+去掉的不是一条信息，而是一条会被误读的信息（D61）。`roots.toml` 的 `primary` 字段
+仍然保留——`roots check` 第 5 项靠它与码表交叉校验。
 
 ## 数据：`data/wubi86/roots.toml`
 
@@ -900,6 +905,12 @@ DLL   : ipc::exchange() 读到 Roots 就缓存、继续读真正的应答
 任何一位找不到（`z`、非字母、表里没这个键）就**整体不弹**：半张键位图比没有更容易
 让人误读成「这个码就只有这几位」。
 
+**纯五笔段按 `Ctrl+Alt+2` 与按 `Ctrl+Alt+1` 弹出同一张图，不是 bug**：那一页每条候选的
+`code` 都是空串（server 只给拼音段发码提示），全部回落到同一个编码缓冲，于是每一位展开
+的键帽完全相同；`KeycapPanel::show` 里的 `shown == code` 还会直接把重画也跳掉。要让
+「第 N 条」有区别，前提是那条候选自己有一条码——拼音段有（`好 → vbg`），五笔段就是
+用户手上那串，本来就只有一条（D61 ④）。
+
 ## 版式（三轮真机截图调出来的）
 
 | 参数 | 值 | 为什么 |
@@ -909,6 +920,7 @@ DLL   : ipc::exchange() 读到 Roots 就缓存、继续读真正的应答
 | 说明行对齐 | **左对齐到内容区左缘** | 右对齐时第二行看起来像另一段话 |
 | 字根块 | 在 `max_rows` 内**垂直居中** | 留白全压中间让人以为字根没列完 |
 | 主字根 / 变体 | 实色 / 淡一档，分界来自 `main_root_count` | 按索引硬编码会在 G 键（4 主 + 2 变）之外全部着色错误 |
+| 键帽底部 | **不画一级简码**（D61） | 它与「这个字用什么字根」无关，摆在字根下面必然被误读；删掉后键帽高度少一行 |
 
 说明行还要**避头**：逐字量宽断行时标点不能落在行首，否则「——」会被拆到两行。
 
@@ -925,9 +937,11 @@ DLL   : ipc::exchange() 读到 Roots 就缓存、继续读真正的应答
 
 1. `tools\check.ps1` 全绿（含「字根表校验」「server 自测 → 字根表三项」「键位图自测」）
 2. `heinrich-cand-preview.exe --keycaps vbg` / `--keycaps qnk` / `--keycaps vbgu` 看版式
-3. 真机（先重启宿主）：打 `hao` → `Ctrl+Shift+1` 弹「虚」的键帽（码 `hao`）、
-   `Ctrl+Shift+2` 弹「好」的（码 `vbg`）；`vbgu` 平铺四枚；上屏 / Esc / 切窗口 / 再打一个字母
-   四种方式都能关掉；在 Excel 里没有候选时按 `Ctrl+Shift+1` 仍是数字格式
+3. 真机（先重启宿主）：打 `hao` → `Ctrl+Alt+1` 弹「虚」的键帽（码 `hao`，h/a/o 键上的字根）；
+   `vbgu` 平铺四枚；上屏 / Esc / 切窗口 / 再打一个字母四种方式都能关掉；没有候选时按
+   `Ctrl+Alt+1` 放行给宿主。要验「不同候选不同键帽」，走**拼音段**：`'hao` 后按
+   `Ctrl+Alt+1` / `Ctrl+Alt+2`，两条候选各有自己的码，键帽才会不同。顺带确认按
+   `Ctrl+Shift+1` **不弹**（那是 Windows 切换输入法的键，见踩坑 34）
 
 ## 5. 数据管线
 
@@ -1058,6 +1072,12 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 33. **Rust 原始字符串遇到 `"#` 会提前闭合。** 写 `r#"… fill="#fff" …"#` 时，`"#`
     正好是结束符，编译器报一串看不懂的错。内容是 HTML/SVG 就一律用 `r##"..."##`
     （或更高级的井号数量），别等报错才想这件事。
+34. **`Ctrl+Shift+数字` 不是「没人用的组合」，它是 Windows 切换输入语言的热键。** 键位图
+    v1.28 用它，真机第一次按就把输入法切走了——图弹出来了，但手一松已经不在亨利上。
+    选组合键要先问三件事：系统占没占（`Ctrl+Shift` / `Alt+Shift` 是输入语言切换）、
+    输入法自己占没占、宿主占没占。`Ctrl+Alt` 没有系统级绑定（AltGr 只存在于带 AltGr 的
+    拉丁布局，中文环境的美式 / 中文布局没有这个键），顺带把「Excel 的 `Ctrl+Shift+1..5`
+    是数字格式」这条顾虑也一起消掉了（D61）。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -1098,7 +1118,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
 | M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
-| M3.4b 码位键位图 | 🟡 **代码与自测完成，待真机验收**（D50 / D60 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Shift+1..9` 入口（仅中文模式且候选窗存在时接管）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
+| M3.4b 码位键位图 | 🟡 **代码与自测完成，待真机验收**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
 | M3.5 | 未开始（`z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地。外链查询已降为 M5 可选，见 §6.6） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
