@@ -65,6 +65,10 @@ const WORKER_TICK: Duration = Duration::from_millis(200);
 /// 拉起 server 的最小间隔。防止「server 起不来」时每个 tick 都去 CreateProcess。
 const SPAWN_BACKOFF: Duration = Duration::from_secs(5);
 
+/// server **拒绝**握手后的重试间隔。协议版本不匹配在重装 DLL 前不会自愈，
+/// 200 ms 一轮只会把日志刷满、把 server 管道当磨刀石；5 s 足够等一次升级。
+const REJECT_RETRY: Duration = Duration::from_secs(5);
+
 /// 本地候选缓存条数上限。满了直接清空——这是个纯粹的热路径优化，
 /// 不需要 LRU 的精确性。
 const CACHE_CAP: usize = 64;
@@ -459,50 +463,100 @@ fn win32_code(e: &windows::core::Error) -> u32 {
 fn worker() {
     let mut last_spawn: Option<Instant> = None;
     loop {
-        ensure_connected(&mut last_spawn);
+        let extra = ensure_connected(&mut last_spawn);
         flush_pending_mode();
         // 连上之后同 tick 就试着补发：server 刚起来时那批积压最该尽快落地。
         flush_pending_records();
-        std::thread::sleep(WORKER_TICK);
+        std::thread::sleep(WORKER_TICK + extra);
     }
 }
 
-fn ensure_connected(last_spawn: &mut Option<Instant>) {
+/// 尝试建连。返回这轮**额外**要睡的时间（被拒时放慢，见 [`REJECT_RETRY`]）。
+fn ensure_connected(last_spawn: &mut Option<Instant>) -> Duration {
     // 只在无人持锁且确实空着时动手；拿不到锁说明键路径正在用，下一 tick 再说。
     let need = match CONN.try_lock() {
         Ok(g) => g.is_none(),
         Err(_) => false,
     };
     if !need {
-        return;
+        return Duration::ZERO;
     }
 
-    if let Some(conn) = open() {
-        match CONN.lock() {
-            Ok(mut g) => {
-                // 期间可能已经被别的路径连上了，别覆盖。
-                if g.is_none() {
-                    *g = Some(conn);
+    match open() {
+        Ok(conn) => {
+            match CONN.lock() {
+                Ok(mut g) => {
+                    // 期间可能已经被别的路径连上了，别覆盖。
+                    if g.is_none() {
+                        *g = Some(conn);
+                    }
+                }
+                Err(p) => {
+                    *p.into_inner() = Some(conn);
                 }
             }
-            Err(p) => {
-                *p.into_inner() = Some(conn);
-            }
+            SPAWN_FAILED_LOGGED.store(false, Ordering::Relaxed);
+            Duration::ZERO
         }
-        SPAWN_FAILED_LOGGED.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    // 连不上 ⇒ 大概率 server 没跑。拉起它，但别太勤。
-    let may_spawn = last_spawn.is_none_or(|t| t.elapsed() >= SPAWN_BACKOFF);
-    if may_spawn {
-        *last_spawn = Some(Instant::now());
-        spawn_server();
+        Err(fail) => {
+            // 只有「连管道都没连上」才拉起 server（D63）。server 在但拒绝握手时
+            // 拉起它，得到的是又一个绑不上管道、转身退出的进程——空转到天荒地老。
+            if fail.should_spawn() {
+                let may_spawn = last_spawn.is_none_or(|t| t.elapsed() >= SPAWN_BACKOFF);
+                if may_spawn {
+                    *last_spawn = Some(Instant::now());
+                    spawn_server();
+                }
+            }
+            fail.retry_delay()
+        }
     }
 }
 
-/// 建连接并完成握手。失败返回 `None`（调用方决定要不要拉起 server）。
-fn open() -> Option<Conn> {
+/// `open()` 失败的形态。**只有 `NoServer` 才值得拉起 server**（D63）：
+///
+/// 实测踩过：旧版 DLL（协议 4）对上新版 server（协议 5），握手被 `Bye` 拒绝，
+/// 旧代码把一切失败都当成「server 没跑」，于是每 5 s 拉起一个新 server——
+/// 而新 server 绑不上已被占用的管道、立刻退出，形成「拉起 → 退出 → 再拉起」
+/// 的死循环，一次不匹配能空转出几百个进程。
+///
+/// 只做分类不带数据：具体错误在发生地（`open`）就地记日志，这里不重复。
+enum OpenFail {
+    /// `CreateFileW` 都没成功：管道不存在或全忙，server 大概率没跑。
+    NoServer,
+    /// 管道通了，但收到 `Frame::Bye`：协议版本 / 方案不匹配。重装 DLL 前不会好，
+    /// 拉起 server 无济于事。
+    Rejected,
+    /// 管道通了，但握手在读应答时断掉：server 写完 `Bye` 就断管道（v1.31 前的
+    /// server 行为）或 server 中途崩了。server 大概率还在，重试即可，不拉起。
+    Broken,
+}
+
+impl OpenFail {
+    /// 这次失败之后要不要去拉起 server。
+    fn should_spawn(&self) -> bool {
+        matches!(self, OpenFail::NoServer)
+    }
+
+    /// 失败后这次 tick 额外睡多久（`WORKER_TICK` 之外）。
+    fn retry_delay(&self) -> Duration {
+        match self {
+            // 管道都没有，按原来的节奏快速重试，拉起节奏由 SPAWN_BACKOFF 管。
+            OpenFail::NoServer => Duration::ZERO,
+            // 被拒就慢下来：这个状态以「分钟」为单位，5 s 一轮足够了。
+            OpenFail::Rejected => REJECT_RETRY,
+            // 断在半路：给 server 一点喘息，但别太久——它可能只是重启中。
+            OpenFail::Broken => Duration::from_secs(1),
+        }
+    }
+}
+
+/// 「server 拒绝握手」只报一次错，之后降为 debug。这个状态在重装 DLL 前
+/// 不会消失，5 s 一条 error 也会把日志刷满。
+static REJECT_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// 建连接并完成握手。
+fn open() -> Result<Conn, OpenFail> {
     let name = pipe_name();
     let wide = to_wide(&name);
     let pipe = unsafe {
@@ -519,12 +573,11 @@ fn open() -> Option<Conn> {
     let pipe = match pipe {
         Ok(h) => h,
         Err(e) => {
-            let code = win32_code(&e);
             // 管道不存在 / 全忙都是「server 还没准备好」，属于正常路径，不写日志刷屏。
-            if code != ERROR_FILE_NOT_FOUND.0 && code != ERROR_PIPE_BUSY.0 {
+            if win32_code(&e) != ERROR_FILE_NOT_FOUND.0 && win32_code(&e) != ERROR_PIPE_BUSY.0 {
                 tsf_debug!("打开管道 {name} 失败：{e}");
             }
-            return None;
+            return Err(OpenFail::NoServer);
         }
     };
 
@@ -533,7 +586,9 @@ fn open() -> Option<Conn> {
         unsafe {
             let _ = CloseHandle(pipe);
         }
-        return None;
+        // 到不了握手那一步，但管道是通的：按「server 在」处理，不拉起。
+        tsf_debug!("CreateEventW 失败，本轮放弃");
+        return Err(OpenFail::Broken);
     };
     let conn = Conn { pipe, event };
 
@@ -566,20 +621,28 @@ fn open() -> Option<Conn> {
                     "纯五笔"
                 }
             );
-            Some(conn)
+            REJECT_LOGGED.store(false, Ordering::Relaxed);
+            Ok(conn)
         }
         Ok(Frame::Bye { reason }) => {
-            // 方案或协议不匹配：不是重连能解决的问题，记一条错误级的日志。
-            tsf_error!("server 拒绝握手：{reason}");
-            None
+            // 方案或协议不匹配：不是重连能解决的问题，更不是拉起 server 能解决的。
+            if REJECT_LOGGED.swap(true, Ordering::Relaxed) {
+                tsf_debug!("server 拒绝握手（已报过一次）：{reason}");
+            } else {
+                tsf_error!(
+                    "server 拒绝握手：{reason} —— DLL 与 server 版本不匹配，\
+                     重启宿主进程（或重新安装）加载新 DLL 后恢复"
+                );
+            }
+            Err(OpenFail::Rejected)
         }
         Ok(other) => {
             tsf_error!("握手收到意外应答：{other:?}");
-            None
+            Err(OpenFail::Broken)
         }
         Err(e) => {
             tsf_debug!("握手失败：{e}");
-            None
+            Err(OpenFail::Broken)
         }
     }
 }
@@ -838,6 +901,25 @@ mod tests {
         if let Ok(mut g) = CACHE.lock() {
             *g = None;
         }
+    }
+
+    /// D63：只有「管道都没连上」才拉起 server。被 `Bye` 拒绝时拉起一百次
+    /// 也修不了版本不匹配——实测它每 5 s 空转出一个 server 进程。
+    #[test]
+    fn spawn_only_when_the_pipe_was_never_opened() {
+        assert!(OpenFail::NoServer.should_spawn());
+        assert_eq!(OpenFail::NoServer.retry_delay(), Duration::ZERO);
+
+        assert!(!OpenFail::Rejected.should_spawn());
+        assert_eq!(OpenFail::Rejected.retry_delay(), REJECT_RETRY);
+
+        let broken = OpenFail::Broken;
+        assert!(!broken.should_spawn());
+        assert!(broken.retry_delay() > Duration::ZERO);
+        assert!(
+            broken.retry_delay() < REJECT_RETRY,
+            "断在半路可能只是重启中，别等太久"
+        );
     }
 
     /// D57 的核心：上屏标脏之后，**同一个码**继续命中旧缓存（连打不跳位），

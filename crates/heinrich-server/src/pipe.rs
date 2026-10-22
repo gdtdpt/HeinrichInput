@@ -283,6 +283,11 @@ fn serve(handle: PipeHandle, shared: &Mutex<Host>, debug_sleep: Duration, activi
         }
 
         if matches!(reply, Frame::Bye { .. }) {
+            // 给客户端留出**读走 `Bye`** 的时间（D63）。立刻断管道的话，客户端那头
+            // 的读会以 ERROR_NO_DATA 收场——它永远看不到拒绝原因，日志里只有一行
+            // 莫名的「握手失败」，而真正的原因（协议版本不匹配）就埋没了。
+            // 本机管道一个来回远小于 100 ms，也不至于让 server 卡在一个死连接上。
+            std::thread::sleep(std::time::Duration::from_millis(100));
             break;
         }
     }
