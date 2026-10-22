@@ -42,7 +42,11 @@ use std::fmt;
 ///   这是协议里第一条**不是应答**的帧，所以客户端读应答时必须跳过它
 ///   （`apps/windows/tsf/src/ipc.rs` 的 `exchange`），否则下一条请求会读到别人的
 ///   应答、整条管道错位一帧。
-pub const PROTO_VERSION: u16 = 5;
+/// - v6：M3.5/D64 词中码提示。`Entry` 加 `hint_at`（**一个字节，追加在 `code`
+///   之后**）：chip 前面有几个字符，`0` = 挂词尾（单段候选与通配的既有行为）。
+///   多段组合（`hao'ktn` → 好吃）的 chip 必须贴着拼音段的字（`好[vbg]吃`），
+///   挂词尾会被误读成整个词的五笔码。
+pub const PROTO_VERSION: u16 = 6;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -105,11 +109,16 @@ impl Mode {
 /// `code` 是这个词的**五笔码**（拼音段候选用来画码提示 chip，§6.3）。它**不一定**
 /// 等于本次的查询串：用拼音查 `hao`，命中「好」时查询串是 `hao`、而码是 `vb`。
 /// 空串表示「本次不提示」（server 已经按 `hint.mode` 与段来源裁决过了）。
+///
+/// `hint_at` 是 chip 的**词中位置**（D64）：`code` 非空时，chip 画在词的第
+/// `hint_at` 个字符之后（`0` = 词尾）。多段组合 `hao'ktn` → 好吃 时 server 给
+/// `hint_at = 1`、`code = vbg`，DLL 画成 `好[vbg]吃`；单段候选与通配恒为 `0`。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub word: String,
     pub label: String,
     pub code: String,
+    pub hint_at: u8,
 }
 
 /// 一个键位上的字根（[`Frame::Roots`] 的一条）。
@@ -294,6 +303,8 @@ impl Frame {
                     // `decode_body` 的「帧尾不许多字节」拦下——正是我们要的效果，
                     // 模糊兼容会把码当成下一条候选的词。
                     put_str(&mut body, &e.code);
+                    // v6 的追加字段：chip 的词中位置（D64）。
+                    body.push(e.hint_at);
                 }
             }
             Frame::SetMode { mode } => body.push(mode.as_u8()),
@@ -401,6 +412,7 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
                     word: r.string()?,
                     label: r.string()?,
                     code: r.string()?,
+                    hint_at: r.u8()?,
                 });
             }
             Frame::Result {
@@ -553,11 +565,13 @@ mod tests {
                     word: "好".into(),
                     label: "全码".into(),
                     code: "vbg".into(),
+                    hint_at: 0,
                 },
                 Entry {
                     word: "好玩".into(),
                     label: "全码".into(),
                     code: "vbgf".into(),
+                    hint_at: 0,
                 },
             ],
         });
@@ -704,6 +718,7 @@ mod tests {
                 word: "好玩".into(),
                 label: "三级简码".into(),
                 code: "vbgf".into(),
+                hint_at: 0,
             }],
         };
         let bytes = f.encode();
@@ -724,11 +739,13 @@ mod tests {
                     word: "好".into(),
                     label: "全码".into(),
                     code: "vb".into(),
+                    hint_at: 0,
                 },
                 Entry {
                     word: "号".into(),
                     label: "全码".into(),
                     code: "kgn".into(),
+                    hint_at: 0,
                 },
             ],
         };
@@ -755,8 +772,35 @@ mod tests {
                 word: "好".into(),
                 label: "全码".into(),
                 code: String::new(),
+                hint_at: 0,
             }],
         };
         assert_eq!(Frame::decode(&f.encode()).unwrap(), f);
+    }
+
+    /// v6 的词中位置（D64）：`hint_at` 必须原样往返。多段组合
+    /// `hao'ktn` → 好吃 的 chip 画在「好」后面（`hint_at = 1`），
+    /// 挂词尾会被误读成整个词的五笔码。
+    #[test]
+    fn mid_word_hint_position_roundtrips() {
+        let f = Frame::Result {
+            code: "hao'ktn".into(),
+            source: source::PINYIN,
+            primary_len: 1,
+            entries: vec![Entry {
+                word: "好吃".into(),
+                label: "多段".into(),
+                code: "vbg".into(),
+                hint_at: 1,
+            }],
+        };
+        let back = Frame::decode(&f.encode()).unwrap();
+        assert_eq!(f, back);
+        match back {
+            Frame::Result { entries, .. } => {
+                assert_eq!(entries[0].hint_at, 1, "chip 挂在第 1 个字符之后");
+            }
+            other => panic!("解出了别的帧：{other:?}"),
+        }
     }
 }

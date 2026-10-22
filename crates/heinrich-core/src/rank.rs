@@ -79,6 +79,11 @@ pub struct Candidate {
     /// 后者是 `vbg`——合并成一个字段等于把两个问题混成一个。
     pub wubi: String,
     pub kind_label: &'static str,
+    /// 多段候选的**词中码提示**（D64）。`None` = 无（单段候选、两段都是五笔、
+    /// 或拼音段字不在五笔词库里）。
+    ///
+    /// 单段候选不它：chip 挂词尾、内容由 server 按 §6.3 裁决，不需要这里带位置。
+    pub chip: Option<ChipHint>,
     /// 归一化静态权重
     pub w_norm: f32,
     /// 学习分部分
@@ -90,6 +95,18 @@ pub struct Candidate {
     /// 距上次使用天数（从未使用为 `f64::INFINITY`）
     pub days_since: f64,
     pub tier: Tier,
+}
+
+/// 词中码提示（D64）：chip 挂在候选词的**中间**，紧跟它解释的那个字。
+///
+/// 多段组合（`hao'ktn` → 好吃）里 chip 必须贴着拼音段的字（`好[vbg]吃`），
+/// 挂词尾会被误读成整个词的五笔码（「好吃」的全码明明是 `vbkt`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChipHint {
+    /// 拼音段字的五笔全码（空码的段不会生成 chip）。
+    pub code: String,
+    /// chip 前面的字符数：`0` = 挂词头（不会出现），词长 = 挂词尾。
+    pub chars_before: usize,
 }
 
 /// 学习分：`ln(1 + max(0, n−1)) × 0.5^(Δt/H)`。
@@ -225,6 +242,7 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
             code: item.code.to_string(),
             wubi: item.wubi.to_string(),
             kind_label: item.kind_label,
+            chip: None,
             w_norm: item.w_norm,
             learning,
             total,

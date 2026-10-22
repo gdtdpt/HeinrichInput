@@ -142,6 +142,11 @@ pub struct Scheme {
     pub stats: SchemeStats,
     /// 按 (编码, 权重降序, 词) 排好的词条下标，前缀查询的二分基础
     sorted: Vec<u32>,
+    /// 全部词条的词集合（[`Scheme::has_word`] 用，首次调用时建）。
+    ///
+    /// 惰性而不是装载时建：纯五笔用户永远用不到它（多段真词过滤是 D64 的
+    /// 拼音混输特性），不该为用不到的东西付十几 MB 内存。
+    words: std::sync::OnceLock<std::collections::HashSet<String>>,
 }
 
 impl fmt::Debug for Scheme {
@@ -239,6 +244,7 @@ impl Scheme {
             entries,
             stats,
             sorted,
+            words: std::sync::OnceLock::new(),
         })
     }
 
@@ -274,6 +280,20 @@ impl Scheme {
 
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// 这个词在五笔词库里吗（D64 多段真词过滤）。
+    ///
+    /// 不区分词条类型（全码 / 简码 / 词组）：过滤问的是「中文里有没有这个串」，
+    /// 「它是用什么码打出来的」是另一回事。单字条目也在集合里，但两段各取
+    /// 至少一字拼出的串长度 ≥ 2，永远撞不上单字条目。
+    pub fn has_word(&self, word: &str) -> bool {
+        if word.is_empty() {
+            return false;
+        }
+        self.words
+            .get_or_init(|| self.entries.iter().map(|e| e.word.clone()).collect())
+            .contains(word)
     }
 }
 

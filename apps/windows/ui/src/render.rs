@@ -190,6 +190,16 @@ impl Renderer {
                     label_ink,
                 )?;
                 text_in(target, &item.text, &formats.text, item.text_rect, text_ink)?;
+                // 词中 chip 的后截文字（D64）：chip 右边还有半截词。
+                if !item.text2.is_empty() {
+                    text_in(
+                        target,
+                        &item.text2,
+                        &formats.text,
+                        item.text2_rect,
+                        text_ink,
+                    )?;
+                }
                 if let Some(hint) = &item.hint {
                     // chip 比行矮一点、上下居中：贴满整行会显得像一列格子。
                     let h = (m.font_size * 1.18).min(item.hint_rect.h);

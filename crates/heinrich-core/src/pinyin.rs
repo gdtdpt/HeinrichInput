@@ -31,7 +31,7 @@
 use heinrich_scheme::{PinyinLexicon, Scheme};
 
 use crate::rank::{
-    lookup, rank_indices, rank_inputs, Candidate, LookupMode, RankInput, RankingConfig,
+    lookup, rank_indices, rank_inputs, Candidate, ChipHint, LookupMode, RankInput, RankingConfig,
 };
 use crate::usage::{Tier, UsageStore};
 
@@ -59,11 +59,12 @@ pub const WILDCARD: char = 'z';
 /// 3 段以上按 5³ 涨到 125 条组合，翻页翻不过来，且用户真正想要的是「分两次打」。
 const MAX_SEGMENTS: usize = 2;
 
-/// 每一段最多取几条候选参与笛卡尔积。
+/// 每一段最多取几条候选参与组合。
 ///
-/// 取 5 是因为候选窗一页就是 5 条：段 1 的第 1 条配上段 2 的 5 条正好铺满首屏，
-/// 用户按顺序按 1–5 就能拿到「第一个字定了、第二个字换一个」的全部组合。
-const SEGMENT_LIMIT: usize = 5;
+/// D64 之后组合结果要过**真词过滤**，大部分组合会被滤掉，池子必须比一页大——
+/// 取 16 是给过滤器留足料：拼音段的精确区（同音单字）通常有一二十条，
+/// 16 条够覆盖到权重较低的常用字，过滤后仍能凑满一页真词。
+const SEGMENT_LIMIT: usize = 16;
 
 /// 当前首屏候选来自哪种语言。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -92,14 +93,14 @@ pub struct Mixed {
     pub folded: Vec<Candidate>,
     /// **强制显示码提示**，内容取 `Candidate.code`（不是 `wubi`）。
     ///
-    /// 两种情况下必须显示，理由都是「不显示用户就不知道这是怎么来的」：
+    /// 目前只有**通配**（`vbz`）必须显示：这一段本来就是「我要找 `vb` 开头的字」，
+    /// 看不清每条字自己的码，就等于看了一屏无关的字。
     ///
-    /// 1. **通配**（`vbz`）：这一段本来就是「我要找 `vb` 开头的字」，看不清
-    ///    每条字自己的码，就等于看了一屏无关的字。
-    /// 2. **多段**（`hao'vb`）：码是各段的码用 `'` 连起来的，它同时也说明了
-    ///    「这是几段拼的」——不显示的话，用户分不清候选是「好我」还是某个两字词。
+    /// 多段（`hao'vb`）**不再走这一位**（D64）：它的提示是**词中 chip**（挂在
+    /// 拼音段字后面、内容是该字的五笔全码），由 `Candidate.chip` 携带——挂词尾
+    /// 的 `hao'vb` 会被误读成整个词的五笔码（「好吃」的全码明明是 `vbkt`）。
     ///
-    /// 单段时这一位是 `false`，码提示仍按 §6.3 的「拼音段给码、五笔段不给」走。
+    /// 其余情况这一位是 `false`，码提示仍按 §6.3 的「拼音段给码、五笔段不给」走。
     pub show_codes: bool,
 }
 
@@ -391,11 +392,18 @@ fn wildcard_query<S: UsageStore + ?Sized>(
     }
 }
 
-/// 多段查询（§6.5）：每段独立取候选，再按「段 1 主序、段 2 次序」铺成组合。
+/// 多段查询（§6.5 / D64）：每段独立取候选，组合后**只保留词典真词**。
 ///
-/// 顺序是刻意的：用户先确定的总是第一段，所以段 1 的第 1 条配上段 2 的 5 条正好
-/// 铺满首屏——按 1–5 就是在「第一个字定了，第二个字换一个」。
-/// 不按组合分重排，是因为重排会让「我选的第一个字」散落在各页，反而难找。
+/// `'` 的语法决定了**段 1 恒为拼音段**（`'` 跟在它后面），段 2 是五笔（默认）
+/// 或拼音（尾 `'`）。D64 之前这里做的是裸笛卡尔积，「号吃」「浩吃」这类不存在
+/// 词的字符拼接会铺满候选窗——用户要的是词，不是「每段各选一个字」的排列。
+/// 现在的规则：
+///
+/// - 组合必须过**真词过滤**（两份词库取并集判定）；
+/// - 一个真词都凑不出来就整体不出窗（用户选的严格模式：列表永远干净，
+///   非词典组合用「分两次单打」表达）。
+/// - chip（[`ChipHint`]）挂段 1 的字后面，内容是它的五笔全码——挂词尾会被
+///   误读成整个词的五笔码（「好吃」的全码是 `vbkt`，不是 `vbg`）。
 fn segment_query<S: UsageStore + ?Sized>(
     scheme: &Scheme,
     pinyin: Option<&PinyinLexicon>,
@@ -424,22 +432,42 @@ fn segment_query<S: UsageStore + ?Sized>(
     let mut primary = Vec::new();
     'outer: for a in first {
         for b in second {
+            let joined = join_word(a, b);
+            if !is_known_word(scheme, pinyin, &joined) {
+                continue;
+            }
             primary.push(join_parts(a, b));
             if primary.len() >= limit {
                 break 'outer;
             }
         }
     }
+    // 严格模式：真词一个都没有就不出窗，绝不用字符拼接凑数。
+    if primary.is_empty() {
+        return Mixed::none(Source::Wubi);
+    }
     Mixed {
-        source: if segs.first().is_some_and(|s| s.1) {
-            Source::Pinyin
-        } else {
-            Source::Wubi
-        },
+        source: Source::Pinyin,
         primary,
         folded: Vec::new(),
-        show_codes: true,
+        show_codes: false,
     }
+}
+
+/// 组合串是不是词典真词（两份词库取并集）。
+///
+/// 拼音词库来自语料，覆盖宽（「好吃」只进拼音库、不进五笔库的情况不少）；
+/// 五笔词库收的是打字常用词。缺任何一边都会把真词误杀成「不出窗」。
+fn is_known_word(scheme: &Scheme, pinyin: Option<&PinyinLexicon>, word: &str) -> bool {
+    if scheme.has_word(word) {
+        return true;
+    }
+    pinyin.is_some_and(|lex| lex.has_word(word))
+}
+
+/// 两段候选拼出的完整词（真词判定用，chip 信息由 [`join_parts`] 单独算）。
+fn join_word(a: &Candidate, b: &Candidate) -> String {
+    format!("{}{}", a.word, b.word)
 }
 
 /// 单段候选池。`is_pinyin` 为真时只查拼音；为假时**五笔优先、没命中再试拼音**
@@ -468,16 +496,24 @@ fn segment_pool<S: UsageStore + ?Sized>(
     }
 }
 
-/// 把两段的候选拼成一条：词直接拼、码用 `'` 连起来（`show_codes` 时它上 chip）。
+/// 把两段的候选拼成一条候选；chip 挂段 1 的字后面（D64）。
+///
+/// 段 1 恒为拼音段（`'` 语法决定，见 [`segment_query`]），chip 内容取段 1
+/// 候选的五笔全码；「好」不在五笔词库里时无码可教，不挂。
 fn join_parts(a: &Candidate, b: &Candidate) -> Candidate {
+    let chip = (!a.wubi.is_empty()).then(|| ChipHint {
+        code: a.wubi.clone(),
+        chars_before: a.word.chars().count(),
+    });
     Candidate {
         word: format!("{}{}", a.word, b.word),
         code: format!("{}{}{}", a.code, MARK, b.code),
-        // 多段没有「词 → 五笔全码」可言：整串码就是用户手上那串，而 chip 取的是
-        // `code`（`show_codes = true`）。留空，免得以后有人误用它去反查。
+        // 多段没有「词 → 五笔全码」可言：chip 取的是 `chip`（`wubi` 留空，
+        // 免得以后有人误用它去反查——多段的五笔码不是词级概念）。
         wubi: String::new(),
         kind_label: "多段",
-        // 排序字段只影响「候选区怎么排」，而多段的顺序已经由上面的双循环定死；
+        chip,
+        // 排序字段只影响「候选区怎么排」，而多段的顺序已经由双循环定死；
         // 取两段里较小的那个，纯粹是给日志与调试一个说得过去的数。
         w_norm: a.w_norm.min(b.w_norm),
         learning: 0.0,
@@ -517,8 +553,14 @@ mod tests {
     }
 
     fn pinyin() -> PinyinLexicon {
-        PinyinLexicon::load(&fixture("../heinrich-scheme/tests/fixtures/pinyin-mini"))
-            .expect("拼音夹具应可装载")
+        // 码提示的数据前提与 server 一致：装载后立刻反查五笔全码（§6.3）。
+        // 不 attach 的话所有 `wubi` 都是空串，chip 永远挂不上。
+        let scheme = scheme();
+        let mut lex =
+            PinyinLexicon::load(&fixture("../heinrich-scheme/tests/fixtures/pinyin-mini"))
+                .expect("拼音夹具应可装载");
+        lex.attach_wubi_codes(&scheme);
+        lex
     }
 
     fn words(c: &[Candidate]) -> Vec<String> {
@@ -776,12 +818,13 @@ mod tests {
         assert!(!r.show_codes, "中间位置的 z 不该走通配");
     }
 
-    // ---------- 多段（M3.5 / §6.5） ----------
+    // ---------- 多段（M3.5 / §6.5 / D64） ----------
 
-    /// `hao'vb` = 拼音段「hao」× 五笔段「vb」。段 1 做主序：首屏先是
-    /// 「第一个字换着来」，这正是用户确定第一段之后的自然问法。
+    /// `hao'vb` = 拼音段「hao」× 五笔段「vb」。D64：组合必须过真词过滤，
+    /// 「号好」「浩好」这类字符拼接不再出现——「好好」是词典词，它是唯一幸存者。
+    /// chip 挂在拼音段字（好）后面，内容是它的五笔全码 `vbg`。
     #[test]
-    fn segments_join_pinyin_and_wubi() {
+    fn segments_keep_only_dictionary_words() {
         let s = scheme();
         let lex = pinyin();
         let store = MemoryStore::new();
@@ -789,15 +832,33 @@ mod tests {
         let r = query(&s, Some(&lex), "hao'vb", &store, 1_000, &cfg);
 
         assert_eq!(r.source, Source::Pinyin, "段 1 是拼音");
-        assert!(r.show_codes, "多段必须显示码，它同时说明了「这是几段拼的」");
+        assert!(!r.show_codes, "多段的提示走 chip（D64），不再整串铺码");
         assert!(r.folded.is_empty(), "多段没有折叠区");
-        assert_eq!(
-            &words(&r.primary)[..3],
-            ["好好", "号好", "浩好"],
-            "段 1 主序、段 2 次序"
+        assert_eq!(words(&r.primary), ["好好"], "只有词典真词幸存");
+        let chip = r.primary[0]
+            .chip
+            .as_ref()
+            .expect("拼音段有五笔码就该挂 chip");
+        // 夹具里「好」有两条全码（hao、vbg——为 D48 的重叠测试故意造的），
+        // `attach_wubi_codes` 取字典序最小的，提示语不能每次启动换一个。
+        assert_eq!(chip.code, "hao");
+        assert_eq!(chip.chars_before, 1, "chip 挂在「好」后面");
+    }
+
+    /// 两段拼不出任何词典真词就**整体不出窗**（用户选的严格模式）：
+    /// 绝不用字符拼接凑数。「好你」不是词，所以 `hao'ni'` 什么都不给。
+    #[test]
+    fn segments_without_any_real_word_show_nothing() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "hao'ni'", &store, 1_000, &cfg);
+        assert!(
+            r.is_empty(),
+            "组合里没有真词时不能铺拼接串：{:?}",
+            words(&r.into_all())
         );
-        // chip 内容：各段码用 ' 连起来
-        assert_eq!(r.primary[0].code, "hao'vb");
     }
 
     /// 任何一段没候选就整体不出窗：只弹半截会让用户以为第二段打错了。
@@ -812,7 +873,21 @@ mod tests {
         assert!(r.is_empty(), "第二段没候选时不能只出第一段");
     }
 
-    /// 没有拼音词库时，拼音段无从查起——整串退回不出窗，而不是把 `hao` 当五笔硬查。
+    /// 两段都显式拼音：`ni'hao'` → 「你好」是真词，幸存；chip 挂段 1 字后，
+    /// 但「你」不在五笔词库里（夹具），无码可教 → 不挂。
+    #[test]
+    fn two_pinyin_segments_keep_real_words_and_chip_on_first() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        let r = query(&s, Some(&lex), "ni'hao'", &store, 1_000, &cfg);
+        assert_eq!(words(&r.primary), ["你好"]);
+        assert!(r.primary[0].chip.is_none(), "「你」没有五笔码，不挂 chip");
+    }
+
+    /// 没有拼音词库时，显式拼音段无从查起——整串退回不出窗，而不是把 `hao`
+    /// 当五笔硬查（段 1 恒为拼音段，`'` 语法决定的）。
     #[test]
     fn segments_degrade_without_pinyin_lexicon() {
         let s = scheme();

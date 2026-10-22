@@ -58,6 +58,8 @@ pub struct PinyinLexicon {
     syllable_set: HashSet<String>,
     /// 最长音节长度，切分的枚举上界
     max_syllable: usize,
+    /// 全部词条的词集合（[`PinyinLexicon::has_word`] 用，首次调用时建）
+    words: std::sync::OnceLock<HashSet<String>>,
     pub entry_count: usize,
     pub syllable_count: usize,
 }
@@ -179,6 +181,7 @@ impl PinyinLexicon {
             syllables,
             syllable_set,
             max_syllable,
+            words: std::sync::OnceLock::new(),
             entry_count,
             syllable_count,
         })
@@ -266,6 +269,19 @@ impl PinyinLexicon {
     /// 是否是一个完整的合法音节（单音节，不含组合）。
     pub fn is_syllable(&self, s: &str) -> bool {
         self.syllable_set.contains(s)
+    }
+
+    /// 这个词在拼音词库里吗（D64 多段真词过滤）。
+    ///
+    /// 拼音词库来自语料（rime-pinyin-simp），对「中文里真实存在的词」的覆盖
+    /// 比五笔词库宽——两份词库取并集做真词判定，缺一边都会漏。
+    pub fn has_word(&self, word: &str) -> bool {
+        if word.is_empty() {
+            return false;
+        }
+        self.words
+            .get_or_init(|| self.entries.iter().map(|e| e.word.clone()).collect())
+            .contains(word)
     }
 
     /// 匹配：先精确（拼音串完全等于输入），再前缀（拼音串以输入开头）。

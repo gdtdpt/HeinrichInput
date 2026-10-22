@@ -11,7 +11,7 @@ mod usage;
 pub use engine::Engine;
 pub use pinyin::{query, query_with_limit, Mixed, Source};
 pub use rank::{
-    kind_label, learning_score, lookup, rank_indices, rank_inputs, Candidate, LookupMode,
+    kind_label, learning_score, lookup, rank_indices, rank_inputs, Candidate, ChipHint, LookupMode,
     RankInput, RankingConfig,
 };
 pub use usage::{MemoryStore, Tier, Usage, UsageStore};

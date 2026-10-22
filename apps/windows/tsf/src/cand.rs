@@ -40,6 +40,8 @@ pub struct Cands {
     words: Vec<String>,
     /// 与 `words` 等长的码提示（§6.3）。空串 = 这条不画 chip。
     codes: Vec<String>,
+    /// 与 `words` 等长的 chip 词中位置（D64）。`0` = 词尾。
+    hint_ats: Vec<u8>,
     /// 折叠区第一条的全局序号（D48）。`== words.len()` 表示只有一段。
     split: usize,
     /// 页码、本页区间、两端箭头。
@@ -75,6 +77,7 @@ impl Cands {
             seq,
             words: Vec::new(),
             codes: Vec::new(),
+            hint_ats: Vec::new(),
             split: 0,
             pager: Pager::new(PAGE_SIZE),
             highlight: 0,
@@ -99,16 +102,27 @@ impl Cands {
     ///
     /// `split` 是折叠区第一条的全局序号（D48）：从它开始的候选属于另一门语言，
     /// 画的时候淡一档。传 `words.len()` 表示只有一段。
-    pub fn update(&mut self, words: Vec<String>, mut codes: Vec<String>, split: usize) {
+    ///
+    /// `hint_ats` 与 `words` 等长（D64）：chip 挂在第几个字符之后，`0` = 词尾。
+    pub fn update(
+        &mut self,
+        words: Vec<String>,
+        mut codes: Vec<String>,
+        mut hint_ats: Vec<u8>,
+        split: usize,
+    ) {
         // 长度对齐：协议与 UI 之间多一道防线。少了补空串（不画），多了直接丢掉——
         // 越界的提示会画到隔壁项上，比不画难查得多。
         codes.resize(words.len(), String::new());
         codes.truncate(words.len());
+        hint_ats.resize(words.len(), 0);
+        hint_ats.truncate(words.len());
         self.pager.reset(words.len());
         self.highlight = 0;
         self.split = split.min(words.len());
         self.words = words;
         self.codes = codes;
+        self.hint_ats = hint_ats;
         tsf_debug!(
             "#{} 候选 {} 条（{} 条带码提示），共 {} 页",
             self.seq,
@@ -122,6 +136,7 @@ impl Cands {
     pub fn clear(&mut self) {
         self.words.clear();
         self.codes.clear();
+        self.hint_ats.clear();
         self.split = 0;
         self.pager.reset(0);
         self.highlight = 0;
@@ -228,6 +243,7 @@ impl Cands {
         let prepared = win.prepare(&Candidates {
             texts: &self.words,
             hints: &self.codes,
+            hint_ats: &self.hint_ats,
             page: self.pager.page(),
             page_size: self.pager.page_size(),
             highlight: self.highlight,

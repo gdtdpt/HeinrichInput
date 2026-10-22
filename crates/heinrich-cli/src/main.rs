@@ -96,7 +96,12 @@ fn main() -> ExitCode {
                     let mut eng = Engine::new(scheme, MemoryStore::new(), RankingConfig::default());
                     if let Some(dir) = &pinyin_dir {
                         match PinyinLexicon::load(dir) {
-                            Ok(lex) => eng = eng.with_pinyin(lex),
+                            // 码提示的数据前提与 server 一致：装载后反查五笔全码
+                            // （§6.3 / D64 的 chip 都吃这一列）。
+                            Ok(mut lex) => {
+                                lex.attach_wubi_codes(eng.scheme());
+                                eng = eng.with_pinyin(lex);
+                            }
                             Err(e) => {
                                 eprintln!("拼音词库装载失败（{}）：{e}", dir.display());
                                 return ExitCode::FAILURE;
@@ -489,15 +494,25 @@ fn print_candidates(buffer: &str, m: &Mixed) {
         total
     );
     if m.show_codes {
-        println!("   （每条都带码：通配 / 多段下，码本身就是筛选依据）");
+        println!("   （每条都带码：通配下，码本身就是筛选依据）");
     }
     let mut shown = 0usize;
     for c in m.primary.iter().take(PRINT_LIMIT) {
         shown += 1;
         let marker = if c.n == 1 { " ←首次" } else { "" };
+        // 词中 chip（D64）：多段候选把 chip 画进词里（好[vbg]吃），
+        // 纯文本视图用方括号插值模拟。
+        let word = match &c.chip {
+            Some(chip) => {
+                let head: String = c.word.chars().take(chip.chars_before).collect();
+                let tail: String = c.word.chars().skip(chip.chars_before).collect();
+                format!("{head}[{}]{}", chip.code, tail)
+            }
+            None => c.word.clone(),
+        };
         println!(
             "   {}. {:<6} {:<12} {}{}",
-            shown, c.word, c.code, c.kind_label, marker
+            shown, word, c.code, c.kind_label, marker
         );
     }
     if !m.folded.is_empty() {

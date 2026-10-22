@@ -504,11 +504,15 @@ impl Host {
         // 码提示的裁决全在 server：DLL 只画非空的 `code`（§6.3）。
         // 规则是「提示跟随这一段是怎么出来的」——拼音段给码、五笔段不给。
         //
-        // 两个例外（`show_codes`，M3.5 / D62）：**通配**（`vbz`）与**多段**（`hao'vb`）
-        // 必须显示码，而且显示的是 `Candidate.code` 而不是 `wubi`：
-        // 通配时 `code` 就是那条词自己的五笔全码（用户要的正是「这些字怎么打」），
-        // 多段时 `code` 是各段码用 `'` 连起来（它同时说明「这是几段拼的」）。
-        // 这两种模式下 `wubi` 是空串，沿用老路径会画出空 chip。
+        // 两个例外：
+        //
+        // - **通配**（`vbz`，`show_codes`，M3.5/D62）：必须显示码，而且显示的是
+        //   `Candidate.code` 而不是 `wubi`——通配时 `code` 就是那条词自己的五笔
+        //   全码（用户要的正是「这些字怎么打」）。这种模式下 `wubi` 是空串，
+        //   沿用老路径会画出空 chip。
+        // - **多段**（D64）：提示是**词中 chip**（`Candidate.chip`），挂在拼音段
+        //   字后面、内容是该字的五笔全码。chip 存在就显示，不问 `hint.mode`——
+        //   多段的拼音字本身就是「用户不会拆」的那半个词，这正是教学时刻。
         let show_codes = mixed.show_codes;
         let primary_is_pinyin = source == Source::Pinyin;
         let entries: Vec<Entry> = mixed
@@ -532,17 +536,20 @@ impl Host {
                             HintMode::FirstTime => self.store.usage(&c.word).n == 0,
                             HintMode::Off => false,
                         };
-                let code = if show_codes {
-                    c.code
-                } else if show {
-                    c.wubi
-                } else {
-                    String::new()
+                // 词中 chip（D64）压过一切常规路径：位置与内容都由 core 算好。
+                let (code, hint_at) = match c.chip {
+                    Some(chip) => (chip.code, chip.chars_before.min(u8::MAX as usize) as u8),
+                    // 通配（show_codes）的码在 `code` 里（它自己的五笔全码）；
+                    // 常规拼音段的码在 `wubi` 里（装载期反查的全码）。
+                    None if show_codes => (c.code, 0),
+                    None if show => (c.wubi, 0),
+                    None => (String::new(), 0),
                 };
                 Entry {
                     word: c.word,
                     label: c.kind_label.to_string(),
                     code,
+                    hint_at,
                 }
             })
             .collect();
@@ -612,7 +619,7 @@ mod tests {
             } => {
                 assert_eq!(proto, PROTO_VERSION);
                 assert_eq!(scheme_id, "mini");
-                assert_eq!(entry_count, 11);
+                assert_eq!(entry_count, 12);
                 assert_eq!(mode, Mode::Chinese);
                 assert_eq!(features, 0, "没装拼音词库时不该声称有拼音能力");
             }
@@ -1065,9 +1072,11 @@ mod tests {
         assert_eq!(ws.len(), n, "通配结果按字去重");
     }
 
-    /// 多段（`hao'vb`）：chip 里是各段码用 `'` 连起来，首屏全部算主段（没有折叠区）。
+    /// 多段（`hao'vb`）：只出词典真词（D64），chip 挂拼音段字后面——
+    /// `hint_at = 1` 说明 chip 画在第 1 个字符之后，内容是该字的五笔全码。
+    /// 首屏全部算主段（没有折叠区）。
     #[test]
-    fn multi_segment_chip_carries_both_codes() {
+    fn multi_segment_keeps_words_and_chips_mid_word() {
         let mut h = mixed_host();
         let (entries, source, primary_len) = match h.handle(Frame::Query {
             code: "hao'vb".into(),
@@ -1083,9 +1092,23 @@ mod tests {
         };
         assert_eq!(source, proto_source::PINYIN, "段 1 是拼音");
         assert_eq!(primary_len as usize, entries.len(), "多段没有折叠区");
-        assert_eq!(entries[0].word, "好好", "段 1 首条 × 段 2 首条");
-        assert_eq!(entries[0].code, "hao'vb", "chip 要说明这是几段拼的");
-        // 段 2 只有一条（`vb` = 好），所以条数等于段 1 的候选数
-        assert!(entries.iter().all(|e| e.code.ends_with("'vb")));
+        assert_eq!(entries.len(), 1, "夹具里只有「好好」是词典真词");
+        assert_eq!(entries[0].word, "好好");
+        assert_eq!(entries[0].hint_at, 1, "chip 挂在「好」后面");
+        // 夹具里「好」有两条全码（hao、vbg），取字典序最小
+        assert_eq!(entries[0].code, "hao");
+    }
+
+    /// 多段拼不出真词就不出窗（D64 严格模式）：「好你」不是词，`hao'ni'` 给空。
+    #[test]
+    fn multi_segment_without_real_words_is_empty() {
+        let mut h = mixed_host();
+        match h.handle(Frame::Query {
+            code: "hao'ni'".into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result { entries, .. }) => assert!(entries.is_empty()),
+            other => panic!("期望空 Result，得到 {other:?}"),
+        }
     }
 }

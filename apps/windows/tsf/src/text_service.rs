@@ -424,9 +424,12 @@ impl Core {
                     reply.primary_len,
                     reply.codes.iter().filter(|c| !c.is_empty()).count()
                 );
-                self.cands
-                    .borrow_mut()
-                    .update(reply.words, reply.codes, reply.primary_len);
+                self.cands.borrow_mut().update(
+                    reply.words,
+                    reply.codes,
+                    reply.hint_ats,
+                    reply.primary_len,
+                );
                 self.show_candidates(context, fallback_caret);
             }
             None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),

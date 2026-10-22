@@ -160,6 +160,9 @@ pub struct Reply {
     /// 给不给由 server 定：它知道这段候选是五笔还是拼音查出来的、`hint.mode` 是
     /// 什么。DLL 这层只负责「非空就画」，不重复实现一遍规则。
     pub codes: Vec<String>,
+    /// 与 `words` 等长的 chip 词中位置（D64）：chip 挂在第几个字符之后，
+    /// `0` = 词尾。多段组合的 chip 贴着拼音段的字。
+    pub hint_ats: Vec<u8>,
     /// 首屏候选来自拼音（`Frame::Result::source`）
     pub pinyin: bool,
     /// 前多少条属于首屏；`words` 的其余部分是折叠区
@@ -169,13 +172,15 @@ pub struct Reply {
 impl Reply {
     fn from_result(entries: Vec<Entry>, source: u8, primary_len: u16) -> Self {
         let words: Vec<String> = entries.iter().map(|e| e.word.clone()).collect();
-        let codes: Vec<String> = entries.into_iter().map(|e| e.code).collect();
+        let codes: Vec<String> = entries.iter().map(|e| e.code.clone()).collect();
+        let hint_ats: Vec<u8> = entries.into_iter().map(|e| e.hint_at).collect();
         // 协议里的 `primary_len` 是 server 算的，仍然夹一次：万一 server 版本对不上
         // 给了个越界值，DLL 这边最多画错分区，不能因此切片 panic。
         let primary_len = (primary_len as usize).min(words.len());
         Self {
             words,
             codes,
+            hint_ats,
             pinyin: source == proto_source::PINYIN,
             primary_len,
         }
@@ -892,6 +897,7 @@ mod tests {
         Reply {
             words: words.iter().map(|w| w.to_string()).collect(),
             codes: vec![String::new(); words.len()],
+            hint_ats: vec![0; words.len()],
             pinyin: false,
             primary_len: words.len(),
         }

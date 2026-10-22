@@ -70,7 +70,8 @@ Invoke-Step '键位图自测' { & cargo run --release -q -p heinrich-cand-previe
 
 # 通配与多段（M3.5）是纯逻辑，CLI 的 `look` 一次查询就能验，不需要真机：
 # `vbz` 要列出 `vb` 开头的字且**每条带自己的全码**（不带码等于看了一屏无关的字）；
-# `hao'vb` 要给出两段拼接的候选、码里带 `'`（它同时说明「这是几段拼的」）。
+# `hao'vb` 要只出词典真词、且 chip 嵌在词中（好[vbg]好，D64：挂词尾会被误读成
+# 整个词的五笔码）。
 Invoke-Step '通配 / 多段自测' {
     $w = & cargo run --release -q -p heinrich-cli -- look vbz --data $DataDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -84,8 +85,14 @@ Invoke-Step '通配 / 多段自测' {
     }
     $m = & cargo run --release -q -p heinrich-cli -- look "hao'vb" --data $DataDir --pinyin $PinyinDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    if (-not ($m -match "好好\s+hao'vb")) {
-        Write-Host "多段没给出「好好 + hao'vb」：`n$m" -ForegroundColor Red
+    if (-not ($m -match '好\[vbg\]好\s+hao''vb')) {
+        Write-Host "多段没给出「好[vbg]好 + hao'vb」：`n$m" -ForegroundColor Red
+        exit 1
+    }
+    $n = & cargo run --release -q -p heinrich-cli -- look "hao'ktn" --data $DataDir --pinyin $PinyinDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not ($n -match '好\[vbg\]吃')) {
+        Write-Host "多段没给出「好[vbg]吃」（真词过滤 + 词中 chip）：`n$n" -ForegroundColor Red
         exit 1
     }
 }

@@ -22,6 +22,17 @@ pub struct CandidateText {
     pub hint: Option<String>,
     /// chip 的宽度（物理像素）。`hint` 为 `None` 时忽略。
     pub hint_width: f32,
+    /// chip 的**词中位置**（D64）：挂在第 `hint_at` 个字符之后，`0` = 挂词尾。
+    ///
+    /// 多段组合（`hao'ktn` → 好吃）的 chip 必须贴着拼音段的字（`好[vbg]吃`），
+    /// 挂词尾会被误读成整个词的五笔码。大于 0 时量测层必须同时给
+    /// [`CandidateText::pre_width`] / [`CandidateText::post_width`]——
+    /// 前后两截要分开画，整串宽度换算不出它们各自的边界。
+    pub hint_at: usize,
+    /// `hint_at > 0` 时 chip 前那截文字的宽度（量测层量好）。
+    pub pre_width: f32,
+    /// `hint_at > 0` 时 chip 后那截文字的宽度（量测层量好）。
+    pub post_width: f32,
 }
 
 impl CandidateText {
@@ -31,10 +42,13 @@ impl CandidateText {
             width,
             hint: None,
             hint_width: 0.0,
+            hint_at: 0,
+            pre_width: 0.0,
+            post_width: 0.0,
         }
     }
 
-    /// 带码提示的候选。`hint_width` 由量测层用 chip 自己的字号量好。
+    /// 带码提示的候选，chip 挂词尾。`hint_width` 由量测层用 chip 自己的字号量好。
     pub fn with_hint(mut self, hint: impl Into<String>, hint_width: f32) -> Self {
         let hint = hint.into();
         if hint.is_empty() {
@@ -43,6 +57,39 @@ impl CandidateText {
         self.hint = Some(hint);
         self.hint_width = hint_width.max(0.0);
         self
+    }
+
+    /// 带码提示且 chip **嵌在词中**的候选（D64）。
+    ///
+    /// `at` 是 chip 前的字符数；`pre` / `post` 是前后两截文字各自的量测宽度。
+    /// 三个宽度（整串、前截、后截）都由量测层给，几何层不做任何字体假设。
+    pub fn with_hint_at(
+        mut self,
+        hint: impl Into<String>,
+        hint_width: f32,
+        at: usize,
+        pre: f32,
+        post: f32,
+    ) -> Self {
+        self = self.with_hint(hint, hint_width);
+        if at > 0 {
+            self.hint_at = at;
+            self.pre_width = pre.max(0.0);
+            self.post_width = post.max(0.0);
+        }
+        self
+    }
+
+    /// 这条候选是否要把词拆成前后两截画（chip 嵌词中）。
+    fn is_split(&self) -> bool {
+        self.hint.is_some() && self.hint_at > 0
+    }
+
+    /// 按 `hint_at` 把词拆成（前截, 后截）。只在 [`Self::is_split`] 时有意义。
+    fn split_parts(&self) -> (String, String) {
+        let pre = self.text.chars().take(self.hint_at).collect();
+        let post = self.text.chars().skip(self.hint_at).collect();
+        (pre, post)
     }
 }
 
@@ -212,12 +259,17 @@ pub struct ItemBox {
     pub index: usize,
     /// 序号标签，本页内从 `1` 起。
     pub label: String,
+    /// chip 前那截文字（D64 词中 chip 时只有前截；否则是整条词）。
     pub text: String,
+    /// chip 后那截文字（D64 词中 chip 才有；空串 = 没有后截）。
+    pub text2: String,
     /// 整项矩形（含高亮块内边距），鼠标命中就用它。
     pub rect: Rect,
     pub label_rect: Rect,
-    /// 文字矩形。被 `max_width` 压窄时这里也变窄，渲染端应在此矩形内截断。
+    /// [`Self::text`] 的矩形。被 `max_width` 压窄时这里也变窄，渲染端应在此矩形内截断。
     pub text_rect: Rect,
+    /// [`Self::text2`] 的矩形。`text2` 为空时无效。
+    pub text2_rect: Rect,
     /// 码提示 chip 的文字（§6.3）。`None` = 这条不提示。
     pub hint: Option<String>,
     /// chip 的矩形（**含**左右内边距，渲染端画底与写字都用它）。
@@ -310,6 +362,23 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     let n = input.page.len();
 
     let mut widths: Vec<f32> = input.page.iter().map(|c| c.width.max(0.0)).collect();
+    // 词中 chip（D64）的候选：参与排版与压窄的「文字宽」是前后两截之和。
+    let mut split_w: Vec<(f32, f32)> = input
+        .page
+        .iter()
+        .map(|c| {
+            if c.is_split() {
+                (c.pre_width.max(0.0), c.post_width.max(0.0))
+            } else {
+                (0.0, 0.0)
+            }
+        })
+        .collect();
+    for (w, (pre, post)) in widths.iter_mut().zip(split_w.iter_mut()) {
+        if *pre + *post > 0.0 {
+            *w = *pre + *post;
+        }
+    }
     // chip 的宽度**不参与压窄**：码是三四字母的短串，压窄它只会让提示变得不可读，
     // 而它本来就窄。超宽时该让的是词。
     let hint_w: Vec<f32> = input
@@ -341,11 +410,18 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
         if sum > 0.0 {
             // 地板留 0.75 个字宽：再窄下去就只剩标点了。
             let floor = m.font_size * 0.75;
-            for w in &mut widths {
+            for (i, w) in widths.iter_mut().enumerate() {
                 let share = overflow * (*w / sum);
                 let next = (*w - share).max(floor);
                 if next < *w {
                     clipped = true;
+                    // 词中 chip 的候选按同一比例缩前后两截，chip 位置才不漂移。
+                    let k = next / *w;
+                    let (pre, post) = &mut split_w[i];
+                    if *pre + *post > 0.0 {
+                        *pre *= k;
+                        *post *= k;
+                    }
                     *w = next;
                 }
             }
@@ -373,33 +449,70 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
         let item_w = m.item_width_with_hint(widths[i], hint_w[i]);
         let rect = Rect::new(x, y, item_w, m.line_height);
         let label_rect = Rect::new(x + m.item_padding_x, y, m.label_width, m.line_height);
-        let text_w = widths[i];
-        let text_rect = Rect::new(label_rect.right() + m.label_gap, y, text_w, m.line_height);
-        let (hint, hint_rect) = match &cand.hint {
-            Some(h) if hint_w[i] > 0.0 => (
-                Some(h.clone()),
-                Rect::new(
-                    text_rect.right() + m.hint_gap,
-                    y,
-                    hint_w[i] + m.hint_padding_x * 2.0,
-                    m.line_height,
+
+        // 每条候选一次算清：文字（可能前后两截）、chip、各自的矩形。
+        let (text, text_rect, text2, text2_rect, hint, hint_rect) = if cand.is_split() {
+            // 词中 chip（D64）：前截文字、chip、后截文字依次排开。
+            let (pre_str, post_str) = cand.split_parts();
+            let (pre_w, post_w) = split_w[i];
+            let pre_rect = Rect::new(label_rect.right() + m.label_gap, y, pre_w, m.line_height);
+            let hint_rect = Rect::new(
+                pre_rect.right() + m.hint_gap,
+                y,
+                hint_w[i] + m.hint_padding_x * 2.0,
+                m.line_height,
+            );
+            let post_rect = Rect::new(hint_rect.right() + m.hint_gap, y, post_w, m.line_height);
+            let hint = if hint_w[i] > 0.0 {
+                cand.hint.clone()
+            } else {
+                None
+            };
+            (pre_str, pre_rect, post_str, post_rect, hint, hint_rect)
+        } else {
+            let text_rect = Rect::new(
+                label_rect.right() + m.label_gap,
+                y,
+                widths[i],
+                m.line_height,
+            );
+            let (hint, hint_rect) = match &cand.hint {
+                Some(h) if hint_w[i] > 0.0 => (
+                    Some(h.clone()),
+                    Rect::new(
+                        text_rect.right() + m.hint_gap,
+                        y,
+                        hint_w[i] + m.hint_padding_x * 2.0,
+                        m.line_height,
+                    ),
                 ),
-            ),
-            _ => (None, Rect::new(text_rect.right(), y, 0.0, 0.0)),
+                _ => (None, Rect::new(text_rect.right(), y, 0.0, 0.0)),
+            };
+            (
+                cand.text.clone(),
+                text_rect,
+                String::new(),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                hint,
+                hint_rect,
+            )
         };
+
         let index = input.page_start + i;
         items.push(ItemBox {
             index,
             // 序号是本页内的 1..=5。一页超过 9 条时标签会变成两位数，
             // 调用方应把 page_size 限制在 9 以内（数字键也就 1–9）。
             label: (i + 1).to_string(),
-            text: cand.text.clone(),
+            text,
+            text2,
             rect,
             label_rect,
             text_rect,
+            text2_rect,
             hint,
             hint_rect,
-            elided: clipped && text_w < cand.width.max(0.0) - 0.01,
+            elided: clipped && widths[i] < cand.width.max(0.0) - 0.01,
             secondary: input.split.is_some_and(|s| index >= s),
         });
         x = rect.right() + m.item_gap;
@@ -834,5 +947,80 @@ mod tests {
         let out = layout(&input(&page));
         let it = &out.items[0];
         assert_eq!(out.hit(it.hint_rect.x + 1.0, it.hint_rect.y + 1.0), Some(0));
+    }
+
+    // ---- 词中 chip（D64） ----
+
+    /// chip 嵌在词中间：前截、chip、后截依次排开，互不重叠，
+    /// 整项宽度把三块都算进去。
+    #[test]
+    fn 词中_chip_把词拆成前后两截() {
+        let m = Metrics::new(16.0);
+        let page = [cand("好吃", 32.0).with_hint_at("vbg", 24.0, 1, 16.0, 16.0)];
+        let out = layout(&input(&page));
+
+        let it = &out.items[0];
+        assert_eq!(it.text, "好", "前截是 chip 前的字");
+        assert_eq!(it.text2, "吃", "后截是 chip 后的字");
+        assert!((it.text_rect.w - 16.0).abs() < 0.01);
+        assert!((it.hint_rect.w - (24.0 + m.hint_padding_x * 2.0)).abs() < 0.01);
+        assert!((it.text2_rect.w - 16.0).abs() < 0.01);
+        // 顺序与前距
+        assert!((it.hint_rect.x - (it.text_rect.right() + m.hint_gap)).abs() < 0.01);
+        assert!((it.text2_rect.x - (it.hint_rect.right() + m.hint_gap)).abs() < 0.01);
+        // 整项宽度 = 无 chip 基线 + 前后两截 + chip 一块（几何上 chip 前后各有一个
+        // hint_gap，但宽度公式与词尾 chip 同型：`item_width_with_hint` 只算一个 gap
+        // ——「后截贴着 chip 走」与「chip 贴着词尾走」占的横向空间是一样的）。
+        assert!(
+            (it.rect.w
+                - (m.item_width(0.0) + 16.0 + 16.0 + m.hint_gap + 24.0 + m.hint_padding_x * 2.0))
+                .abs()
+                < 0.01
+        );
+        // 命中测试落在后截上也算这条
+        assert_eq!(
+            out.hit(it.text2_rect.x + 1.0, it.text2_rect.y + 1.0),
+            Some(0)
+        );
+    }
+
+    /// `hint_at = 0` 即使给了前后宽度也按词尾 chip 画（不拆词）。
+    #[test]
+    fn hint_at_为_0_时不拆词() {
+        let page = [cand("好吃", 32.0).with_hint_at("vbg", 24.0, 0, 16.0, 16.0)];
+        let out = layout(&input(&page));
+        let it = &out.items[0];
+        assert_eq!(it.text, "好吃");
+        assert!(it.text2.is_empty());
+        assert!((it.text_rect.w - 32.0).abs() < 0.01, "整串一起画");
+    }
+
+    /// 压窄时词中 chip 的候选前后两截同比例缩，chip 不挪窝。
+    #[test]
+    fn 词中_chip_压窄时前后两截同比例缩() {
+        let m = Metrics::new(16.0);
+        let page = [
+            cand("一一一一", 100.0),
+            cand("好吃", 100.0).with_hint_at("vbg", 24.0, 1, 50.0, 50.0),
+        ];
+        let mut i = input(&page);
+        i.metrics.max_width = 200.0;
+        let out = layout(&i);
+        assert!(out.clipped);
+        let it = &out.items[1];
+        assert!(
+            it.text_rect.w < 50.0 && it.text2_rect.w < 50.0,
+            "两截都被压"
+        );
+        assert!(
+            (it.text_rect.w - it.text2_rect.w).abs() < 0.01,
+            "两截等比例：{} vs {}",
+            it.text_rect.w,
+            it.text2_rect.w
+        );
+        assert!(
+            (it.hint_rect.w - (24.0 + m.hint_padding_x * 2.0)).abs() < 0.01,
+            "chip 不压"
+        );
     }
 }

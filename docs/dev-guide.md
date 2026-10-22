@@ -951,21 +951,28 @@ DLL   : ipc::exchange() 读到 Roots 就缓存、继续读真正的应答
 `Scheme::match_indices`（前缀二分），排序仍按 §5，然后**按字去重**——`vb` 与 `vbg` 都是「好」，
 不去重首屏会被同一个字占满。拼音前缀结果放折叠区，免得「打 `niza` 停在 `niz`」时候选窗整片变五笔。
 
-**多段（§6.5）**：`split_segments` 按 `'` 切，`'` 标记它前面那段是拼音；末尾 `'` 标记最后一段。
-`MAX_SEGMENTS = 2`。每段取前 5 条做笛卡尔积，顺序是「段 1 主序、段 2 次序」。
-组合后的 `Candidate.code` 是各段码用 `'` 连接，`word` 直接拼接。
+**多段（§6.5 / D64）**：`split_segments` 按 `'` 切，`'` 标记它前面那段是拼音；末尾 `'` 标记最后一段。
+`MAX_SEGMENTS = 2`。每段取前 16 条（`SEGMENT_LIMIT`）做笛卡尔积，顺序是「段 1 主序、段 2 次序」；
+组合结果**必须命中词典真词**（`Scheme::has_word` ∪ `PinyinLexicon::has_word`，各自 `OnceLock<HashSet>`
+惰性建集）才保留——拼不出任何真词时整体不出窗（`Mixed::none`），不做字符拼接的假词组。
+chip 恒挂段 1（`'` 语法决定了段 1 必是拼音段）：`Candidate.chip = ChipHint { code: 段 1 字的五笔全码,
+chars_before: 1 }`，经协议 v6 的 `Entry.hint_at`（chip 前字符数，0 = 词尾）下发，候选窗把词拆成
+`好[vbg]吃` 的前后两截夹 chip 排版。多段时 `Candidate.wubi` 留空。
 
 **码提示的例外**：`Mixed.show_codes` 为真时，host 取 `Candidate.code` 而不是 `wubi`。
 新增这个开关而不是复用 `wubi`：通配时 `code` 是那条词自己的五笔全码，多段时 `code` 是分段码——
 两者都**不是**「拼音串反查出来的五笔码」，硬塞进 `wubi` 会让字段名彻底失去意义。
+（D64 后多段不再走 `code` 下发 chip，改走 `Candidate.chip` + `hint_at`；`show_codes` 只覆盖通配。）
+**chip 的裁决规则**：`chip` 存在就显示（不问 `hint.mode`）——多段拼音字是「教学时刻」，
+用户故意混打，就该告诉他码。
 
 **调参与验法**
 
 | 位置 | 值 | 改了会怎样 |
 |---|---|---|
 | `wildcard_stem` 前缀上限 | 3 | 放到 4 等于问「第 5 码」，五笔没有第 5 码 |
-| `MAX_SEGMENTS` | 2 | 3 段按 5³ 涨到 125 条组合，翻不过来 |
-| `SEGMENT_LIMIT` | 5 | 段 1 第 1 条 × 段 2 的 5 条正好铺满首屏 |
+| `MAX_SEGMENTS` | 2 | 3 段按 16³ 涨到 4096 条组合，翻不过来 |
+| `SEGMENT_LIMIT` | 16 | 真词过滤会滤掉大部分组合，池子必须比一页大，否则首屏漏词 |
 | `MAX_EXTENDED_CODE_LEN` | 9 | 两段各 4 码 + `'`；只在含 `'` 或末位 `z` 时启用 |
 
 验法（都不用真机）：
@@ -975,8 +982,9 @@ cargo run -q -p heinrich-cli -- look vbz --data data/wubi86
 cargo run -q -p heinrich-cli -- look "hao'vb" --data data/wubi86 --pinyin data/pinyin
 ```
 
-真机（先重启宿主）：打 `vbz` 应看到「好 vbg / 好友 vbdc / 她 vbn …」且每条都有码；
-打 `hao'vb` 应看到「好好 / 号好 / 浩好…」且 chip 是 `hao'vb`；空格上屏应得到两个字。
+真机（先重启宿主——协议 v6，旧 DLL 会被 `Bye` 拒）：打 `vbz` 应看到「好 vbg / 好友 vbdc / 她 vbn …」
+且每条都有码；打 `hao'ktn` 应**只出「好吃」**且 chip 在「好」后面（`好[vbg]吃`）；`hao'vb` 出「好好」；
+`hao'ni'` 这类拼不出真词的组合**不出候选窗**。空格上屏应得到完整的词。
 
 ## 5. 数据管线
 
@@ -1130,6 +1138,16 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     `Bye` 延迟 100 ms 再断管道，让客户端能读走拒绝原因。判据永远看**失败发生在哪一步**，
     不看错误码长相——同一个 `ERROR_NO_DATA` 既可能是「拒绝后断管」也可能是「真没 server」。
 
+38. **沙箱 / 无头会话里 PrintWindow 和屏幕 BitBlt 抓不到分层窗口的内容**——截出来是纯黑。
+    候选窗是 `UpdateLayeredWindow` 的分层窗口，DWM 合成阶段在无头会话里根本没跑，
+    所以「抓屏幕」这条路全黑。绕法（D64）：不走屏幕，让程序**自己把要上屏的那张渲染 DIB
+    落盘**（cand-preview `--save-bmp`）——渲染目标是一个 memory DC，`GetCurrentObject(hdc, OBJ_TYPE(7))`
+    取当前选入的位图，再 `GetDIBits` 落成 24 位 BMP。
+
+39. **`GetDIBits` 不能传裸的 `HBITMAP::default()`**——传空句柄它返回 0（失败）。
+    必须先 `GetCurrentObject` 取到**当前选入该 DC 的**位图再喂给它。
+    另外 `windows` crate 的 `OBJ_TYPE` 枚举没有 `OBJ_BITMAP` 关联常量，用 `OBJ_TYPE(7)`（7 = OBJ_BITMAP）。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
 ```
@@ -1170,7 +1188,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 24 码上限（`z` 的归属在 v1.31 由 D62 改为「一律进缓冲」，不再看能力位）；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
 | M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
-| M3.5 `z` 通配 + 段级多段 | 🟡 **代码与自测完成，待真机验收**（D62 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments` + `Mixed.show_codes`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配自测） |
+| M3.5 `z` 通配 + 段级多段 | 🟡 **代码与自测完成，待真机验收**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments` + `Mixed.show_codes`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

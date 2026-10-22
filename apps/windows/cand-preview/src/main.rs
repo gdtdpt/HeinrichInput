@@ -38,6 +38,10 @@ const POOL: [&str; 9] = ["好", "㛅", "崽", "孬", "妳", "耗", "孑", "籽",
 /// 「四码词组把整项撑多宽」这件事。
 const HINTS: [&str; 5] = ["vbg", "kgn", "vbyg", "itfh", "rn"];
 
+/// 词中 chip（D64）的假候选。`--hint-at N`（配 `--hint`）时替换 `POOL`：
+/// 单字拆不出「前截 + chip + 后截」，得多字候选才验得到。
+const MULTI_POOL: [&str; 5] = ["好吃", "好看", "好话", "好似", "好样"];
+
 fn main() -> std::process::ExitCode {
     let args = Args::parse(std::env::args().skip(1));
     match run(&args) {
@@ -65,7 +69,11 @@ fn run(args: &Args) -> windows::core::Result<bool> {
 
     let mut window = CandidateWindow::new(Theme::default())?;
 
-    let texts: Vec<String> = POOL
+    // 词中 chip（D64）：`--hint-at N`（配 `--hint`）切换到多字候选池，
+    // 把 chip 嵌进词里画——这才是多段组合的真实形状。
+    let use_mid_word = args.hint && args.hint_at > 0;
+    let source_pool: &[&str] = if use_mid_word { &MULTI_POOL } else { &POOL };
+    let texts: Vec<String> = source_pool
         .iter()
         .cycle()
         .take(args.count.max(1))
@@ -74,11 +82,13 @@ fn run(args: &Args) -> windows::core::Result<bool> {
 
     // 码提示：`--hint` 只给 split **之后**的条目加码——那正是「折叠区 = 拼音段」
     // 的真实形状（主段五笔不带码、补段拼音带码）。没给 split 时全部带码，
-    // 相当于「整屏都是拼音查出来的」。
+    // 相当于「整屏都是拼音查出来的」。`--hint-at` 模式下全部带码且不设折叠分界
+    // （多段候选没有折叠区）。
+    let hint_start = if use_mid_word { 0 } else { args.split };
     let hints: Vec<String> = if args.hint {
         (0..texts.len())
             .map(|i| {
-                if i < args.split {
+                if i < hint_start {
                     String::new()
                 } else {
                     HINTS[i % HINTS.len()].to_string()
@@ -88,15 +98,23 @@ fn run(args: &Args) -> windows::core::Result<bool> {
     } else {
         vec![String::new(); texts.len()]
     };
+    // 词中位置（D64）：`--hint-at N` 时带 chip 的条目都挂在第 N 个字符后。
+    let hint_ats: Vec<u8> = if use_mid_word {
+        vec![args.hint_at as u8; texts.len()]
+    } else {
+        vec![0; texts.len()]
+    };
 
     let candidates = Candidates {
         texts: &texts,
         hints: &hints,
+        hint_ats: &hint_ats,
         page: args.page,
         page_size: args.page_size,
         highlight: 0,
         // 预览器可以故意造出「两段」的样子来验折叠区的颜色：`--split N`。
-        split: args.split,
+        // 词中 chip 模式不造两段（多段候选没有折叠区）。
+        split: if use_mid_word { usize::MAX } else { args.split },
         anchor: args.at,
     };
     let prepared = match args.scale {
@@ -118,6 +136,19 @@ fn run(args: &Args) -> windows::core::Result<bool> {
         &prepared,
         (placement.rect.x as i32, placement.rect.y as i32),
     )?;
+
+    // 渲染位图直接落盘（`--save-bmp`）：沙箱 / 无头会话里抓屏是黑的，
+    // 而 `renderer` 的那块 DIB 就是 `UpdateLayeredWindow` 要上屏的内容，
+    // 拿它做视觉验收与「真弹窗」等价且可复现。
+    if let Some(path) = &args.save_bmp {
+        let w = prepared.layout.size.w.ceil().max(1.0) as i32;
+        let h = prepared.layout.size.h.ceil().max(1.0) as i32;
+        let hdc = window
+            .hdc()
+            .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
+        save_bmp(hdc, w, h, path)?;
+        println!("渲染位图已存 {path}（{w}×{h}）");
+    }
 
     println!(
         "窗口 {}×{} @ ({}, {})　DPI 缩放 {:.2}　候选 {} 条 / 第 {} 页　箭头 左={} 右={}{}",
@@ -560,6 +591,12 @@ struct Args {
     split: usize,
     /// 给 `split` 之后的候选加假码提示（§6.3），用来目验 chip 的排版。
     hint: bool,
+    /// chip 的词中位置（D64）：`--hint-at N`（配 `--hint`）把 chip 嵌在第 N 个
+    /// 字符之后，并切换到多字候选池——目验 `好[vbg]吃` 的排版。
+    hint_at: usize,
+    /// 渲染位图落盘路径（`.bmp`）。沙箱 / 无头会话抓不到屏幕，直接拿
+    /// `UpdateLayeredWindow` 要上屏的那块 DIB 做视觉验收。
+    save_bmp: Option<String>,
     /// 弹**键位图**而不是候选窗（§6.7）。
     keycaps: bool,
     /// 键位图要展开的码，如 `vbg`、`vbgu`。
@@ -582,6 +619,8 @@ impl Args {
             hold: None,
             split: usize::MAX,
             hint: false,
+            hint_at: 0,
+            save_bmp: None,
             keycaps: false,
             keys: "vbg".to_string(),
             data: "data/wubi86".to_string(),
@@ -613,6 +652,8 @@ impl Args {
                 }
                 "--selftest" => out.selftest = true,
                 "--hint" => out.hint = true,
+                "--hint-at" => out.hint_at = value("--hint-at").parse().unwrap_or(0),
+                "--save-bmp" => out.save_bmp = Some(value("--save-bmp")),
                 "--keycaps" => {
                     out.keycaps = true;
                     // `--keycaps vbg`：紧跟的值若是纯小写字母串就当码，否则用默认 vbg
@@ -629,7 +670,7 @@ impl Args {
                         "用法：heinrich-cand-preview [--count N] [--page P] [--page-size S]\n\
                          \x20                      [--dpi SCALE] [--at X,Y] [--hold MS]
 \
-                         \x20                      [--split N] [--hint] [--selftest]\n\
+                         \x20                      [--split N] [--hint] [--hint-at N] [--selftest]\n\
                          \x20                      [--keycaps [码]] [--data 目录]"
                     );
                     std::process::exit(0);
@@ -642,4 +683,82 @@ impl Args {
         }
         out
     }
+}
+
+/// 把一块 DIB 落成 24 位 BMP（无压缩、零依赖）。
+///
+/// `hdc` 是渲染器那块 32 位预乘 alpha 位图的设备上下文；这里只取它的 RGB，
+/// alpha 通道在 BMP 里本来就放不下——验收看的是排版，不是透明度。
+fn save_bmp(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    w: i32,
+    h: i32,
+    path: &str,
+) -> windows::core::Result<()> {
+    use windows::Win32::Graphics::Gdi::{
+        GetDIBits, BITMAPFILEHEADER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+
+    #[repr(C)]
+    struct BmpInfo {
+        header: BITMAPINFOHEADER,
+    }
+    let mut bi = BmpInfo {
+        header: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // 自上而下
+            biPlanes: 1,
+            biBitCount: 24,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+    };
+    let row = (w as usize * 3).div_ceil(4) * 4;
+    let mut pixels = vec![0u8; row * h as usize];
+    let got = unsafe {
+        // 位图取当前选进 DC 的那个（渲染器建好就选着），不用传 HBITMAP。
+        // `GetCurrentObject(hdc, OBJ_BITMAP)` 拿到的就是渲染器那块 DIB。
+        let bmp = windows::Win32::Graphics::Gdi::GetCurrentObject(
+            hdc,
+            windows::Win32::Graphics::Gdi::OBJ_TYPE(7), // OBJ_BITMAP
+        );
+        GetDIBits(
+            hdc,
+            windows::Win32::Graphics::Gdi::HBITMAP(bmp.0),
+            0,
+            h as u32,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut bi.header as *mut BITMAPINFOHEADER as *mut BITMAPINFO,
+            DIB_RGB_COLORS,
+        )
+    };
+    if got == 0 {
+        return Err(windows::core::Error::from(
+            windows::Win32::Foundation::E_FAIL,
+        ));
+    }
+
+    let file_header = BITMAPFILEHEADER {
+        bfType: 0x4D42, // 'BM'
+        bfSize: (14 + std::mem::size_of::<BITMAPINFOHEADER>() + pixels.len()) as u32,
+        bfReserved1: 0,
+        bfReserved2: 0,
+        bfOffBits: 14 + std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+    };
+    let mut out = Vec::with_capacity(14 + 40 + pixels.len());
+    out.extend_from_slice(&file_header.bfType.to_le_bytes());
+    out.extend_from_slice(&file_header.bfSize.to_le_bytes());
+    out.extend_from_slice(&file_header.bfReserved1.to_le_bytes());
+    out.extend_from_slice(&file_header.bfReserved2.to_le_bytes());
+    out.extend_from_slice(&file_header.bfOffBits.to_le_bytes());
+    out.extend_from_slice(unsafe {
+        std::slice::from_raw_parts(
+            &bi.header as *const BITMAPINFOHEADER as *const u8,
+            std::mem::size_of::<BITMAPINFOHEADER>(),
+        )
+    });
+    out.extend_from_slice(&pixels);
+    std::fs::write(path, out)?;
+    Ok(())
 }

@@ -12,9 +12,12 @@
 //! let texts: Vec<String> = vec!["好".into(), "㛅".into()];
 //! // 与 texts 等长：空串表示这一条不画码提示（§6.3）
 //! let hints: Vec<String> = vec!["vbg".into(), String::new()];
+//! // 与 texts 等长：chip 挂在第几个字符之后，0 = 词尾（D64）
+//! let hint_ats: Vec<u8> = vec![0, 0];
 //! let prepared = win.prepare(&Candidates {
 //!     texts: &texts,
 //!     hints: &hints,
+//!     hint_ats: &hint_ats,
 //!     page: 0,
 //!     page_size: 5,
 //!     highlight: 0,
@@ -68,7 +71,7 @@ use heinrich_ui::{
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetDC, MonitorFromPoint, ReleaseDC, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION,
+    GetDC, MonitorFromPoint, ReleaseDC, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HDC,
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -92,6 +95,10 @@ pub struct Candidates<'a> {
     /// 长度不一致时按 `texts` 对齐，缺的部分当作不提示——协议与 UI 各自守住自己的
     /// 边界，比「假设调用方一定传对」安全。
     pub hints: &'a [String],
+    /// 与 `texts` 等长的 chip 词中位置（D64）：`hints[i]` 画在第 `hint_ats[i]`
+    /// 个字符之后，`0` = 词尾。多段组合的 chip 贴着拼音段的字，例如
+    /// `好[vbg]吃`。缺省按词尾处理。
+    pub hint_ats: &'a [u8],
     pub page: usize,
     pub page_size: usize,
     /// 本页内的键盘选中项（0 起）。
@@ -190,6 +197,12 @@ impl CandidateWindow {
         self.hwnd
     }
 
+    /// 当前渲染位图的设备上下文。给预览器落盘验收用：那块 DIB 就是
+    /// `UpdateLayeredWindow` 要上屏的内容。没画过时为 `None`。
+    pub fn hdc(&self) -> Option<HDC> {
+        self.state.renderer.hdc()
+    }
+
     pub fn theme(&self) -> Theme {
         self.state.theme
     }
@@ -232,7 +245,26 @@ impl CandidateWindow {
                     .renderer
                     .text_mut()
                     .measure_hint(hint, metrics.font_size)?;
-                item = item.with_hint(hint.clone(), hw);
+                // 词中 chip（D64）：前后两截分开画，宽度必须各量各的——
+                // 拿整串宽度减 chip 宽度去凑，字距误差会在 chip 两侧漏缝。
+                let at = c.hint_ats.get(i).copied().unwrap_or(0) as usize;
+                if at > 0 {
+                    let pre: String = text.chars().take(at).collect();
+                    let post: String = text.chars().skip(at).collect();
+                    let pw = self
+                        .state
+                        .renderer
+                        .text_mut()
+                        .measure(&pre, metrics.font_size)?;
+                    let qw = self
+                        .state
+                        .renderer
+                        .text_mut()
+                        .measure(&post, metrics.font_size)?;
+                    item = item.with_hint_at(hint.clone(), hw, at, pw, qw);
+                } else {
+                    item = item.with_hint(hint.clone(), hw);
+                }
             }
             measured.push(item);
         }
