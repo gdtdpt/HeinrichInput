@@ -17,6 +17,7 @@ powershell -ExecutionPolicy Bypass -File tools\fetch-data.ps1   # 拉原始数�
 powershell -ExecutionPolicy Bypass -File tools\gen.ps1          # 装配 → data/wubi86/ + out/m0a-report.md
 powershell -ExecutionPolicy Bypass -File tools\check.ps1        # fmt + clippy + test + 数据校验
 powershell -ExecutionPolicy Bypass -File tools\build.ps1        # release → dist/
+powershell -ExecutionPolicy Bypass -File tools\accept-m2.4.ps1  # 学习库验收（只读，见 §4.9）
 ```
 
 单跑某一项：
@@ -514,18 +515,41 @@ Chrome 都是 DPI 感知的，v1 不为老宿主做补偿。
 点选。三条路径**不报**：无命中、server 不可用（这两种吐的是编码字母）、
 Shift 切模式吐字母。它们不是选择，报了只会把 `n` 灌成噪声。
 
-**怎么验**：
+**怎么验**：`tools\accept-m2.4.ps1`（只读打开库，不写用户的库）。
 
 ```powershell
-# 1) 打几个字，然后直接看库（python 自带 sqlite3，不用装东西）
-python -c "import sqlite3,os;c=sqlite3.connect(os.path.join(os.environ['LOCALAPPDATA'],'Heinrich','learn.db'));print(c.execute('select key,n,last_used_at,tier from usage order by n desc').fetchall())"
+# ① 打字之前记基线
+powershell -ExecutionPolicy Bypass -File tools\accept-m2.4.ps1 -Snapshot
 
-# 2) 强杀 server，再打一次，等 6 秒后重查：n 应该 +1（记录在队列里，重连后补发）
-taskkill /im heinrich-server.exe /f
+# ② 打成几个词（记事本即可），数清每个词按了几次
 
-# 3) 想看「学习有没有真的改顺序」：把某个次候选连打 20 次，再打同一个码
-#    注意首位仍不会被抢走——§5.2 的 K=1.5 就是干这个的
+# ③ 对比 + 断言：哪些词的 n 涨了、涨了多少、结构有没有坏
+powershell -ExecutionPolicy Bypass -File tools\accept-m2.4.ps1 -Check -Word 好 -Expect 3
 ```
+
+它比的是**差值**而不是绝对值——「库里有 171 个词」只能说明以前用过，只有
+「这一轮哪个词的 n 涨了」才能证明 DLL 真的把记录发过来了。不给参数时只打印现状
+与前 15 名。结构断言查这些：`schema == 1`、三张表齐全、`usage` 非空、没有
+`n < 1`、没有未来时间戳（时钟与 `MAX(旧,新)`）、`tier ∈ {0,1,2}`、没有空词条。
+
+两个自己写脚本时容易踩的点（本脚本都踩过）：
+
+1. **参数别叫 `-N`。** PowerShell 变量名不区分大小写，脚本里一个 `$n` 循环变量
+   就会把 `$N` 覆盖掉——第一次自测时「期望 1」变成了「期望 4」，因为表格里最后一
+   行的 n 正好是 4。现在参数叫 `-Expect`。
+2. **`DateTimeOffset` 没有 `LocalTime` 属性**，只有 `LocalDateTime` / 方法
+   `ToLocalTime()`。写成 `.LocalTime.ToString(...)` 会先得到 null、再对 null 调
+   `ToString`，报「不能对 Null 值表达式调用方法」——而且报在调用脚本的那一行，
+   看不出是脚本内部哪句。
+
+**手工才能验的三件**（脚本验不了）：
+
+1. **词序真的变了**：连打某个次候选 5 次，再打同一个码，看它有没有上移。
+   首位仍不会被抢走——§5.2 的 `K = 1.5` 就是干这个的。
+2. **三条不报路径**：死码（如 `abc`）、Shift 吐字母、server 不可用时吐字母，
+   这三种都不该让任何词的 `n` 上涨（它们不是「用户选了一个词」）。
+3. **跨重启**：`tsf.ps1 server stop` → 再打同一个码 → 顺序应保持上次学到的样子。
+4. **连打三天**：这一条没有任何脚本能替代，只能真用。
 
 **升级注意**：`PROTO_VERSION` 变了以后，旧 server 还在跑会让新 DLL 握手直接吃
 `Bye`，而 DLL 不停重连又把空闲计数刷新掉 ⇒ 旧 server 永不退出，表现为「一个候选
