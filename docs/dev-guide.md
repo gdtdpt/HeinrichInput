@@ -795,7 +795,7 @@ DLL，它会拿 `proto 3` 去连 `proto 4` 的 server，握手吃 `Bye` → 降�
 Get-Process | ForEach-Object { try { if ($_.Modules.ModuleName -contains 'heinrich_win.dll') { "$($_.ProcessName)($($_.Id))" } } catch {} }
 ```
 
-### 4.13 学习排序与「连打不跳位」（D57 / D58）
+### 4.13 学习排序与「连打不跳位」（D57 / D58 / D59）
 
 两件容易混为一谈的事，改动时别搞反：
 
@@ -817,6 +817,15 @@ Get-Process | ForEach-Object { try { if ($_.Modules.ModuleName -contains 'heinri
 `ranking.half_life_days`（默认 45）。`ranking.promote_k` / `ranking.promote_margin`
 都会各收到一条废弃警告并被忽略。
 
+**近同分抖动区（D59）**：排序是纯比较、不记「谁在位」，所以两个词的分差一旦掉到单次增量
+以下，每次上屏都会跨线。扳回代价 ≈ `|Δ| ÷ 单次增量`（n = 28 时单次增量只有 0.0123）。
+这是纯分数比较的固有性质，**只能推远、不能封顶**：`云` 35 次时「去」按 1 次扳不动、按 2 次
+扳回；云 40 次要 6 次、45 次要 10 次、50 次要 14 次。
+
+> 看到「按两次就翻」时先算这条式子，别当 bug 去加门槛 —— 要「绝不换位」只有在位者滞回
+> （记住上次顺序给在位者留余量），也就是被否掉的 D56。验收标准定为「原首位再上屏
+> **一次**不夺回」。完整实测曲线见 PROJECT.md §5.2。
+
 **展示层**：`record()` 只把该码标脏；`cache_get()` 在「这条脏了 **且** 上次**提交**的
 不是它」时才真正丢掉。所以连打同一个码，第 N 条永远是同一个词；**提交过别的码**
 回来才看到新序。
@@ -832,8 +841,11 @@ Get-Process | ForEach-Object { try { if ($_.Modules.ModuleName -contains 'heinri
 
 1. 打一个有多条的码（如 `fcu`），从第 2 条开始连按数字 —— 中途**不应**出现「按 2 出来的是别的词」
 2. 连打六七次，然后打另一个词并上屏，再回来 —— 它应该已经升到第 1
-3. 此时再打一次原首位 —— 它不该把第 1 抢回去（它只有 n=1，不计分）
-4. 顺序与次数同向：库里 `云` 26 次、`去` 9 次时，`fcu` 的第一条必须是 `云`
+3. 此时再打一次原首位 —— 只要领先量仍大于单次增量，它就不该抢回第 1（云 27 次、差 0.0247 >
+   0.0122 ⇒ 不翻；差掉到 0.0065 时按一次就翻，那属于抖动区，见上）
+4. 顺序与次数同向：同权重下 26 次的「云」必须排在 9 次的「去」之前。**跨权重时先验优先**——
+   真实库里「去」的码表权重比「云」高 0.0638（折合 n≈30 处 5–6 次按键），所以云要到 35 次
+   左右才稳定压过 28 次的「去」
 
 ## 5. 数据管线
 
@@ -986,7 +998,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M2.1 候选窗几何 | ✅ 已验收（`crates/heinrich-ui`：单行布局 + 两端翻页箭头 + 分页 + 超宽压窄 + 命中 `hit()` / `hit_arrow()` + 定位夹工作区，27 单测；`examples/geometry.rs` 出几何 SVG） |
 | M2.2 候选窗窗口 | ✅ 已验收（`apps/windows/ui`：分层窗口 + `MA_NOACTIVATE` + D2D DC 渲染目标 + DWrite 量字；`apps/windows/cand-preview` 带 `--selftest`；`tools/shot-window.py` 自截图。见 §4.7） |
 | M2.3 接进 TSF | ✅ 自测通过（记事本 / Notepad++ / Chrome）（逐键查询 D37 + `GetTextExt` 三级兜底 + 数字键/点选 + 失焦隐藏 + 方向键翻页 D38；`cand.rs` / `caret.rs`，状态搬进 `Rc<Core>`，见 §4.8） |
-| M2.4 学习落库 | 🟡 代码完成，真实库与日志已核（177 词 / 累计 400+ 次）；按实测两次修正学习算法（D54 绝对分差 → **D58 废除门槛、第一次上屏不计分**）与连打缓存判据（D55 → **D57 提交别的码才失效**），**待真机复验**（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9 / §4.13） |
+| M2.4 学习落库 | ✅ 已真机验收（2026-10-22 三轮日志：连打不跳位 / 换码后升位 / 原首位上屏一次不夺回；交叉点 n=23 与解析解一致）。真实库与日志已核（177 词 / 累计 400+ 次）；按实测三次修正：D54 绝对分差 → **D58 废除门槛、第一次上屏不计分** → **D59 抖动区写成规格**；连打缓存判据 D55 → **D57 提交别的码才失效**（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9 / §4.13） |
 | M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
 | M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
