@@ -394,15 +394,16 @@ impl Core {
                 // `primary_len` 交给窗口当分界，折叠区那一截淡一档——用户得能
                 // 一眼看出「这条是五笔打出来的」还是「这条是拼音猜的」。
                 tsf_debug!(
-                    "#{} {code} → {} 条，主段{} {} 条",
+                    "#{} {code} → {} 条，主段{} {} 条，{} 条带码提示",
                     self.seq,
                     reply.words.len(),
                     if reply.pinyin { "拼音" } else { "五笔" },
-                    reply.primary_len
+                    reply.primary_len,
+                    reply.codes.iter().filter(|c| !c.is_empty()).count()
                 );
                 self.cands
                     .borrow_mut()
-                    .update(reply.words, reply.primary_len);
+                    .update(reply.words, reply.codes, reply.primary_len);
                 self.show_candidates(context, fallback_caret);
             }
             None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),

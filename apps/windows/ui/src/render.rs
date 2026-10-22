@@ -52,6 +52,11 @@ pub struct Theme {
     /// 序号标签用的，两者用同一个值会让「第 3 条是拼音」这件事完全看不出来。
     pub secondary: [f32; 4],
     pub highlight: [f32; 4],
+    /// 码提示 chip 的底色（§6.3）。alpha 为 0 时只画字、不画底。
+    ///
+    /// 有底色是必要的：没有它，「好vbg」会读成一个词，而它其实是「候选 + 提示」
+    /// 两件事。底色也是它区别于候选文字的唯一边界。
+    pub chip_bg: [f32; 4],
     pub border_width: f32,
 }
 
@@ -65,6 +70,8 @@ impl Default for Theme {
             muted: rgba(0x8A, 0x8A, 0x8A, 0xFF),
             secondary: rgba(0x77, 0x77, 0x77, 0xFF),
             highlight: rgba(0xDB, 0xEA, 0xFE, 0xFF),
+            // 比窗口底色略深一点点：够看出是一块「标签」，又不抢候选字的注意力。
+            chip_bg: rgba(0xEE, 0xF1, 0xF4, 0xFF),
             border_width: 1.0,
         }
     }
@@ -133,6 +140,7 @@ impl Renderer {
             let muted = brush(target, theme.muted)?;
             let secondary = brush(target, theme.secondary)?;
             let highlight = brush(target, theme.highlight)?;
+            let chip_bg = brush(target, theme.chip_bg)?;
 
             // 背景 + 描边。矩形内缩半个描边宽度，1px 的线才正好压在边界上、
             // 不会被位图边缘裁掉一半（否则看起来像缺了一条边）。
@@ -173,6 +181,33 @@ impl Renderer {
                     label_ink,
                 )?;
                 text_in(target, &item.text, &formats.text, item.text_rect, text_ink)?;
+                if let Some(hint) = &item.hint {
+                    // chip 比行矮一点、上下居中：贴满整行会显得像一列格子。
+                    let h = (m.font_size * 1.18).min(item.hint_rect.h);
+                    let chip = Rect::new(
+                        item.hint_rect.x,
+                        item.hint_rect.y + (item.hint_rect.h - h) * 0.5,
+                        item.hint_rect.w,
+                        h,
+                    );
+                    if theme.chip_bg[3] > 0.0 {
+                        let r = D2D1_ROUNDED_RECT {
+                            rect: to_d2d(chip),
+                            radiusX: h * 0.32,
+                            radiusY: h * 0.32,
+                        };
+                        target.FillRoundedRectangle(&r, &chip_bg);
+                    }
+                    // 文字区 = chip 去掉左右内边距。用同一份 `hint_padding_x`，
+                    // 几何层与绘制层才可能对得上（两边各写一个数一定会漂）。
+                    let inner = Rect::new(
+                        chip.x + m.hint_padding_x,
+                        chip.y,
+                        (chip.w - m.hint_padding_x * 2.0).max(0.0),
+                        chip.h,
+                    );
+                    text_in(target, hint, &formats.hint, inner, &secondary)?;
+                }
             }
             for arrow in [layout.prev.as_ref(), layout.next.as_ref()]
                 .into_iter()

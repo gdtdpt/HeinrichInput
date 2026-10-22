@@ -57,7 +57,9 @@ Invoke-Step 'server 自测' { & cargo run --release -q -p heinrich-server -- --s
 # 候选窗是唯一没法单测的部分（HWND/D2D/DWrite 全靠肉眼），但它的**行为**可以自测：
 # 会不会抢前台、点候选命中的是不是同一个、点箭头会不会误选词、窗口尺寸与布局是否一致。
 # 需要交互桌面（要真建一个窗口），所以这一条只在有桌面会话的机器上有意义。
-Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-preview -- --selftest }
+# 带 `--hint --split 2`：跑的是「两段 + 码提示 chip」那条最复杂的排版路径，
+# 顺带断言 chip 不越出自己的项、也不压到邻居。
+Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-preview -- --selftest --hint --split 2 }
 
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

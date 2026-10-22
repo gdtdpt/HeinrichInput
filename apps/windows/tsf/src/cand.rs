@@ -38,13 +38,21 @@ pub struct Cands {
     seq: u32,
     /// 全部候选（不只是本页）。
     words: Vec<String>,
+    /// 与 `words` 等长的码提示（§6.3）。空串 = 这条不画 chip。
+    codes: Vec<String>,
     /// 折叠区第一条的全局序号（D48）。`== words.len()` 表示只有一段。
     split: usize,
     /// 页码、本页区间、两端箭头。
     pager: Pager,
-    /// 本页内的高亮项。M2.3 里数字键是**直接提交**、鼠标点也是直接提交，
-    /// 不存在「先移动高亮再空格」的交互，所以它恒为 0；留着是为了 M3 的
-    /// `←/→` 移高亮与 emoji 标签。
+    /// 本页内的**默认提交项**，恒为 0。
+    ///
+    /// 它**不是**一个可以移动的光标，请不要去找「移动高亮」的键——没有。
+    /// 五笔输入法的传统交互是「第 1 项恒高亮 + 数字键直选 + `-`/`=` 翻页」，
+    /// 高亮在这里的职责只有一个：告诉用户**此刻按空格会出哪个字**。
+    /// 方向键已经被 D38 定成翻页（`←`/`→`），单行布局下也没有第二个方向可用。
+    ///
+    /// 因此原本计划的 `Ctrl+Shift+/`（取「当前高亮项」）与 `Ctrl+Shift+1`
+    /// 完全等价，v1.23 撤掉了这个入口（D50 修订）。
     highlight: usize,
     /// 上次显示用的光标矩形。翻页/重画要用同一处，不能每次重问 TSF
     /// （翻页发生在窗口过程里，那时没有编辑会话可开）。
@@ -61,6 +69,7 @@ impl Cands {
         Self {
             seq,
             words: Vec::new(),
+            codes: Vec::new(),
             split: 0,
             pager: Pager::new(PAGE_SIZE),
             highlight: 0,
@@ -78,17 +87,26 @@ impl Cands {
 
     /// 换一批候选，回到第 1 页，并**不**自动显示（光标位置得由调用方给）。
     ///
+    /// `codes` 与 `words` 等长，空串表示这条不画码提示——规则由 server 裁决
+    /// （它知道这一段是拼音还是五笔、`hint.mode` 是什么），这里不重复判断。
+    ///
     /// `split` 是折叠区第一条的全局序号（D48）：从它开始的候选属于另一门语言，
     /// 画的时候淡一档。传 `words.len()` 表示只有一段。
-    pub fn update(&mut self, words: Vec<String>, split: usize) {
+    pub fn update(&mut self, words: Vec<String>, mut codes: Vec<String>, split: usize) {
+        // 长度对齐：协议与 UI 之间多一道防线。少了补空串（不画），多了直接丢掉——
+        // 越界的提示会画到隔壁项上，比不画难查得多。
+        codes.resize(words.len(), String::new());
+        codes.truncate(words.len());
         self.pager.reset(words.len());
         self.highlight = 0;
         self.split = split.min(words.len());
         self.words = words;
+        self.codes = codes;
         tsf_debug!(
-            "#{} 候选 {} 条，共 {} 页",
+            "#{} 候选 {} 条（{} 条带码提示），共 {} 页",
             self.seq,
             self.words.len(),
+            self.codes.iter().filter(|c| !c.is_empty()).count(),
             self.pager.pages()
         );
     }
@@ -96,6 +114,7 @@ impl Cands {
     /// 清空候选并隐藏窗口。
     pub fn clear(&mut self) {
         self.words.clear();
+        self.codes.clear();
         self.split = 0;
         self.pager.reset(0);
         self.highlight = 0;
@@ -177,6 +196,7 @@ impl Cands {
         let anchor = (caret.x as i32, caret.bottom() as i32);
         let prepared = win.prepare(&Candidates {
             texts: &self.words,
+            hints: &self.codes,
             page: self.pager.page(),
             page_size: self.pager.page_size(),
             highlight: self.highlight,

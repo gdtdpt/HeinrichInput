@@ -15,6 +15,13 @@ use crate::geom::{Rect, Size};
 pub struct CandidateText {
     pub text: String,
     pub width: f32,
+    /// 候选右侧的码提示（§6.3 的 chip）。`None` / 空串 = 不画。
+    ///
+    /// 宽度必须由量测层给：chip 用的是**小一号**的字号，拿 `text` 的宽度换算
+    /// 一定不准（`VB` 在大字号下比在小字号下宽得多）。
+    pub hint: Option<String>,
+    /// chip 的宽度（物理像素）。`hint` 为 `None` 时忽略。
+    pub hint_width: f32,
 }
 
 impl CandidateText {
@@ -22,7 +29,20 @@ impl CandidateText {
         Self {
             text: text.into(),
             width,
+            hint: None,
+            hint_width: 0.0,
         }
+    }
+
+    /// 带码提示的候选。`hint_width` 由量测层用 chip 自己的字号量好。
+    pub fn with_hint(mut self, hint: impl Into<String>, hint_width: f32) -> Self {
+        let hint = hint.into();
+        if hint.is_empty() {
+            return self;
+        }
+        self.hint = Some(hint);
+        self.hint_width = hint_width.max(0.0);
+        self
     }
 }
 
@@ -48,6 +68,13 @@ pub struct Metrics {
     pub label_gap: f32,
     /// 一个数字序号的宽度。
     pub label_width: f32,
+    /// 词与码提示 chip 之间的间隔。
+    pub hint_gap: f32,
+    /// chip 自己的水平内边距（左右各一份）。
+    ///
+    /// chip 是「一小块底 + 里面几个字母」，文字紧贴底边会显得挤；这个值同时决定
+    /// 命中区与视觉区，所以只在这里算一次。
+    pub hint_padding_x: f32,
     /// 翻页箭头的宽度。
     pub arrow_width: f32,
     /// 箭头与候选之间。
@@ -76,6 +103,8 @@ impl Metrics {
             item_padding_x: (font_size * 0.28).round(),
             label_gap: (font_size * 0.28).round(),
             label_width: (font_size * 0.62).round(),
+            hint_gap: (font_size * 0.22).round(),
+            hint_padding_x: (font_size * 0.22).round(),
             // 一个字号宽：字形在这里居中绘制，留一点余量比正好贴边安全
             // （量出来的字形宽度在 100%/150% DPI 下不会完全等于字号）。
             arrow_width: (font_size * 1.0).round(),
@@ -98,6 +127,8 @@ impl Metrics {
             item_padding_x: self.item_padding_x * s,
             label_gap: self.label_gap * s,
             label_width: self.label_width * s,
+            hint_gap: self.hint_gap * s,
+            hint_padding_x: self.hint_padding_x * s,
             arrow_width: self.arrow_width * s,
             arrow_gap: self.arrow_gap * s,
             corner_radius: self.corner_radius * s,
@@ -108,7 +139,17 @@ impl Metrics {
 
     /// 单个候选的整项宽度（含高亮块内边距、序号与间隔）。
     pub fn item_width(&self, text_width: f32) -> f32 {
-        self.item_padding_x * 2.0 + self.label_width + self.label_gap + text_width.max(0.0)
+        self.item_width_with_hint(text_width, 0.0)
+    }
+
+    /// 带码提示时的整项宽度。`hint_width` 含 chip 自己的左右内边距。
+    pub fn item_width_with_hint(&self, text_width: f32, hint_width: f32) -> f32 {
+        let chip = if hint_width > 0.0 {
+            self.hint_gap + hint_width + self.hint_padding_x * 2.0
+        } else {
+            0.0
+        };
+        self.item_padding_x * 2.0 + self.label_width + self.label_gap + text_width.max(0.0) + chip
     }
 }
 
@@ -177,6 +218,10 @@ pub struct ItemBox {
     pub label_rect: Rect,
     /// 文字矩形。被 `max_width` 压窄时这里也变窄，渲染端应在此矩形内截断。
     pub text_rect: Rect,
+    /// 码提示 chip 的文字（§6.3）。`None` = 这条不提示。
+    pub hint: Option<String>,
+    /// chip 的矩形（**含**左右内边距，渲染端画底与写字都用它）。
+    pub hint_rect: Rect,
     /// 这条的文字宽度被压窄过。
     pub elided: bool,
     /// 属于折叠区（另一门语言的补段）。渲染端应当把它画淡一档。
@@ -265,6 +310,19 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     let n = input.page.len();
 
     let mut widths: Vec<f32> = input.page.iter().map(|c| c.width.max(0.0)).collect();
+    // chip 的宽度**不参与压窄**：码是三四字母的短串，压窄它只会让提示变得不可读，
+    // 而它本来就窄。超宽时该让的是词。
+    let hint_w: Vec<f32> = input
+        .page
+        .iter()
+        .map(|c| {
+            if c.hint.is_some() {
+                c.hint_width.max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
 
     // 箭头只在真有候选的那个方向占地方：第 1 页没有左箭头，窗口就不必为此变宽。
     let arrow = m.arrow_width + m.arrow_gap;
@@ -272,7 +330,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
         if input.has_prev { arrow } else { 0.0 } + if input.has_next { arrow } else { 0.0 };
 
     // 先按自然宽度算一遍总宽。
-    let mut total = sum_width(&m, &widths, reserved);
+    let mut total = sum_width(&m, &widths, &hint_w, reserved);
 
     // 超过上限时按各自宽度**成比例**压窄：长候选让得多、短候选让得少，
     // 视觉上比「每条均摊」更不容易把短词挤成一条缝。
@@ -291,7 +349,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
                     *w = next;
                 }
             }
-            total = sum_width(&m, &widths, reserved);
+            total = sum_width(&m, &widths, &hint_w, reserved);
         }
     }
 
@@ -312,11 +370,23 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     }
 
     for (i, cand) in input.page.iter().enumerate() {
-        let item_w = m.item_width(widths[i]);
+        let item_w = m.item_width_with_hint(widths[i], hint_w[i]);
         let rect = Rect::new(x, y, item_w, m.line_height);
         let label_rect = Rect::new(x + m.item_padding_x, y, m.label_width, m.line_height);
         let text_w = widths[i];
         let text_rect = Rect::new(label_rect.right() + m.label_gap, y, text_w, m.line_height);
+        let (hint, hint_rect) = match &cand.hint {
+            Some(h) if hint_w[i] > 0.0 => (
+                Some(h.clone()),
+                Rect::new(
+                    text_rect.right() + m.hint_gap,
+                    y,
+                    hint_w[i] + m.hint_padding_x * 2.0,
+                    m.line_height,
+                ),
+            ),
+            _ => (None, Rect::new(text_rect.right(), y, 0.0, 0.0)),
+        };
         let index = input.page_start + i;
         items.push(ItemBox {
             index,
@@ -327,6 +397,8 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
             rect,
             label_rect,
             text_rect,
+            hint,
+            hint_rect,
             elided: clipped && text_w < cand.width.max(0.0) - 0.01,
             secondary: input.split.is_some_and(|s| index >= s),
         });
@@ -357,8 +429,12 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     }
 }
 
-fn sum_width(m: &Metrics, widths: &[f32], reserved: f32) -> f32 {
-    let items: f32 = widths.iter().map(|w| m.item_width(*w)).sum();
+fn sum_width(m: &Metrics, widths: &[f32], hint_w: &[f32], reserved: f32) -> f32 {
+    let items: f32 = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| m.item_width_with_hint(*w, hint_w.get(i).copied().unwrap_or(0.0)))
+        .sum();
     let gaps = if widths.is_empty() {
         0.0
     } else {
@@ -682,5 +758,81 @@ mod tests {
         input.metrics = double;
         let out = layout(&input);
         assert!((out.size.h - (base.line_height + base.padding_y * 2.0) * 2.0).abs() < 0.01);
+    }
+
+    // ---- 码提示 chip（§6.3） ----
+
+    /// chip 必须**长在词后面**，且整项宽度把它算进去——否则会盖到隔壁候选上。
+    #[test]
+    fn chip_排在词右侧并计入整项宽度() {
+        let m = Metrics::new(16.0);
+        let page = [cand("好", 16.0).with_hint("vbg", 24.0)];
+        let out = layout(&input(&page));
+
+        let it = &out.items[0];
+        assert_eq!(it.hint.as_deref(), Some("vbg"));
+        // 词右边界 + hint_gap 起步
+        assert!((it.hint_rect.x - (it.text_rect.right() + m.hint_gap)).abs() < 0.01);
+        // chip 宽度 = 文字宽 + 左右内边距
+        assert!((it.hint_rect.w - (24.0 + m.hint_padding_x * 2.0)).abs() < 0.01);
+        // 整项宽度与「不算 chip」的差正好是 chip 占的那一块
+        assert!(
+            (it.rect.w - (m.item_width(16.0) + m.hint_gap + 24.0 + m.hint_padding_x * 2.0)).abs()
+                < 0.01
+        );
+        // 词与 chip 不重叠
+        assert!(it.text_rect.right() <= it.hint_rect.x);
+    }
+
+    #[test]
+    fn 没有码时不留空位() {
+        let page = [cand("好", 16.0)];
+        let mut i = input(&page);
+        i.metrics = Metrics::new(16.0);
+        let plain = layout(&i);
+
+        let with_empty = [cand("好", 16.0).with_hint("", 30.0)];
+        let mut j = input(&with_empty);
+        j.metrics = Metrics::new(16.0);
+        let empty = layout(&j);
+
+        assert!(plain.items[0].hint.is_none());
+        assert_eq!(plain.items[0].hint_rect.w, 0.0);
+        assert!(empty.items[0].hint.is_none(), "空串等于不提示");
+        assert_eq!(plain.size.w, empty.size.w, "空码不该撑宽窗口");
+    }
+
+    /// 压窄时让的是**词**，不是码：码本来就三四个字母，压窄等于把提示弄成不可读。
+    #[test]
+    fn 超宽压窄不碰_chip() {
+        let page = [
+            cand("一一一一", 100.0).with_hint("vbg", 24.0),
+            cand("二二二二", 100.0).with_hint("kgn", 24.0),
+        ];
+        let mut i = input(&page);
+        i.metrics = Metrics::new(16.0);
+        i.metrics.max_width = 260.0;
+        let out = layout(&i);
+
+        assert!(out.clipped);
+        let m = i.metrics;
+        for it in &out.items {
+            assert!(
+                (it.hint_rect.w - (24.0 + m.hint_padding_x * 2.0)).abs() < 0.01,
+                "chip 宽度不变，实际 {}",
+                it.hint_rect.w
+            );
+            assert!(it.text_rect.w < 100.0, "被压窄的是词");
+        }
+        assert!(out.size.w <= 260.0 + 0.01);
+    }
+
+    /// 命中区仍然是**整项**：点在 chip 上也该选中这条，而不是点空。
+    #[test]
+    fn 点在_chip_上仍命中该候选() {
+        let page = [cand("好", 16.0).with_hint("vbg", 24.0)];
+        let out = layout(&input(&page));
+        let it = &out.items[0];
+        assert_eq!(out.hit(it.hint_rect.x + 1.0, it.hint_rect.y + 1.0), Some(0));
     }
 }

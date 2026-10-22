@@ -29,6 +29,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 假候选。长度不一，顺便验「成比例压窄」与对齐。
 const POOL: [&str; 9] = ["好", "㛅", "崽", "孬", "妳", "耗", "孑", "籽", "㜽"];
 
+/// 假码提示（§6.3）。长度 2–4 码都要有：chip 是可变宽的，只验 3 码会漏掉
+/// 「四码词组把整项撑多宽」这件事。
+const HINTS: [&str; 5] = ["vbg", "kgn", "vbyg", "itfh", "rn"];
+
 fn main() -> std::process::ExitCode {
     let args = Args::parse(std::env::args().skip(1));
     match run(&args) {
@@ -59,8 +63,26 @@ fn run(args: &Args) -> windows::core::Result<bool> {
         .map(|s| s.to_string())
         .collect();
 
+    // 码提示：`--hint` 只给 split **之后**的条目加码——那正是「折叠区 = 拼音段」
+    // 的真实形状（主段五笔不带码、补段拼音带码）。没给 split 时全部带码，
+    // 相当于「整屏都是拼音查出来的」。
+    let hints: Vec<String> = if args.hint {
+        (0..texts.len())
+            .map(|i| {
+                if i < args.split {
+                    String::new()
+                } else {
+                    HINTS[i % HINTS.len()].to_string()
+                }
+            })
+            .collect()
+    } else {
+        vec![String::new(); texts.len()]
+    };
+
     let candidates = Candidates {
         texts: &texts,
+        hints: &hints,
         page: args.page,
         page_size: args.page_size,
         highlight: 0,
@@ -107,9 +129,14 @@ fn run(args: &Args) -> windows::core::Result<bool> {
     );
     for item in &prepared.layout.items {
         println!(
-            "  #{} 「{}」 rect=({:.0}, {:.0}, {:.0}×{:.0})",
+            "  #{} 「{}」{}{} rect=({:.0}, {:.0}, {:.0}×{:.0})",
             item.index + 1,
             item.text,
+            match &item.hint {
+                Some(h) => format!("[{h}]"),
+                None => String::new(),
+            },
+            if item.secondary { "（补段）" } else { "" },
             item.rect.x,
             item.rect.y,
             item.rect.w,
@@ -236,6 +263,47 @@ fn selftest(
         format!("点 (1, 1) 得到 {got:?}"),
     );
 
+    // ⑦ 码提示 chip（§6.3）：只在 `--hint` 时才有东西可验，没带就跳过而不是
+    //    假装通过——「没测」和「测了没问题」必须能分开。
+    let chipped: Vec<&heinrich_ui::ItemBox> = prepared
+        .layout
+        .items
+        .iter()
+        .filter(|it| it.hint.is_some())
+        .collect();
+    if chipped.is_empty() {
+        println!("⏭ chip 不发现在本页里（没带 --hint），跳过 chip 断言");
+    } else {
+        let inside = chipped.iter().all(|it| {
+            it.hint_rect.w > 0.0
+                && it.hint_rect.x >= it.text_rect.right()
+                && it.hint_rect.right() <= it.rect.right() + 0.01
+                && it.hint_rect.y >= it.rect.y
+                && it.hint_rect.bottom() <= it.rect.bottom()
+        });
+        check(
+            "chip 在自己的项内、不压住词",
+            inside,
+            format!("{} 条带码", chipped.len()),
+        );
+
+        // chip 上点下去必须命中这一条（整项矩形命中，不是「点 chip 等于点空」）
+        let it = chipped[0];
+        let (x, y) = (
+            (it.hint_rect.x + it.hint_rect.w / 2.0) as i32,
+            (it.hint_rect.y + it.hint_rect.h / 2.0) as i32,
+        );
+        while rx.try_recv().is_ok() {}
+        post_click(window.hwnd(), x, y);
+        pump();
+        let got = rx.try_recv().ok();
+        check(
+            "点 chip 命中该候选",
+            got == Some(Event::Click(Hit::Candidate(it.index))),
+            format!("点 ({x}, {y}) 得到 {got:?}"),
+        );
+    }
+
     println!(
         "\n{}",
         if all_ok {
@@ -290,6 +358,8 @@ struct Args {
     /// 折叠区第一条的全局序号（D48）。默认 `usize::MAX` = 只有一段；
     /// `--split N` 让后半截画淡一档，用来目验混输的两段分界。
     split: usize,
+    /// 给 `split` 之后的候选加假码提示（§6.3），用来目验 chip 的排版。
+    hint: bool,
     selftest: bool,
 }
 
@@ -303,6 +373,7 @@ impl Args {
             at: (200, 260),
             hold: None,
             split: usize::MAX,
+            hint: false,
             selftest: false,
         };
         while let Some(arg) = args.next() {
@@ -330,12 +401,13 @@ impl Args {
                     out.split = value("--split").parse().unwrap_or(usize::MAX);
                 }
                 "--selftest" => out.selftest = true,
+                "--hint" => out.hint = true,
                 "-h" | "--help" => {
                     println!(
                         "用法：heinrich-cand-preview [--count N] [--page P] [--page-size S]\n\
                          \x20                      [--dpi SCALE] [--at X,Y] [--hold MS]
 \
-                         \x20                      [--split N] [--selftest]"
+                         \x20                      [--split N] [--hint] [--selftest]"
                     );
                     std::process::exit(0);
                 }

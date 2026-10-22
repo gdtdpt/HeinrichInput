@@ -131,6 +131,10 @@ fn pinyin_candidates<S: UsageStore + ?Sized>(
         let item = RankInput {
             word: &e.word,
             code: &e.pinyin,
+            // 码提示（§6.3）读这一列：拼音候选的五笔全码在装载时由
+            // `PinyinLexicon::attach_wubi_codes` 填好；没填上（五笔词库没有这个词）
+            // 就是空串，chip 不画。
+            wubi: &e.wubi,
             w_norm: e.w_norm,
             kind_label: "拼音",
         };

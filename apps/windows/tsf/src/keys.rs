@@ -176,6 +176,9 @@ pub const VK_OEM_PLUS: u16 = 0xBB;
 /// 单引号。混输下它是**显式拼音标记**（§6.5 / D48）：`hao'` = 只要拼音候选。
 pub const VK_QUOTE: u16 = 0xDE;
 
+/// Tab。组合态内吃掉，见 `decide` 里那一支。
+pub const VK_TAB: u16 = 0x09;
+
 /// vkey → 五笔码字母。在 `a`–`y` 之外返回 `None`。
 pub fn wubi_letter(vk: u16) -> Option<char> {
     if (VK_A..=VK_Y).contains(&vk) {
@@ -247,8 +250,12 @@ pub fn punct_text(vk: u16, shift: bool) -> Option<char> {
 /// 组合串中间插一个字符、终止组合串，`OnCompositionTerminated` 把打了一半的编码
 /// 当残留删掉。用户看到的不是「多了个符号」，而是「正在打的字凭空消失」。
 ///
-/// 只列举**字符键**，不碰功能键：F1–F12、Tab、Win、CapsLock 在组合态里仍有
-/// 它们自己的含义（刷新、切焦点、切窗口），吞掉会让用户以为键盘坏了。
+/// 只列举**字符键**，不碰功能键：F1–F12、Win、CapsLock 在组合态里仍有
+/// 它们自己的含义（刷新、切窗口），吞掉会让用户以为键盘坏了。
+///
+/// **Tab 不在这张表里，但结论是「吞」**——它走 `decide` 里单独一支。
+/// 这张表按「这个键会不会往文档里插字符」分类，而 Tab 的判决依据是
+/// 「这个键会不会让组合串消失」，两件事不是同一个判据（见 D49 的修订）。
 pub fn is_text_key(vk: u16) -> bool {
     matches!(
         vk,
@@ -365,6 +372,22 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
         // 屏幕上出现「光标在这、字却在那」的错位。没有候选窗时（M1.2 起的老行为）
         // 折中成「吃掉并取消」：代价是一次方向键被吞，换来绝不留下错位的组合串。
         0x21..=0x28 if !empty => Action::Cancel,
+        // Tab：组合态内吃掉，不动。
+        //
+        // D49 最初把 Tab 归进「放行也不要紧的功能键」，理由是「它们不会往文档里
+        // 插字符，不会打断组合串」。前半句对，**后半句是错的**：Tab 让宿主切焦点，
+        // TSF 随即终止组合串，`OnCompositionTerminated` 把已经打出的编码当残留删掉
+        // （`text_service` 里那个 `SetText(ecwrite, 0, &[])`）。用户看到的是
+        // 「按了一下 Tab，正在打的字没了」——与当年 `-`/`=` 的症状同源，
+        // 只是没有那个多余的符号。
+        //
+        // 所以判据要换成「这个键会不会让组合串消失」，而不是「它会不会插字符」。
+        // 代价是 Excel 里换格之前得先上屏（空格或回车），也就是多按一下；
+        // 按 D31 / D42 的一贯取舍，「吃掉没反应」远比「打的字被打断」轻。
+        //
+        // 空缓冲时 Tab 是老老实实的制表符（写代码、表格里换格都靠它）；
+        // `Ctrl+Tab` 在上面 `mods.ctrl` 那一关就放行了，不经过这里。
+        VK_TAB if !empty => Action::Noop,
         // 兜底：组合态内所有**字符键**一律吃掉，不动。
         //
         // 这一条原先不存在，代价是每次按 `-` `=` `[` `]` `\` 之类都会把打了一半的
@@ -654,13 +677,40 @@ mod tests {
             );
         }
         // 功能键不受影响：它们有自己的含义，吞掉会让用户以为键盘坏了
+        //
+        // Tab 曾经在这张表里，后来移走了——它虽然「不插字符」，但**会切焦点**，
+        // 焦点一动组合串就被 TSF 终止、编码被当残留删掉。见 `tab_is_eaten_mid_composition`。
         for vk in [
-            0x09, 0x70, /* F1 */
+            0x70, /* F1 */
             0x7B, /* F12 */
             0x14, /* CapsLock */
         ] {
             assert_eq!(decide(zh(3), vk, m()), Action::Pass, "{vk:#04x} 不该被吞");
         }
+    }
+
+    const TAB: u16 = 0x09;
+
+    /// Tab 在组合态内吃掉：放行 = 切焦点 = 组合串被终止 = 编码被删。
+    ///
+    /// 这一条修的是 D49 的一处误判——那份记录把 Tab 与 F1/CapsLock 归在一起，
+    /// 理由是「它们不会往文档里插字符，不会打断组合串」。Tab 会打断组合串。
+    #[test]
+    fn tab_is_eaten_mid_composition() {
+        assert_eq!(decide(zh(3), TAB, m()), Action::Noop, "组合态内吃掉不动");
+        // 有编码但没候选窗（打了一半的死码）同样吃掉，不然编码照样没
+        assert_eq!(decide(zh(2), TAB, m()), Action::Noop);
+        // 空缓冲时它就是个制表符：写代码、表格换格都靠它
+        assert_eq!(decide(zh(0), TAB, m()), Action::Pass);
+        // `Ctrl+Tab` 是宿主的切标签，`mods.ctrl` 那一关就放行了
+        let c = Mods {
+            ctrl: true,
+            alt: false,
+            shift: false,
+        };
+        assert_eq!(decide(zh(3), TAB, c), Action::Pass);
+        // 英文模式照旧全放行
+        assert_eq!(decide(en(3), TAB, m()), Action::Pass);
     }
 
     #[test]

@@ -38,6 +38,12 @@ pub struct PinyinEntry {
     pub weight: f64,
     /// 归一化到 [0,1] 的静态权重
     pub w_norm: f32,
+    /// 这个词的**五笔全码**（§6.3 的码提示用）。空串 = 五笔词库里没有这个词。
+    ///
+    /// 它**不在拼音词库里**：拼音数据来自 `pinyin_simp.dict.yaml`，那里没有五笔码。
+    /// 值由 [`PinyinLexicon::attach_wubi_codes`] 在装载后交叉填进来——一份数据只
+    /// 描述一件事，跨数据的映射在装载时算一次，而不是生成期把两份数据焊死。
+    pub wubi: String,
 }
 
 /// 拼音词库。
@@ -113,6 +119,7 @@ impl PinyinLexicon {
                 word: word.to_string(),
                 weight,
                 w_norm: 0.0,
+                wubi: String::new(),
             });
         }
 
@@ -179,6 +186,45 @@ impl PinyinLexicon {
 
     pub fn entries(&self) -> &[PinyinEntry] {
         &self.entries
+    }
+
+    /// 给每条词条补上它的**五笔全码**，返回补上的条数。
+    ///
+    /// 这是 §6.3 码提示的数据通路：拼音段候选要显示「这个字用五笔怎么打」，
+    /// 而拼音词库里没有五笔码——只能拿五笔词库反查。反查必须在装载时做一次：
+    /// 每次按键都扫 13.6 万条是绝不可能的，而建一份常驻的「词 → 码」索引要多背
+    /// 约 10 MB，纯粹为了提示不值得。
+    ///
+    /// **为什么取全码而不是简码**：简码是把全码的后几码省掉，先给完整的才不会让
+    /// 用户学出一套「只会打短码」的手感（`好` 的简码 `vb`、全码 `vbg`）。
+    ///
+    /// 同一词有多条全码时（少见）取字典序最小的，保证两次装载结果一致——
+    /// 提示语是给人看的，不能每次启动换一个。
+    pub fn attach_wubi_codes(&mut self, scheme: &crate::Scheme) -> usize {
+        let mut full: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::with_capacity(scheme.entry_count());
+        for i in 0..scheme.entry_count() as u32 {
+            let e = scheme.entry(i);
+            if e.kind != crate::CodeKind::Full {
+                continue;
+            }
+            let code = e.code.as_str();
+            match full.get(e.word.as_str()) {
+                Some(prev) if *prev <= code => {}
+                _ => {
+                    full.insert(e.word.as_str(), code);
+                }
+            }
+        }
+        let mut filled = 0;
+        for e in &mut self.entries {
+            if let Some(code) = full.get(e.word.as_str()) {
+                e.wubi.clear();
+                e.wubi.push_str(code);
+                filled += 1;
+            }
+        }
+        filled
     }
 
     pub fn entry(&self, idx: u32) -> &PinyinEntry {

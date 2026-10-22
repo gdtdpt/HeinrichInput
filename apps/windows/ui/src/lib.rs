@@ -10,8 +10,11 @@
 //!
 //! let mut win = CandidateWindow::new(Theme::default())?;
 //! let texts: Vec<String> = vec!["好".into(), "㛅".into()];
+//! // 与 texts 等长：空串表示这一条不画码提示（§6.3）
+//! let hints: Vec<String> = vec!["vbg".into(), String::new()];
 //! let prepared = win.prepare(&Candidates {
 //!     texts: &texts,
+//!     hints: &hints,
 //!     page: 0,
 //!     page_size: 5,
 //!     highlight: 0,
@@ -81,6 +84,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub struct Candidates<'a> {
     /// **全部**候选（不只是本页）。分页与「还有下一页」都按它算。
     pub texts: &'a [String],
+    /// 与 `texts` 等长的码提示（§6.3）。空串 = 这条不画 chip。
+    ///
+    /// 裁决在 server（它知道候选来自哪一段、`hint.mode` 是什么），这一层只管画。
+    /// 长度不一致时按 `texts` 对齐，缺的部分当作不提示——协议与 UI 各自守住自己的
+    /// 边界，比「假设调用方一定传对」安全。
+    pub hints: &'a [String],
     pub page: usize,
     pub page_size: usize,
     /// 本页内的键盘选中项（0 起）。
@@ -206,13 +215,24 @@ impl CandidateWindow {
         let metrics = Metrics::new(self.state.theme.font_size).scaled(scale);
 
         let mut measured = Vec::with_capacity(c.texts.len());
-        for text in c.texts {
+        for (i, text) in c.texts.iter().enumerate() {
             let w = self
                 .state
                 .renderer
                 .text_mut()
                 .measure(text, metrics.font_size)?;
-            measured.push(CandidateText::new(text.clone(), w));
+            let mut item = CandidateText::new(text.clone(), w);
+            // 只有 chip 真会被画出来才去量它：量字要建 `IDWriteTextLayout`，
+            // 给每条候选白量一次是纯粹的浪费（五笔段一条都不带 chip）。
+            if let Some(hint) = c.hints.get(i).filter(|h| !h.is_empty()) {
+                let hw = self
+                    .state
+                    .renderer
+                    .text_mut()
+                    .measure_hint(hint, metrics.font_size)?;
+                item = item.with_hint(hint.clone(), hw);
+            }
+            measured.push(item);
         }
 
         let total = measured.len();

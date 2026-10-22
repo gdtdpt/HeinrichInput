@@ -12,10 +12,10 @@
 //! 五笔侧仍只认精确码长（D45）：前缀兜底一律丢弃，否则 `xxv` 这种「还没打完」
 //! 会弹出一屏码前缀撞车的字。
 
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
-use heinrich_core::scheme::{PinyinLexicon, Scheme};
+use heinrich_core::scheme::{Config, HintMode, PinyinLexicon, Scheme};
 use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
 use heinrich_proto::{
     feature, source as proto_source, Entry, Frame, Mode, MAX_ENTRIES, PROTO_VERSION,
@@ -25,6 +25,12 @@ use crate::store::SqliteStore;
 
 /// 两次 `wal_checkpoint` 之间的最小间隔（§5.5）。
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
+
+/// 配置文件最短重查间隔。
+///
+/// 查询发生在**每个字母键**上（D37），所以不能每次都去 stat 配置文件。1 秒足够
+/// 「改完配置切回输入框就生效」，同时把文件系统调用压到每秒最多一次。
+const HINT_RECHECK: Duration = Duration::from_secs(1);
 
 /// 学习数据的两种落地形态。
 ///
@@ -101,6 +107,87 @@ pub struct Host {
     last_checkpoint: Instant,
     /// 本次运行累计收到的上屏回报条数（日志里看「学习有没有在动」）。
     recorded: u64,
+    /// 码提示的生效模式，带配置文件热更新。
+    hint: HintState,
+}
+
+/// 码提示（§6.3）的生效模式。
+///
+/// 有三层来源，优先级从高到低：命令行 `--hint`（`forced`）、配置文件、默认 `mixed`。
+/// 配置文件**热更新**：改完不必重启 server，下次查询（≤1 秒后）就生效。这样做不是
+/// 为了炫技——反馈回来的第一句话一定是「我想看看 off 长什么样」，为此杀掉常驻
+/// server 再等冷启动不值得。
+struct HintState {
+    /// `None` = 不读配置文件（单测、`--no-config`）。
+    path: Option<PathBuf>,
+    /// 命令行强制值，压过配置文件。
+    forced: Option<HintMode>,
+    mode: HintMode,
+    /// 上次检查文件的时刻（节流，见 [`HINT_RECHECK`]）。
+    checked_at: Instant,
+    /// 上次看到的 `(长度, 修改时间)`。**只有它变了才重读内容**：stat 比 read 便宜得多，
+    /// 而且「文件没变」是最常见的情况。
+    stamp: Option<(u64, Option<SystemTime>)>,
+}
+
+impl HintState {
+    fn new(path: Option<PathBuf>, forced: Option<HintMode>) -> Self {
+        let mut state = Self {
+            path,
+            forced,
+            mode: forced.unwrap_or_default(),
+            checked_at: Instant::now(),
+            stamp: None,
+        };
+        state.reload();
+        state
+    }
+
+    /// 当前模式，顺便按节流检查配置文件有没有被改过。
+    fn mode(&mut self) -> HintMode {
+        if self.forced.is_some() || self.path.is_none() {
+            return self.mode;
+        }
+        if self.checked_at.elapsed() < HINT_RECHECK {
+            return self.mode;
+        }
+        self.checked_at = Instant::now();
+        self.reload();
+        self.mode
+    }
+
+    fn reload(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let meta = std::fs::metadata(&path).ok();
+        let stamp = meta
+            .as_ref()
+            .map(|m| (m.len(), m.modified().ok()))
+            .unwrap_or((0, None));
+        if self.stamp.as_ref() == Some(&stamp) {
+            return;
+        }
+        self.stamp = Some(stamp);
+
+        let cfg = Config::load(&path);
+        for w in cfg.warnings() {
+            srv_error!("配置 {}：{w}", path.display());
+        }
+        let mode = self.forced.unwrap_or_else(|| cfg.hint_mode());
+        if mode != self.mode || !cfg.found() {
+            srv_info!(
+                "码提示：{}（{}）",
+                mode.as_str(),
+                if cfg.found() {
+                    path.display().to_string()
+                } else {
+                    "未找到配置文件，用默认值".to_string()
+                }
+            );
+        }
+        self.mode = mode;
+    }
 }
 
 impl Host {
@@ -125,11 +212,14 @@ impl Host {
         let pinyin = match pinyin_dir {
             None => None,
             Some(pd) => match PinyinLexicon::load(pd) {
-                Ok(lex) => {
+                Ok(mut lex) => {
+                    // 码提示的数据前提：拼音词库里没有五笔码，装载时反查一次。
+                    let coded = lex.attach_wubi_codes(&scheme);
                     srv_info!(
-                        "拼音词库：{} 条（{} 个音节），混输已启用",
+                        "拼音词库：{} 条（{} 个音节），混输已启用；其中 {} 条能给出五笔全码（码提示可用）",
                         lex.entry_count,
-                        lex.syllable_count
+                        lex.syllable_count,
+                        coded
                     );
                     Some(lex)
                 }
@@ -158,7 +248,35 @@ impl Host {
             mode: Mode::Chinese,
             last_checkpoint: Instant::now(),
             recorded: 0,
+            hint: HintState::new(None, None),
         })
+    }
+
+    /// 接上码提示配置：`path` 为 `None` 表示不读文件，`forced` 压过文件值。
+    ///
+    /// 单独一个方法而不是塞进 `open` 的参数表：单测与 `--selftest` 都不该碰
+    /// 用户目录里的文件，默认「不读任何配置」才是最安全的起点。
+    pub fn configure_hint(&mut self, path: Option<PathBuf>, forced: Option<HintMode>) {
+        self.hint = HintState::new(path, forced);
+        srv_info!(
+            "码提示：{}（{}{}）",
+            self.hint.mode.as_str(),
+            if self.hint.path.is_some() {
+                "配置文件 "
+            } else {
+                "不读配置文件"
+            },
+            self.hint
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+    }
+
+    /// 当前生效的码提示模式（读它会顺手做一次配置热检查）。
+    pub fn hint_mode(&mut self) -> HintMode {
+        self.hint.mode()
     }
 
     pub fn scheme_id(&self) -> &str {
@@ -273,7 +391,10 @@ impl Host {
     ///
     /// 返回的不只是候选：还有**判定语言**与**首屏条数**——DLL 要据此把折叠区
     /// （另一种语言的候选）排到首屏之后，而它自己无法判定（判定要看两份词库）。
-    pub fn query(&self, code: &str, limit: u8) -> QueryReply {
+    ///
+    /// `&mut self` 是因为要顺手做一次码提示配置的热检查；这次检查被 [`HINT_RECHECK`]
+    /// 节流，绝大多数调用只花一次 `Instant::now()`。
+    pub fn query(&mut self, code: &str, limit: u8) -> QueryReply {
         let limit = (limit as usize).clamp(1, MAX_ENTRIES);
         let now = unix_now();
         let mixed = pinyin::query_with_limit(
@@ -285,26 +406,53 @@ impl Host {
             &self.cfg,
             limit,
         );
-        let source = match mixed.source {
+        let source = mixed.source;
+        let proto_src = match source {
             Source::Wubi => proto_source::WUBI,
             Source::Pinyin => proto_source::PINYIN,
         };
         // 折叠分界要在截断**之前**算：首屏可能有 30 条、而协议只让带 9 条，
         // 那 9 条就全是首屏的。若先截断再取 len，DLL 会以为折叠区从第 9 条开始，
         // 把纯五笔的结果标成「拼音在前」。
-        let primary_len = mixed.primary.len().min(limit) as u16;
+        let primary_total = mixed.primary.len();
+        let primary_len = primary_total.min(limit) as u16;
+
+        // 码提示的裁决全在 server：DLL 只画非空的 `code`（§6.3）。
+        // 规则是「提示跟随这一段是怎么出来的」——拼音段给码、五笔段不给。
+        let hint = self.hint.mode();
+        let primary_is_pinyin = source == Source::Pinyin;
         let entries: Vec<Entry> = mixed
             .into_all()
             .into_iter()
             .take(limit)
-            .map(|c| Entry {
-                word: c.word,
-                label: c.kind_label.to_string(),
+            .enumerate()
+            .map(|(i, c)| {
+                let in_primary = i < primary_total;
+                let pinyin_segment = if in_primary {
+                    primary_is_pinyin
+                } else {
+                    !primary_is_pinyin
+                };
+                let show = pinyin_segment
+                    && match hint {
+                        HintMode::Mixed => true,
+                        // 「第一次」按**这个词还没上过屏**判定，不区分当初是用拼音
+                        // 还是五笔打出来的。严格版要记录每次上屏的输入来源（协议
+                        // `Record` 里其实带着 `code`，但学习库没存），属于 M3.5 的
+                        // 范围；这里的近似对用户更宽容：用过的词就是认识的。
+                        HintMode::FirstTime => self.store.usage(&c.word).n == 0,
+                        HintMode::Off => false,
+                    };
+                Entry {
+                    word: c.word,
+                    label: c.kind_label.to_string(),
+                    code: if show { c.wubi } else { String::new() },
+                }
             })
             .collect();
         QueryReply {
             entries,
-            source,
+            source: proto_src,
             primary_len,
         }
     }

@@ -145,6 +145,11 @@ pub fn warm_up() {
 #[derive(Clone, Debug)]
 pub struct Reply {
     pub words: Vec<String>,
+    /// 与 `words` 等长的五笔码提示（§6.3）。空串 = 这条不画 chip。
+    ///
+    /// 给不给由 server 定：它知道这段候选是五笔还是拼音查出来的、`hint.mode` 是
+    /// 什么。DLL 这层只负责「非空就画」，不重复实现一遍规则。
+    pub codes: Vec<String>,
     /// 首屏候选来自拼音（`Frame::Result::source`）
     pub pinyin: bool,
     /// 前多少条属于首屏；`words` 的其余部分是折叠区
@@ -153,12 +158,14 @@ pub struct Reply {
 
 impl Reply {
     fn from_result(entries: Vec<Entry>, source: u8, primary_len: u16) -> Self {
-        let words: Vec<String> = entries.into_iter().map(|e| e.word).collect();
+        let words: Vec<String> = entries.iter().map(|e| e.word.clone()).collect();
+        let codes: Vec<String> = entries.into_iter().map(|e| e.code).collect();
         // 协议里的 `primary_len` 是 server 算的，仍然夹一次：万一 server 版本对不上
         // 给了个越界值，DLL 这边最多画错分区，不能因此切片 panic。
         let primary_len = (primary_len as usize).min(words.len());
         Self {
             words,
+            codes,
             pinyin: source == proto_source::PINYIN,
             primary_len,
         }

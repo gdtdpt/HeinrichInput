@@ -15,6 +15,7 @@
 //! heinrich-server.exe --debug-sleep 5000   # 每次查询前睡 5 秒，用来验 D18 零阻塞
 //! heinrich-server.exe --idle-exit 0        # 不自动退出，调完手工结束
 //! heinrich-server.exe --no-pinyin          # 关掉混输，退回纯五笔
+//! heinrich-server.exe --hint off           # 临时关掉码提示（压过配置文件）
 //! heinrich-server.exe --selftest           # 装载词库 + 跑几条查询后退出（无管道）
 //! ```
 //!
@@ -33,6 +34,7 @@ mod pipe;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use heinrich_core::scheme::HintMode;
 use host::Host;
 
 struct Args {
@@ -44,6 +46,10 @@ struct Args {
     pinyin_explicit: bool,
     /// 学习库路径。`Some` 才是落盘；`--memory-db` 或 `--selftest` 用内存。
     db: Option<PathBuf>,
+    /// 用户配置文件。`Some` 才会去读；`--no-config` 或 `--selftest` 为 `None`。
+    config: Option<PathBuf>,
+    /// 命令行强制的码提示模式，压过配置文件（验三档时用）。
+    hint: Option<HintMode>,
     debug_sleep: Duration,
     idle_exit: Duration,
     selftest: bool,
@@ -56,6 +62,8 @@ impl Args {
             pinyin_dir: default_pinyin_dir(),
             pinyin_explicit: false,
             db: default_db_path(),
+            config: default_config_path(),
+            hint: None,
             debug_sleep: Duration::ZERO,
             idle_exit: Duration::from_secs(30 * 60),
             selftest: false,
@@ -80,6 +88,18 @@ impl Args {
                     args.db = Some(PathBuf::from(it.next().ok_or("--db 需要一个路径")?));
                 }
                 "--memory-db" => args.db = None,
+                "--config" => {
+                    args.config = Some(PathBuf::from(it.next().ok_or("--config 需要一个路径")?));
+                }
+                "--no-config" => args.config = None,
+                "--hint" => {
+                    let raw = it
+                        .next()
+                        .ok_or("--hint 需要一个值（mixed / first_time / off）")?;
+                    args.hint = Some(HintMode::parse(&raw).ok_or_else(|| {
+                        format!("--hint 只认 mixed / first_time / off，实际为 `{raw}`")
+                    })?);
+                }
                 "--debug-sleep" => {
                     let ms: u64 = it
                         .next()
@@ -127,6 +147,9 @@ fn print_help() {
     println!("  --no-pinyin          关掉混输，退回纯五笔");
     println!("  --db <file>          学习库路径（默认 %LOCALAPPDATA%\\Heinrich\\learn.db）");
     println!("  --memory-db          不落盘，学习数据只存在内存里（调试用）");
+    println!("  --config <file>      用户配置（默认 %APPDATA%\\Heinrich\\config.toml）");
+    println!("  --no-config          不读配置文件，全部取默认值");
+    println!("  --hint <mode>        码提示：mixed / first_time / off（压过配置文件）");
     println!("  --debug-sleep <ms>   每次查询前故意睡若干毫秒（验零阻塞）");
     println!("  --idle-exit <secs>   无连接多久后退出，0 = 不退出（默认 1800）");
     println!("  --selftest           只装载词库并跑几条查询，然后退出");
@@ -139,6 +162,15 @@ fn print_help() {
 fn default_db_path() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
     Some(PathBuf::from(base).join("Heinrich").join("learn.db"))
+}
+
+/// 用户配置默认位置：`%APPDATA%\Heinrich\config.toml`（§7）。
+///
+/// 用 `APPDATA`（漫游）而不是 `LOCALAPPDATA`：配置文件是用户偏好，跟着账户走才对；
+/// 学习库与日志是本机产物，留在 `LOCALAPPDATA`。
+fn default_config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("config.toml"))
 }
 
 /// 默认方案目录：与 exe 同级的 `data/wubi86`。
@@ -242,6 +274,125 @@ fn tick(ok: bool) -> &'static str {
     }
 }
 
+/// 自测用的一行结果打印 + 计数。
+fn check(name: &str, ok: bool, detail: String) -> i32 {
+    println!("  {name:<28} {detail}  {}", tick(ok));
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
+/// 码提示自测（§6.3）。三档必须**各有不同的可观测行为**，否则「配置项存在但不生效」
+/// 这种状态也会被当成通过。
+///
+/// 全部用 `hao` 这一族输入来验：它同时有两种形态——`hao'` 是纯拼音（带 `'`）、
+/// `vbg` 是纯五笔，两边的码提示必须相反。
+fn selftest_hint(host: &mut Host) -> i32 {
+    let mut failed = 0;
+    println!(
+        "  码提示   → 启动模式 {}（下面逐个覆盖）",
+        host.hint_mode().as_str()
+    );
+
+    // ① 默认（mixed）：纯拼音全带码，纯五笔一条都不带
+    host.configure_hint(None, None);
+    let wubi = host.query("vbg", 9);
+    let none_coded = wubi.entries.iter().all(|e| e.code.is_empty());
+    failed += check(
+        "mixed → 五笔段不带码",
+        none_coded,
+        format!("{} 条，无一带码", wubi.entries.len()),
+    );
+
+    // 没有拼音词库时，「拼音段」根本不存在，下面几条无从验起——直接说清楚，
+    // 不假装通过。纯五笔形态下「不带码」已经由上面那条覆盖。
+    if !host.has_pinyin() {
+        println!("  码提示   → 未装拼音词库，跳过拼音段的三档断言");
+        return failed;
+    }
+
+    let py = host.query("hao'", 9);
+    let all_coded = !py.entries.is_empty() && py.entries.iter().all(|e| !e.code.is_empty());
+    let hao = py
+        .entries
+        .iter()
+        .find(|e| e.word == "好")
+        .map(|e| e.code.clone())
+        .unwrap_or_default();
+    failed += check(
+        "mixed → 拼音段带码",
+        all_coded && hao == "vbg",
+        format!("{} 条全带码，「好」的码「{hao}」", py.entries.len()),
+    );
+
+    // 混输的两段：主段是五笔（不带码）、折叠区是拼音（带码）。这条是「按段裁决」
+    // 唯一的直接证据——只看 `hao'` 的话，实现改成「整屏都带码」也能通过。
+    let mixed = host.query("hao", 9);
+    let split = mixed.primary_len as usize;
+    let head_ok = mixed.entries[..split.min(mixed.entries.len())]
+        .iter()
+        .all(|e| e.code.is_empty());
+    let tail_ok = mixed.entries[split.min(mixed.entries.len())..]
+        .iter()
+        .all(|e| !e.code.is_empty());
+    let tail_any = mixed.entries.len() > split;
+    failed += check(
+        "mixed → 主段无码 / 折叠区有码",
+        head_ok && tail_ok && tail_any,
+        format!("主段 {split} 条、折叠区 {} 条", mixed.entries.len() - split),
+    );
+
+    // ② off：一条都不带
+    host.configure_hint(None, Some(HintMode::Off));
+    let off = host.query("hao'", 9);
+    let off_ok = !off.entries.is_empty() && off.entries.iter().all(|e| e.code.is_empty());
+    failed += check(
+        "off → 一律不带码",
+        off_ok,
+        format!("{} 条，无一带码", off.entries.len()),
+    );
+
+    // ③ first_time：没上过屏的词带码；上过一次之后不再带
+    host.configure_hint(None, Some(HintMode::FirstTime));
+    let first = host.query("hao'", 9);
+    let first_coded = first
+        .entries
+        .iter()
+        .find(|e| e.word == "好")
+        .is_some_and(|e| !e.code.is_empty());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    host.handle(heinrich_proto::Frame::Record {
+        code: "hao".into(),
+        word: "好".into(),
+        at_unix: now,
+    });
+    let second = host.query("hao'", 9);
+    let used_quiet = second
+        .entries
+        .iter()
+        .find(|e| e.word == "好")
+        .is_some_and(|e| e.code.is_empty());
+    let others_coded = second
+        .entries
+        .iter()
+        .filter(|e| e.word != "好")
+        .all(|e| !e.code.is_empty());
+    failed += check(
+        "first_time → 只在没上过屏时带码",
+        first_coded && used_quiet && others_coded,
+        format!("首次带码={first_coded}，上屏后不带={used_quiet}"),
+    );
+
+    // 收尾恢复默认：后面的学习用例仍在用同一个 host，不该被这里的强制值影响。
+    host.configure_hint(None, None);
+    failed
+}
+
 fn main() {
     let args = match Args::parse() {
         Ok(a) => a,
@@ -272,6 +423,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // 自测同样不碰用户配置：`--selftest` 里三种模式由代码逐个切换，读真文件
+    // 会让「同一份代码在两台机器上结论不同」——那正是自测要排除的东西。
+    let config_path = if args.selftest {
+        None
+    } else {
+        args.config.clone()
+    };
+    host.configure_hint(config_path, args.hint);
 
     if args.selftest {
         let code = selftest(&mut host);
@@ -334,7 +494,13 @@ fn selftest(host: &mut Host) -> i32 {
     // ---- 混输（§6.1）：判定语言标在结果上，且装没装拼音要走不同的路 ----
     failed += selftest_mixed(host);
 
+    // ---- 码提示（§6.3）：提示跟随「这一段是怎么出来的」，三档各验一次 ----
+    failed += selftest_hint(host);
+
     // ---- 学习（§5.1 / §5.2）：偶用一次抢不走首位，次数真的记上了 ----
+    // 记基线：上面的码提示用例也会回报一次上屏（first_time 需要它），
+    // 那条记录不该算进「学习用例收了几条」。
+    let recorded_before = host.recorded();
     let base: Vec<String> = host
         .query("vbg", 9)
         .entries
@@ -377,10 +543,10 @@ fn selftest(host: &mut Host) -> i32 {
             at_unix: now,
         });
     }
-    let counted = host.recorded() == 20;
+    let counted = host.recorded() - recorded_before == 20;
     println!(
         "  学习   → 收到 {} 条上屏回报（期望 20）  {}",
-        host.recorded(),
+        host.recorded() - recorded_before,
         if counted { "✓" } else { "✗" }
     );
     if !counted {

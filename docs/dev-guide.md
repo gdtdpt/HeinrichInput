@@ -668,10 +668,16 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 ```
 
 **翻页与字符键（D49）**：有候选窗时 `-` 往前、`=` 往后，与 `←/→/PgUp/PgDn` 等价
-（笔记本上 PgUp/PgDn 常要按 Fn，方向键离手位太远，那三组键在真机上等于没有翻页）。
+（笔记本上 PgUp/PgDn 常要按 Fn，方向键又离手位太远，那三组键在真机上等于没有翻页）。
 组合态内（`buffer_len > 0`）所有**会产生字符**的键一律吞掉（`keys::is_text_key`）——
 放行会在组合串中间插字符、终止组合串，`OnCompositionTerminated` 把编码当残留删掉，
-真机表现是「符号先冒出来，然后正在打的字消失了」。功能键（F1–F12、Tab、CapsLock）不受影响。
+真机表现是「符号先冒出来，然后正在打的字消失了」。功能键 F1–F12 / CapsLock 不受影响。
+
+**Tab 是这条规则的一个例外（D53）**：它不插字符，但会让宿主切焦点，焦点一动组合串
+照样被终止、编码照样被删——所以判据不能只看「会不会插字符」，还要看「会不会让组合串
+消失」。`decide` 里 Tab 走单独一支（`VK_TAB if !empty => Noop`），空缓冲时仍是制表符，
+`Ctrl+Tab` 在 `mods.ctrl` 那关就放行了。真机验法：打 `vbg`，按 Tab，候选窗与编码应当
+**原样留着**；再按空格出「好」。
 
 真机上怎么看日志（`%LOCALAPPDATA%\Heinrich\logs\`）：
 
@@ -682,6 +688,87 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 | 打 `hao` 第 1 条是「好」 | 同上但 `主段拼音` | 判定没反转过来 ⇒ 检查 DLL 与 server 是不是同一个版本 |
 | 打 `zhuang` 打不出字（`z` 被吃掉） | `已连上 server（… 纯五笔）` | server 没装拼音词库（`features` 没置位）⇒ 检查 `dist\data\pinyin` 是否存在 |
 | 打拼音出的是字母 | `server 不可用` / `候选查询无应答` | IPC 没连上（D27 的降级），不是混输的问题 |
+
+### 4.12 码提示 chip（M3.4a）
+
+```
+五笔词库 ──┐
+           ├─ attach_wubi_codes（装载期一次）→ PinyinEntry.wubi
+拼音词库 ──┘                                        │
+                                                     ▼
+hint.mode（config.toml / --hint） ──► Host::query 逐条裁决 → Entry.code（空串 = 不提示）
+                                                     │
+                              PROTO_VERSION 4 ───────┘
+                                                     ▼
+                     ipc::Reply.codes → Cands.codes → Candidates.hints
+                                                     ▼
+                        CandidateText.with_hint → ItemBox.hint_rect → Theme.chip_bg + 0.72 号字
+```
+
+**最容易错的一条：拼音候选的 `Candidate.code` 装的是拼音串，不是五笔码。** 用 `hao` 查会拿到
+`code == "hao"`，直接拿去画 chip 就是「好 hao」。码的另一条通路是 `PinyinEntry.wubi`，由
+`PinyinLexicon::attach_wubi_codes` 在装载时用五笔词库反查填好（临时 `词 → 全码` 表，填完即弃）。
+
+**取全码不取简码**：`好` 的二级简码是 `vb`、全码是 `vbg`，chip 给 `vbg`。简码只是把全码后几码
+省掉，先教完整的才不会学出一套「只会打短码」的手感。
+
+**配置怎么读**（`crates/heinrich-scheme/src/config.rs`）：宽容解析 —— 坏行跳过 + warning、
+未知键忽略、`config_version` 比程序新只警告。理由写在模块头：`scheme.toml` 是机器写的，
+错了一定是生成器 bug；`config.toml` 是人手改的，一个拼写错误不该让输入法起不来。
+
+```powershell
+# 看当前生效的模式（server 日志里也有一行「码提示：mixed」）
+Get-Content $env:APPDATA\Heinrich\config.toml
+
+# 改档（改完 ≤1 秒生效，不用重启 server）
+#   hint.mode = "mixed" | "first_time" | "off"
+
+# 不改文件、临时验一档（压过配置文件）
+cargo run -p heinrich-server -- --selftest --scheme-dir data/wubi86 --pinyin-dir data/pinyin
+```
+
+**`first_time` 是近似**：判据是「这个词还没上过屏」（`store.usage(word).n == 0`），不区分当初
+是拼音还是五笔打出来的。严格版要记录「每次上屏的输入来源」——`Record` 帧里其实带着 `code`，
+但学习库没存那一列，属于 M3.5。
+
+**覆盖率实测**（`dist/data/pinyin` 65,125 条 × 五笔全码）：**单字 16,472 条 100%**、多字词组
+28,050/47,953 = 58.5%、合计 45,181/65,125 = 69.4%。查不到的是五笔词库里没有那个词（多为长
+词组），这类候选**不显示 chip**——宁可不说，也不给错的。装载日志会打这一行：
+
+```
+拼音词库：65125 条（415 个音节），混输已启用；其中 45181 条能给出五笔全码（码提示可用）
+```
+
+**怎么验**：
+
+```powershell
+# ① 三档行为（不需要 TSF 壳）
+cargo run -p heinrich-server -- --selftest --scheme-dir data/wubi86 --pinyin-dir data/pinyin
+#   期望：mixed → 五笔段不带码 / 拼音段带码（「好」= vbg）/ 主段无码 + 折叠区有码
+#         off   → 一律不带码
+#         first_time → 首次带码、上屏一次后不带
+
+# ② 排版（CHIP 的几何与命中，需要桌面会话）
+cargo run -p heinrich-cand-preview -- --hint --split 2
+#   --hint 只给 split 之后的条目加码，正好是「折叠区 = 拼音段」的真实形状
+#   截图：python tools\shot-window.py HeinrichCandidateWindowV1 dist\cand-hint.png
+
+# ③ 真机（见 §4.11 的构建流程）
+```
+
+**验 `hint.mode` 时的一个坑**：DLL 在宿主进程里缓存过该码的 `Reply`（M1.3 的 64 条缓存，
+上屏时清），而配置热更新发生在 server。所以「改档 → 再打同一个码」可能命中旧缓存，
+看到的是上一档的样子。**先上屏一次那个码（或换一个码）**再验，就对了。这个陈旧窗口只影响
+开发期的验证手感：真实用户不会每分钟改一次配置，M4 的设置窗口会在改档时一并重启 server。
+
+**装完新 DLL 要先重启宿主程序**：TSF 的 TIP 是进程内 COM DLL，加载了就拔不出来（我们自己的
+`DllCanUnloadNow` 恒返回 `S_FALSE`）。已经打开的记事本 / Chrome / Electron 应用里跑的仍是旧
+DLL，它会拿 `proto 3` 去连 `proto 4` 的 server，握手吃 `Bye` → 降级成「编码原样上屏」。
+新开的窗口自然是新版。查谁还持有旧 DLL：
+
+```powershell
+Get-Process | ForEach-Object { try { if ($_.Modules.ModuleName -contains 'heinrich_win.dll') { "$($_.ProcessName)($($_.Id))" } } catch {} }
+```
 
 ## 5. 数据管线
 
@@ -757,6 +844,24 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     `abc → 无命中`。教训有两层：① 兜底分支的注释写「已无人调用」时，去搜**真正的调用链**
     而不是相信注释；② 断言「空」比断言「有哪些」更能抓住兜底泄漏，因为泄漏的特征就是
     「本不该有，却有了」。
+25. **同名同义的两个 `code` 字段，值可能完全不同。** `Candidate.code` 是「这条候选**是怎么被
+    查出来的**」——五笔侧是码，拼音侧是**拼音串**（`hao` 命中「好」时 `code == "hao"`）；
+    而码提示要的是「这个词用五笔**怎么打**」（`vbg`）。M3.4a 第一版直接把 `code` 当 chip，
+    自测立刻报 `「好」的码「hao」`。两个问题只能两个字段（`Candidate.wubi`），并且词 →
+    全码的反查必须在装载期做一次（按键路径上扫 13.6 万条是不可能的）。
+26. **给人改的配置不能复用给机器写的解析器。** `scheme.toml` 的 `Manifest` 遇到任何不合规
+    语法都报错（对，因为那是生成器 bug）；`config.toml` 若照抄，用户少写一个引号就打不了字。
+    正确做法是宽容读取：坏行跳过 + warning，只在日志里吼。反过来的错误同样存在——
+    把宽容解析器用在数据文件上，会把「生成器写坏了」变成「静默少了几千条词」。
+27. **决定对了，不代表写下来的理由对；错理由会被后来的人当成依据。** D49 把 Tab 与
+    F1/CapsLock 归进「放行也不要紧的功能键」，理由是「它们不会往文档里插字符，不会打断
+    组合串」。前半句对，后半句对 Tab **是错的**：Tab 让宿主切焦点，TSF 随即终止组合串，
+    `OnCompositionTerminated` 把编码当残留删掉。这条错理由后来又支撑了 D50 的一个设计
+    （「`Ctrl+Shift+/` 取当前高亮项」），直到真机试用才发现「高亮根本移不动、那个键与
+    `Ctrl+Shift+1` 等价」。两条教训：① 决策记录里**「观察到的现象」与「推断出的后果」要分开
+    写**，推断的那部分必须标明「未实测」；② 一个设计若依赖「某个状态可以被用户改变」，
+    落地前先 grep 那个状态**有没有写入点**——`Cands.highlight` 全仓只有三处写入且全是
+    `= 0`，一眼就能看出来。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
@@ -788,7 +893,9 @@ total = w + g × ln(1+n) × 0.5^(Δt/H)
 | M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
 | M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 `z` 与 24 码上限；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
-| M3.4–M3.5 | 未开始（码提示 chip + 外链查询 / `z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地） |
+| M3.4a 码提示 chip | 🟡 代码完成 + 自测通过，待验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。见 §4.12） |
+| M3.4b 码位键位图 | 未开始（D50 / §6.7：`data/wubi86/roots.toml` 25 键 130 字根 + `heinrich-cli roots` 校验 + `Ctrl+Shift+1..9` 浮窗（仅候选窗存在时接管）。`Ctrl+Shift+/` 入口已按 D52 撤销——高亮恒为第 1 项，它与 `Ctrl+Shift+1` 等价） |
+| M3.5 | 未开始（`z` 学习键 + 段级多段标记 `hao'vb`；`'` 的整串语义已在 M3.3 一并落地。外链查询已降为 M5 可选，见 §6.6） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

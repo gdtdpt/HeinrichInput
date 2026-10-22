@@ -35,7 +35,10 @@ use std::fmt;
 ///   `primary_len`（判定语言与折叠分界）。三个字段都插在原有字段**之前**的固定
 ///   位置，所以字节布局变了、但读顺序仍是直的；旧 DLL 连上来会因为版本不符被
 ///   `Bye`，不会把 `source` 当成候选条数读出一堆乱码。
-pub const PROTO_VERSION: u16 = 3;
+/// - v4：M3.4a 码提示。`Entry` 加 `code`（**追加在 `label` 之后**，前三个字段的
+///   位置不动）。码由 server 决定给不给（`hint.mode` 与「这一段是怎么出来的」都在
+///   server 侧），DLL 只负责「非空就画 chip」——这样提示规则只有一处实现。
+pub const PROTO_VERSION: u16 = 4;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -90,10 +93,15 @@ impl Mode {
 
 /// 一个候选。`label` 是「全码 / 一级简码 / 二级简码 / 三级简码」这类给人看的标签，
 /// 直接沿用引擎的文案，避免协议与引擎各维护一份枚举。
+///
+/// `code` 是这个词的**五笔码**（拼音段候选用来画码提示 chip，§6.3）。它**不一定**
+/// 等于本次的查询串：用拼音查 `hao`，命中「好」时查询串是 `hao`、而码是 `vb`。
+/// 空串表示「本次不提示」（server 已经按 `hint.mode` 与段来源裁决过了）。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub word: String,
     pub label: String,
+    pub code: String,
 }
 
 /// 一条消息。
@@ -237,6 +245,10 @@ impl Frame {
                 for e in entries {
                     put_str(&mut body, &e.word);
                     put_str(&mut body, &e.label);
+                    // v4 的追加字段：老 DLL 读到这里会剩一截尾巴，由
+                    // `decode_body` 的「帧尾不许多字节」拦下——正是我们要的效果，
+                    // 模糊兼容会把码当成下一条候选的词。
+                    put_str(&mut body, &e.code);
                 }
             }
             Frame::SetMode { mode } => body.push(mode.as_u8()),
@@ -332,6 +344,7 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
                 entries.push(Entry {
                     word: r.string()?,
                     label: r.string()?,
+                    code: r.string()?,
                 });
             }
             Frame::Result {
@@ -454,10 +467,12 @@ mod tests {
                 Entry {
                     word: "好".into(),
                     label: "全码".into(),
+                    code: "vbg".into(),
                 },
                 Entry {
                     word: "好玩".into(),
                     label: "全码".into(),
+                    code: "vbgf".into(),
                 },
             ],
         });
@@ -554,10 +569,60 @@ mod tests {
             entries: vec![Entry {
                 word: "好玩".into(),
                 label: "三级简码".into(),
+                code: "vbgf".into(),
             }],
         };
         let bytes = f.encode();
         let back = Frame::decode(&bytes).unwrap();
         assert_eq!(f, back);
+    }
+
+    /// 拼音查出来的候选，`code` 与查询串**不是一回事**（§6.3 的数据前提）。
+    /// 这条把「码跟着候选走」钉死：用 `hao` 查「好」，码必须是 `vb`。
+    #[test]
+    fn entry_code_is_not_the_query_string() {
+        let f = Frame::Result {
+            code: "hao".into(),
+            source: source::PINYIN,
+            primary_len: 2,
+            entries: vec![
+                Entry {
+                    word: "好".into(),
+                    label: "全码".into(),
+                    code: "vb".into(),
+                },
+                Entry {
+                    word: "号".into(),
+                    label: "全码".into(),
+                    code: "kgn".into(),
+                },
+            ],
+        };
+        let back = Frame::decode(&f.encode()).unwrap();
+        match back {
+            Frame::Result { code, entries, .. } => {
+                assert_eq!(code, "hao", "查询串与码必须各自独立");
+                assert_eq!(entries[0].code, "vb");
+                assert_eq!(entries[1].code, "kgn");
+            }
+            other => panic!("解出了别的帧：{other:?}"),
+        }
+    }
+
+    /// 空 `code` = 本次不提示，必须能原样往返（不提示是最常见的情况：
+    /// 五笔段、`hint.mode = off`、以及所有不做提示的场景）。
+    #[test]
+    fn empty_code_roundtrips() {
+        let f = Frame::Result {
+            code: "vbg".into(),
+            source: source::WUBI,
+            primary_len: 1,
+            entries: vec![Entry {
+                word: "好".into(),
+                label: "全码".into(),
+                code: String::new(),
+            }],
+        };
+        assert_eq!(Frame::decode(&f.encode()).unwrap(), f);
     }
 }

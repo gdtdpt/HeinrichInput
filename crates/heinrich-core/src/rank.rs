@@ -61,6 +61,13 @@ impl RankingConfig {
 pub struct Candidate {
     pub word: String,
     pub code: String,
+    /// 这个词的**五笔全码**（拼音候选才有；码提示 chip 画它，§6.3）。
+    ///
+    /// 与 `code` 分开而不是复用，是因为两者语义不同：`code` 是「这条候选是怎么
+    /// 被查出来的」（拼音下是拼音串，还参与同分次序与首位判定），`wubi` 是
+    /// 「这个词用五笔该怎么打」。用拼音查 `hao` 得到「好」时，前者是 `hao`、
+    /// 后者是 `vbg`——合并成一个字段等于把两个问题混成一个。
+    pub wubi: String,
     pub kind_label: &'static str,
     /// 归一化静态权重
     pub w_norm: f32,
@@ -145,6 +152,8 @@ pub struct RankInput<'a> {
     pub word: &'a str,
     /// 五笔是编码，拼音是拼音串——它只用于同分时稳定次序与 `throne` 的身份判定
     pub code: &'a str,
+    /// 这个词的五笔全码。空串 = 不知道（五笔侧候选不需要它：能拆出来的人不用提示）
+    pub wubi: &'a str,
     /// 归一化静态权重
     pub w_norm: f32,
     pub kind_label: &'static str,
@@ -165,6 +174,9 @@ pub fn rank_indices<S: UsageStore + ?Sized>(
             RankInput {
                 word: &entry.word,
                 code: entry.code.as_str(),
+                // 五笔侧不给提示（§6.3：能拆出来就说明已经会了），所以这里没有
+                // 「词 → 全码」反查——那正是 `heinrich-scheme` 里装载期才做的事。
+                wubi: "",
                 w_norm: entry.w_norm,
                 kind_label: entry.kind.label(),
             }
@@ -200,6 +212,7 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
         let cand = Candidate {
             word: item.word.to_string(),
             code: item.code.to_string(),
+            wubi: item.wubi.to_string(),
             kind_label: item.kind_label,
             w_norm: item.w_norm,
             learning,
