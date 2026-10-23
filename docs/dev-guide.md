@@ -1678,9 +1678,9 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
 | M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
 | M3.5 `z` 通配 + 段级多段 | ✅ **2026-10-23 真机验收通过**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收。验收中发现词表缺新词，转 D65 预研——见 §8 后继） |
-| M3.6 自定义词组 | 🟡 **代码与自测完成，待真机验收**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」） |
+| M3.6 自定义词组 | ✅ **已验收（以自测为准，不做真机手测，D75）**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」）。热生效链路已由 M4a 真机经同一份文件覆盖 |
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
-| M4a 设置窗口 + 词组页 | 🟡 **代码与自测完成，待真机验收**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤） |
+| M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
 | M4b 通用设置页 + 学习数据页 | ⬜ 未开始（`hint.mode` / `learning_gain` / `half_life_days`；`learning.db` 只读列表 + 清单词学习分） |
 | M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
