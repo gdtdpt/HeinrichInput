@@ -19,7 +19,7 @@ use heinrich_scheme::user::UserWord;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, GetSysColorBrush, ScreenToClient, SetBkMode, HFONT, TRANSPARENT,
+    CreateFontW, GetDC, GetSysColorBrush, ReleaseDC, ScreenToClient, SetBkMode, HFONT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
@@ -38,17 +38,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
     RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
     TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA,
-    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN, WM_NCCREATE,
-    WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER,
-    WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW,
+    WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
 use crate::model::{Model, Row};
 
 const CLASS_NAME: PCWSTR = w!("HeinrichSettings");
+
+// Static 的两个样式位（`SS_CENTER` / `SS_CENTERIMAGE`）。它们在 windows crate 的
+// `Win32_System_SystemServices` 里，那个 feature 没开、为一对常量开一整个模块不值，
+// 直接照 winuser.h 写字面量。
+const SS_CENTER: u32 = 0x0000_0001;
+const SS_CENTERIMAGE: u32 = 0x0000_0200;
 
 const ID_TAB: usize = 100;
 const ID_LIST: usize = 101;
@@ -275,35 +281,25 @@ impl App {
             }
         }
 
-        self.l_word = child(
-            hwnd,
-            w!("Static"),
-            "词",
-            WINDOW_STYLE(0),
-            ID_L_WORD,
-            self.font,
-        )?;
+        // 字段名居中（`SS_CENTER` + `SS_CENTERIMAGE`：水平、垂直都居中）。
+        // 默认的 Static 是左上对齐，一行高 26px 的框里字贴着上沿、又紧靠左边框，
+        // 和右边同样高的编辑框摆在一起看着像错位。
+        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
+        self.l_word = child(hwnd, w!("Static"), "词", label_style, ID_L_WORD, self.font)?;
         self.l_pinyin = child(
             hwnd,
             w!("Static"),
             "拼音",
-            WINDOW_STYLE(0),
+            label_style,
             ID_L_PINYIN,
             self.font,
         )?;
-        self.l_code = child(
-            hwnd,
-            w!("Static"),
-            "码",
-            WINDOW_STYLE(0),
-            ID_L_CODE,
-            self.font,
-        )?;
+        self.l_code = child(hwnd, w!("Static"), "码", label_style, ID_L_CODE, self.font)?;
         self.l_weight = child(
             hwnd,
             w!("Static"),
             "权重",
-            WINDOW_STYLE(0),
+            label_style,
             ID_L_WEIGHT,
             self.font,
         )?;
@@ -896,14 +892,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => {
-            // 让 Static 背景透明，否则文字背后是一块灰底
+            // 所有 Static 都用**父窗口自己的背景色**。主窗口类注册时的 hbrBackground
+            // 是 `COLOR_BTNFACE + 1`（系统灰），这里必须回同一个颜色：原来回的是
+            // `COLOR_WINDOW`（白），于是每个字段名背后挂一块白方块，在浅灰底上一眼
+            // 就看出来（F47）。文字本身用透明背景，字缝里透出的也是这块灰。
             let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut core::ffi::c_void);
             unsafe {
                 SetBkMode(hdc, TRANSPARENT);
             }
             let brush = unsafe {
                 GetSysColorBrush(
-                    windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX(5), /* COLOR_WINDOW */
+                    windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX(15), /* COLOR_BTNFACE */
                 )
             };
             LRESULT(brush.0 as isize)
@@ -1258,6 +1257,58 @@ fn check_panel_flow(app: &App, path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 字段名（`词/拼音/码/权重`）的两条视觉约定：
+///
+/// 1. 样式里带 `SS_CENTER | SS_CENTERIMAGE`（水平+垂直居中）——默认的 Static 是
+///    左上对齐，跟同高的编辑框摆一起看着像错位；
+/// 2. 主窗口对 `WM_CTLCOLORSTATIC` 回的画刷必须是**父窗口背景色**（`COLOR_BTNFACE`），
+///    不是 `COLOR_WINDOW`。回白的后果是每个字段名背后挂一块白方块，浅灰底上一眼可见
+///    （F47）。
+///
+/// 第 2 条直接发一次真的 `WM_CTLCOLORSTATIC` 看返回值——这比读代码可靠，也比截图
+/// 精确：色差只有 15 级，肉眼复查容易漏。
+fn check_labels(hwnd: HWND, app: &App) -> Result<(), String> {
+    let want = unsafe {
+        GetSysColorBrush(
+            windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX(15), /* COLOR_BTNFACE */
+        )
+    };
+    let dc = unsafe { GetDC(None) };
+    let result = (|| -> Result<(), String> {
+        for &(h, name) in &[
+            (app.l_word, "词"),
+            (app.l_pinyin, "拼音"),
+            (app.l_code, "码"),
+            (app.l_weight, "权重"),
+        ] {
+            let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) } as u32;
+            if style & SS_CENTER == 0 || style & SS_CENTERIMAGE == 0 {
+                return Err(format!(
+                    "字段名「{name}」没有居中样式（SS_CENTER | SS_CENTERIMAGE）"
+                ));
+            }
+            let got = unsafe {
+                send(
+                    hwnd,
+                    WM_CTLCOLORSTATIC,
+                    WPARAM(dc.0 as usize),
+                    LPARAM(h.0 as isize),
+                )
+            };
+            if got.0 as isize != want.0 as isize {
+                return Err(format!(
+                    "字段名「{name}」的背景画刷不是父窗口背景色——白方块会露出来（F47）"
+                ));
+            }
+        }
+        Ok(())
+    })();
+    unsafe {
+        ReleaseDC(None, dc);
+    }
+    result
+}
+
 /// 建窗（不显示、不进消息循环）。
 fn create_window(app: &App) -> Result<HWND, String> {
     unsafe {
@@ -1331,6 +1382,7 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
 
     let result = (|| -> Result<(), String> {
         check_z_order(hwnd)?;
+        check_labels(hwnd, &app)?;
         check_panel_flow(&app, &path)?;
         // 模拟 Tab 拿到焦点（点中它、或 Tab 键走过去）：它自己会抬到最上层，
         // 我们的子类化过程必须把它压回去

@@ -1140,11 +1140,16 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 面板下方那行说明是动态的：没选中 → 讲怎么加词；选中某行 → 直接写「打字时输 `tmwy`」。
 这条是踩坑 45 换来的。
 
+**字段名与底色**（F47）：四个 `词/拼音/码/权重` 用 `SS_CENTER | SS_CENTERIMAGE`（水平 +
+垂直居中），`WM_CTLCOLORSTATIC` 回**父窗口背景刷**（`COLOR_BTNFACE`）而不是白色。后者
+差十几级灰度、看图容易漏，`--selftest-ui` 直接发一次真的 `WM_CTLCOLORSTATIC` 比对返回
+画刷（见踩坑 47）。
+
 **自己验**
 
 ```
 cargo run -q -p heinrich-settings -- --selftest --data data/wubi86      # 数据层七项
-cargo run -q -p heinrich-settings -- --selftest-ui --data data/wubi86   # z 序 + 命中 + 面板流程
+cargo run -q -p heinrich-settings -- --selftest-ui --data data/wubi86   # z 序 + 命中 + 面板流程 + 字段名样式
 # 带一组假词开窗口（不会碰 %APPDATA%）
 cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 ```
@@ -1394,6 +1399,21 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     另外一条同类经验：验证时要 `BM_CLICK` / `SendMessage(WM_CHAR)` 打真消息，但**读控件
     文字别用 `GetWindowText`**——跨进程读 Edit 的内容会返回空串（`WM_SETTEXT` 返回 1、
     `GetWindowTextLength` 却是 0），很容易被误读成「没写进去」。判断以**落盘的文件**为准。
+
+47. **`WM_CTLCOLORSTATIC` 回的画刷必须等于主窗口的背景刷。** 窗口类注册时
+    `hbrBackground` 是 `COLOR_BTNFACE + 1`，而 `WM_CTLCOLORSTATIC` 里图省事回了
+    `COLOR_WINDOW`（白）——结果每个字段名背后挂一块白方块，浅灰底上一眼可见（F47）。
+    写 `SetBkMode(TRANSPARENT)` 只能让文字背景透出去，**画刷仍然会填满整个控件矩形**，
+    两件事要一起改。
+    两个附带坑：
+    - `SS_CENTER` / `SS_CENTERIMAGE` 在 windows crate 的 `Win32::System::SystemServices`
+      里，那个 feature 没开（`could not find SystemServices in System`）。为一对常量开一整个
+      feature 不划算，照 `winuser.h` 写字面量 `0x1` / `0x200` 即可。
+    - 这类**只差十几级灰度**的视觉问题，看图容易漏（尤其截图经过 PNG 压缩或缩放）。
+      判据用像素：取 label 矩形四边众数当背景色，与窗口空白处比 `sum(|ΔRGB|)`；
+      居中度用墨迹包围盒中点与控件中心的偏移（本次实测水平 +0.0 / +0.5 px、背景
+      `(240,240,240)` 与窗口底一致）。自测里则直接发一次真的 `WM_CTLCOLORSTATIC`
+      比对返回画刷——比读代码可靠，也比截图精确。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```
