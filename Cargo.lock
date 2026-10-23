@@ -133,6 +133,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "heinrich-settings"
+version = "0.1.0"
+dependencies = [
+ "heinrich-scheme",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "heinrich-setup"
 version = "0.1.0"
 dependencies = [

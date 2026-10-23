@@ -134,5 +134,11 @@ Invoke-Step '自定义词自测' {
     }
 }
 
+# 设置窗口（M4a）：窗口本身要人看，但**数据层**可以自测——它在临时目录里跑一遍
+# 「读空文件 / 加词 / 原子落盘（不留 .tmp）/ 重读 / 推导（拼音反查 + 码按规则推）/
+# 删除与恢复 / 坏行只警告」，正是词组页真正会出事的那几处。
+# 同样绝不碰 %APPDATA%：自测改用户词库是不可接受的副作用。
+Invoke-Step '设置窗口自测' { & cargo run --release -q -p heinrich-settings -- --selftest --data $DataDir }
+
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

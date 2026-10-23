@@ -1080,6 +1080,46 @@ cargo run -q -p heinrich-cli -- word rm 微信 --file out/t.tsv --data data/wubi
 
 **踩过的坑**（已收进 §12 的 40 / 41）：负例不能凭语感写，语料不能只取高频词。
 
+### 4.18 设置窗口（M4a，`apps/windows/settings`）
+
+**它有多轻**：只写 `words.tsv`。生效靠 server 的 mtime 节流（同一秒路径，见 §4.16），
+所以这个 exe **不碰管道、不碰协议、不碰 SQLite**——关掉它，加的词照样在。这是 D65
+选「热重载而不升协议」换来的第二次红利（第一次是 CLI 不用 IPC）。
+
+**为什么不再自绘**：候选窗必须自绘（D35）是因为要画 chip 与 emoji，宿主控件做不到；
+设置窗口没有这个需求，而编辑框里要**用亨利自己打中文**——自绘就得连光标、选区、
+IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿主控件做不到的绘制需求」，
+不是「观感统一」。以后真想统一，只换绘制层，`layout`/动作逻辑不动。
+
+**结构**
+
+| 文件 | 职责 |
+|---|---|
+| `main.rs` | 参数（`--words` / `--data` / `--selftest`）、DPI 声明、`--selftest` 七项断言 |
+| `lex.rs` | 找 `data/wubi86`（exe 同级 → 上三级 → cwd）、装载 `Scheme` + `PinyinLexicon` |
+| `model.rs` | **不依赖 Win32**：`Model`（文件 + 词条）、`Row`（原文 + 推导列）、`*_cell()` 的 `*` 约定 |
+| `ui.rs` | 窗口类、Tab、ListView、编辑面板、按钮动作、`layout()` |
+
+`model.rs` 与 Win32 无关是刻意的：自测直接跑它，窗口只负责「把 Row 画进 ListView、
+把编辑框写回 Model」。这样「保存会不会留下 .tmp」「改词名会不会留下旧行」这类问题
+不需要人点鼠标就能验。
+
+**编辑面板只显示文件里的内容**（不显示推导结果）。否则用户点一次「保存」，
+`weixin*`（推导）就变成 `weixin`（手填）——从此词库升级再也影响不到这个词。
+这是「可编辑 = 文件内容 / 显示 = 最终效果」的分界，界面上靠 `*` 与脚注交代。
+
+**自己验**
+
+```
+cargo run -q -p heinrich-settings -- --selftest --data data/wubi86
+# 带一组假词开窗口（不会碰 %APPDATA%）
+cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
+```
+
+窗口的观感/对齐靠 `win-ui-selfscreenshot` 那套截图（`PrintWindow` 对普通窗口有效，
+分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
+截图必须在同一次调用里「启动 → 睡 2 秒 → 截」。
+
 ## 5. 数据管线
 
 ```
@@ -1251,6 +1291,16 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     这类最常用词——它们恰好是排序与池子都最照顾的那批，测不出边角。「悟」排在 `wu` 的第 17 位
     就是这么漏掉的：只有把取样铺到全量（前 200 取 25、其余均匀取 25），才会撞上「池子差一条」。
 
+42. **`WM_NCCREATE` 里只返回 1 不转 `DefWindowProcW`，窗口会没有标题。** 窗口标题是
+    `DefWindowProcW` 在处理 `WM_NCCREATE` 时从 `CREATESTRUCT` 存下来的；我们为了存
+    `GWLP_USERDATA` 自己接管了这条消息，返回 `LRESULT(1)` 就把它跳过了。现象很迷惑：
+    窗口肉眼可见、能操作，但 `FindWindowW(L"亨利五笔 · 设置")` 找不到，截图脚本报
+    `window not found`。写法：存完 userdata 后 `return DefWindowProcW(...)`。
+43. **GUI 进程必须在建窗前声明 DPI 感知（`SetProcessDpiAwarenessContext`）。** 不声明
+    时进程是「DPI 不感知」的：`GetDpiForSystem()` 返回 96、我们按 96 布局，然后 Windows
+    把整张窗口当位图放大到 200%——窗口本身 900×600，截图出来是 1800×1200 且字全糊。
+    迷惑点在于**布局坐标全部正确**，只是被整体缩放了一次，肉眼看截图会误判成「字号太小」。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
 ```
@@ -1294,7 +1344,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.5 `z` 通配 + 段级多段 | ✅ **2026-10-23 真机验收通过**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收。验收中发现词表缺新词，转 D65 预研——见 §8 后继） |
 | M3.6 自定义词组 | 🟡 **代码与自测完成，待真机验收**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」） |
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
-| M4a 设置窗口 + 词组页 | 🟡 **进行中**（`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；保存走临时文件 + 原子替换） |
+| M4a 设置窗口 + 词组页 | 🟡 **代码与自测完成，待真机验收**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤） |
 | M4b 通用设置页 + 学习数据页 | ⬜ 未开始（`hint.mode` / `learning_gain` / `half_life_days`；`learning.db` 只读列表 + 清单词学习分） |
 | M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |

@@ -23,6 +23,7 @@ members = [
     "apps/windows/setup",
     "apps/windows/ui",
     "apps/windows/cand-preview",
+    "apps/windows/settings",
 ]
 
 [workspace.package]
