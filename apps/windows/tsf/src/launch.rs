@@ -48,7 +48,9 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// 本 DLL 所在目录。取不到（还没经过 `DllMain`）时为 `None`。
-fn module_dir() -> Option<PathBuf> {
+///
+/// `pub(crate)`：语言栏按钮的「打开词库文件夹」也用它定位 `data`。
+pub(crate) fn module_dir() -> Option<PathBuf> {
     let raw = DLL_MODULE.load(Ordering::Acquire);
     if raw == 0 {
         return None;

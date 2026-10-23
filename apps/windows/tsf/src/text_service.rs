@@ -54,10 +54,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfDocumentMgr,
     ITfEditSession, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl, ITfKeyEventSink,
-    ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-    ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE,
-    TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
+    ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfSource,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
+    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
+    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
 
 use crate::cand;
@@ -65,6 +65,7 @@ use crate::caret::CaretProbe;
 use crate::ipc;
 use crate::keycap;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap};
+use crate::langbar;
 use crate::preedit::{CompSlot, Goal, PreeditSession};
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
@@ -114,8 +115,11 @@ pub struct Core {
     /// 组合串显示的内容就是它——两者是同一份状态的两种表现，所以缓冲一变就要同步
     /// 组合串，别让它们各自漂移。
     buffer: RefCell<String>,
-    /// 中英模式。
-    mode: Cell<Mode>,
+    /// 中英模式。`Rc` 共享给语言栏按钮（左键切换同一份），见 `langbar`。
+    mode: Rc<Cell<Mode>>,
+    /// 语言栏按钮（任务栏角标入口）。`Activate` 时挂、`Deactivate` 时摘；
+    /// 模式切换时 `notify` 让图标重取。None = 还没激活或挂载失败。
+    langbar: RefCell<Option<windows::core::ComObject<langbar::LangBarButton>>>,
     /// 单击 Shift 切中英的状态机。
     ///
     /// 判定逻辑在 `keys::ShiftTap`（纯函数，有单测）；这里只负责每次按键回调时
@@ -162,7 +166,8 @@ impl Core {
             keysink_advertised: Cell::new(false),
             seq,
             buffer: RefCell::new(String::new()),
-            mode: Cell::new(Mode::Chinese),
+            mode: Rc::new(Cell::new(Mode::Chinese)),
+            langbar: RefCell::new(None),
             shift_tap: RefCell::new(ShiftTap::default()),
             comp: Rc::new(RefCell::new(None)),
             comp_sink: RefCell::new(None),
@@ -235,6 +240,13 @@ impl Core {
         keys::decide(input, vk, self.mods())
     }
 
+    /// 语言栏按钮还在就通知它重取图标（模式变了）。
+    fn notify_langbar(&self) {
+        if let Some(obj) = &*self.langbar.borrow() {
+            obj.notify();
+        }
+    }
+
     /// 每次按键回调的入口都调一次：采样物理 Shift 状态，推进「单击切中英」状态机。
     ///
     /// **四条回调路径全都要调**。M1.1 第一版只在 `OnKeyDown` 里置位，结果
@@ -264,6 +276,8 @@ impl Core {
         // 上报给 server：模式是**全局**状态（D34）。本地先改是为了让本进程立刻生效，
         // 上报走队列——切模式发生在 Shift 松开的那一刻，那是键路径，不能等 IPC。
         ipc::set_mode(next == Mode::Chinese);
+        // 语言栏按钮的图标跟着模式走（任务栏角标上的「亨/英」）。
+        self.notify_langbar();
         let flushed = self.flush_codes_as_letters(pic);
         // 窗口跟着撤：切到英文模式后还挂着一屏中文候选，等于骗用户按空格。
         self.clear_popups();
@@ -737,15 +751,24 @@ impl TextService_Impl {
 
         unsafe {
             let thread_mgr = ptim.ok()?;
+            // 每一步失败都标注阶段名：宿主里「激活了却没功能」只有这份日志可查。
+            let stage = |name: &'static str, e: windows::core::Error| -> windows::core::Error {
+                tsf_error!("#{} Activate·{name} 失败：{e}", self.seq);
+                e
+            };
 
             // 焦点 sink：用来在切窗口时清缓冲，否则在 A 窗口打的字会跑到 B 窗口（预研坑 #5）。
             let source: ITfSource = thread_mgr.cast()?;
-            let cookie = source.AdviseSink(&ITfThreadMgrEventSink::IID, self.as_interface_ref())?;
+            let cookie = source
+                .AdviseSink(&ITfThreadMgrEventSink::IID, self.as_interface_ref())
+                .map_err(|e| stage("挂焦点 sink", e))?;
             self.thread_mgr_cookie.set(cookie);
 
             // 按键 sink：唯一真正关心按键的地方。
             let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
-            keystroke_mgr.AdviseKeyEventSink(tid, self.as_interface_ref(), true)?;
+            keystroke_mgr
+                .AdviseKeyEventSink(tid, self.as_interface_ref(), true)
+                .map_err(|e| stage("挂按键 sink", e))?;
             self.keysink_advertised.set(true);
 
             // 组合串 sink：`StartComposition` 要一个 `ITfCompositionSink`，
@@ -756,6 +779,13 @@ impl TextService_Impl {
                 ComObjectInterface::<IUnknown>::as_interface_ref(self).to_owned();
             let comp_sink: ITfCompositionSink = self_unknown.cast()?;
             *self.comp_sink.borrow_mut() = Some(comp_sink);
+
+            // 语言栏按钮：任务栏角标入口（左键切中英，右键菜单开设置）。
+            // 失败只记日志——这个按钮是加分项，挂不上不该拖死整个输入法。
+            match self.init_langbar(thread_mgr) {
+                Ok(()) => {}
+                Err(e) => tsf_error!("#{} 语言栏按钮挂载失败：{e}", self.seq),
+            }
 
             *self.thread_mgr.borrow_mut() = Some(thread_mgr.clone());
         }
@@ -791,11 +821,40 @@ impl TextService_Impl {
         Ok(())
     }
 
+    /// 挂语言栏按钮。`thread_mgr` 还活着时才能调（`AddItem` 要从它拿管理器）。
+    fn init_langbar(&self, tim: &ITfThreadMgr) -> Result<()> {
+        unsafe {
+            let mgr: ITfLangBarItemMgr = tim.cast()?;
+            let obj = windows::core::ComObject::new(langbar::LangBarButton::new(self.mode.clone()));
+            let item: ITfLangBarItemButton = obj.to_interface();
+            mgr.AddItem(&item)?;
+            // 与小狼毫一致：挂上后明确声明「要显示」，把 HIDDEN 位清掉。
+            obj.set_shown(true);
+            *self.langbar.borrow_mut() = Some(obj);
+        }
+        Ok(())
+    }
+
     fn deactivate_inner(&self) -> Result<()> {
         let Some(thread_mgr) = self.thread_mgr.borrow_mut().take() else {
             // 没激活过就 Deactivate：TSF 允许这么调。
             return Ok(());
         };
+
+        // 先摘语言栏按钮——必须在 thread_mgr 还活着时做。
+        if let Some(obj) = self.langbar.borrow_mut().take() {
+            unsafe {
+                match thread_mgr.cast::<ITfLangBarItemMgr>() {
+                    Ok(mgr) => {
+                        let item: ITfLangBarItemButton = obj.to_interface();
+                        if let Err(e) = mgr.RemoveItem(&item) {
+                            tsf_error!("#{} RemoveItem 失败：{e}", self.seq);
+                        }
+                    }
+                    Err(e) => tsf_error!("#{} 取 ITfLangBarItemMgr 失败：{e}", self.seq),
+                }
+            }
+        }
 
         unsafe {
             if self.keysink_advertised.get() {
@@ -849,7 +908,10 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Activate(&self, ptim: Ref<ITfThreadMgr>, tid: u32) -> Result<()> {
         guarded("Activate", Ok(()), || {
             // 失败也不抛 Err：TSF 一旦认为初始化失败，可能再也不给激活机会。
-            let _ = self.activate_inner(ptim, tid);
+            // 但失败原因必须留下——否则「激活了却没功能」无从排查。
+            if let Err(e) = self.activate_inner(ptim, tid) {
+                tsf_error!("#{} Activate 内部失败：{e}", self.seq);
+            }
             Ok(())
         })
     }

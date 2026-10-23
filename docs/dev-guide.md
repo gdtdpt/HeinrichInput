@@ -1171,14 +1171,46 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
 截图必须在同一次调用里「启动 → 睡 2 秒 → 截」。
 
-### 4.19 设置窗口怎么被打开（M4a7 / D69、D70）
+### 4.19 设置窗口怎么被打开（M4a7 / D69、D70、D71）
 
-**先记住结论：开始菜单是唯一可靠的入口，系统设置的「选项」按钮指望不上。**
+**先记住结论：开始菜单是主入口；任务栏角标的语言栏按钮是第二入口（M4a8）；系统设置的
+「选项」按钮指望不上。**
 
 | 入口 | 触发 | 代码 | 可用性 |
 |---|---|---|---|
+| 任务栏角标「亨/英」图标 | 左键切中英；右键 → 设置 / 打开词库文件夹 | `tsf/src/langbar.rs` | **待真机验收**（端到端测试已过） |
 | 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs` | **主路**，写两处位置 |
 | 系统设置 → 语言选项 → 键盘 → 亨利五笔 → 选项 | `CoCreateInstance(IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs` + `tsf/src/launch.rs` | 接口在，但 Win10 22H2 **不画按钮** |
+
+**语言栏按钮（M4a8 / D71）**：小狼毫同款路径（`WeaselTSF/LanguageBar.cpp`）。按钮是独立
+COM 对象（`LangBarButton`，`#[implement(ITfLangBarItemButton, ITfSource)]`），不引用
+`TextService`（避免引用环），中英模式经 `Rc<Cell<Mode>>` 与 `Core.mode` 共享；
+`Activate()` 时 QI `ITfLangBarItemMgr → AddItem`、`Deactivate()` 时 `RemoveItem`，
+不需要 `ITfFunctionProvider`。guidItem 用 `GUID_LBI_INPUTMODE`（接入 Win10 任务栏角标
+显示逻辑），样式 `BTN_BUTTON | BTN_MENU | SHOWNINTRAY`。
+
+端到端测试 `langbar_item_survives_activate_and_deactivate`（`#[ignore]`，手动跑）钉住的
+三个坑——测试走 `ITfInputProcessorProfileMgr::ActivateProfile` 真激活，**测的是 dist 里的
+DLL**，跑之前必须 `tools\build.ps1`：
+
+```powershell
+tools\build.ps1
+cargo test -p heinrich-win --lib langbar_item_survives -- --ignored --nocapture
+```
+
+1. **`ActivateProfile` 的 dwflags 必须带 `TF_IPP_FLAG_ACTIVE(1)`**——传 0 恒
+   `E_INVALIDARG`，TIP 与普通键盘布局都一样，hkl 给不给都一样。这是本次调试最大的一笔
+   浪费：先怀疑「langid 不是当前语言」（那是老接口 `ActivateLanguageProfile` 的限制）、
+   再怀疑 hkl（`GetProfile` 查回的也是 0x0），最后才试 flag。
+2. **hkl 传 0 即可**——`GetProfile` 查回我们 TIP 的 hkl 就是 0x0。
+3. **恢复原 profile 要分类型**——`GetActiveProfile` 查回 clsid 为零说明原来是普通键盘布局
+   （如美式键盘），要用 `TF_PROFILETYPE_KEYBOARDLAYOUT` + 同款 ACTIVE flag 恢复；按
+   INPUTPROCESSOR 恢复零 clsid 也是 `E_INVALIDARG`。
+
+另一个硬约束（试出来的）：按键 sink 与语言栏都只认 **TSF 亲自经 profile 激活**的 TIP——
+测试进程里手动 `CoCreateInstance` TIP + `tip.Activate(tm, tid)`，`AdviseKeyEventSink` 直接
+`E_INVALIDARG`；用 `ITfClientId::GetClientId` 拿 tid 也不行。所以端到端测试只能走
+`ActivateProfile`。
 
 **为什么「选项」指望不上（D70）**：两次推断都被实测推翻——v1.43「取不到接口就不画按钮」
 （微软五笔/拼音的 CLSID 连 `InprocServer32` 都没有、`CoCreateInstance` 直接
@@ -1529,6 +1561,16 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     表现是「连点两次选项开出两个设置窗口」或「点了没反应」，两者都不报错。
     `w!` 宏只吃字面量，所以这类常量要改成运行时 `encode_utf16()` 再传 `PCWSTR`——
     换来的是单一事实源，值得。
+
+51. **API 参数排查按「最便宜的可变项」排序，别按自己的假设排序。** `ActivateProfile`
+    恒 `E_INVALIDARG` 时，我按假设先后试了「langid 限制」（其实是老接口
+    `ActivateLanguageProfile` 的限制）、「hkl 必须非零」（`GetProfile` 查回的真实值就是
+    0x0）——最后才试 dwflags，而答案就是它（必须带 `TF_IPP_FLAG_ACTIVE(1)`）。正确
+    顺序应该是：先把每一个参数对照 MS 文档的 Remarks 逐个排除，**枚举常量类参数
+    （flags）最先试**，因为取值空间小、改一行就能验证；「查回什么就传什么」的参数
+    其次；跨接口的语义假设（A 接口的限制被记到 B 头上）最后。顺带的教训：恢复原
+    profile 时 clsid 为零 = 原来是普通键盘布局，要用 `TF_PROFILETYPE_KEYBOARDLAYOUT`
+    恢复——类型选错同样是 `E_INVALIDARG`，与 flag 问题叠加时更难分辨。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```

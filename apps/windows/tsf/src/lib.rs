@@ -46,6 +46,7 @@ mod caret;
 mod ipc;
 mod keycap;
 mod keys;
+mod langbar;
 mod launch;
 mod preedit;
 mod text_service;
@@ -58,7 +59,7 @@ use windows::core::{
 };
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER, HMODULE, S_FALSE, TRUE};
 use windows::Win32::System::Com::{CoLockObjectExternal, IClassFactory, IClassFactory_Impl};
-use windows::Win32::System::LibraryLoader::DisableThreadLibraryCalls;
+use windows::Win32::System::LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW};
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 use crate::text_service::TextService;
@@ -66,6 +67,39 @@ use crate::text_service::TextService;
 /// 本 DLL 期望的 CLSID。注册器写进注册表的就是这个值。
 fn tip_clsid() -> GUID {
     GUID::from_u128(heinrich_tip_id::TIP_CLSID)
+}
+
+/// 「谁在问我们要对象」——宿主 exe 名 + pid，进程内解析一次。
+///
+/// 排查「系统设置页的选项按钮为什么不出现」时这是唯一的线索：日志里出现
+/// `SystemSettings.exe` 才说明页面真的走到了 COM 这一步；一行都没有，说明它
+/// 在更早的地方就把我们筛掉了，补再多接口也没用。
+fn who() -> &'static str {
+    static WHO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    WHO.get_or_init(|| {
+        let mut buf = [0u16; 260];
+        let n = unsafe { GetModuleFileNameW(None, &mut buf) } as usize;
+        let full = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+        let exe = full.rsplit('\\').next().unwrap_or(&full);
+        format!("{exe} pid={}", std::process::id())
+    })
+}
+
+fn guid_text(g: &GUID) -> String {
+    format!(
+        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        g.data1,
+        g.data2,
+        g.data3,
+        g.data4[0],
+        g.data4[1],
+        g.data4[2],
+        g.data4[3],
+        g.data4[4],
+        g.data4[5],
+        g.data4[6],
+        g.data4[7]
+    )
 }
 
 /// DLL 入口。
@@ -117,8 +151,22 @@ pub unsafe extern "system" fn DllGetClassObject(
         // 只认自己的 CLSID。宿主/系统可能拿别的 CLSID 问过来（例如枚举时复用同一个
         // DLL 路径），照单全收会让别人以为我们能提供那个类。
         if *rclsid != tip_clsid() {
+            if !riid.is_null() {
+                tsf_info!(
+                    "DllGetClassObject 被问的是别的 CLSID：rclsid={} riid={}（{}）",
+                    guid_text(&*rclsid),
+                    guid_text(&*riid),
+                    who()
+                );
+            }
             return CLASS_E_CLASSNOTAVAILABLE;
         }
+        tsf_info!(
+            "DllGetClassObject rclsid={} riid={}（{}）",
+            guid_text(&*rclsid),
+            guid_text(&*riid),
+            who()
+        );
         let factory: IUnknown = ClassFactory.into_object().into_interface();
         factory.query(riid, ppv)
     })) {
@@ -157,6 +205,13 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         if ppv.is_null() {
             return Err(E_POINTER.into());
         }
+        if !riid.is_null() {
+            tsf_info!(
+                "CreateInstance riid={}（{}）",
+                guid_text(unsafe { &*riid }),
+                who()
+            );
+        }
         let service: IUnknown = TextService::new().into_object().into_interface();
         unsafe { service.query(riid, ppv).ok()? };
         Ok(())
@@ -177,7 +232,8 @@ pub extern "system" fn HeinrichTsfAbiVersion() -> u32 {
     // 1 = M1.0（观测按键）；2 = M1.1（缓冲 + 上屏 + 中英切换）；
     // 3 = M1.2（组合串）；4 = M1.3（接 server + 中文标点 + 全局中英模式）；
     // 5 = M2.3（候选窗：逐键查询、光标定位、数字键与点选、翻页）；
-    // 6 = M4a7（ITfFnConfigure：系统设置里的「选项」能打开设置窗口）。
+    // 6 = M4a7（ITfFnConfigure：系统设置里的「选项」能打开设置窗口）；
+    // 7 = M4a8（语言栏按钮：任务栏角标「亨/英」，左键切中英、右键菜单开设置）。
     // 改动导出的语义时递增。
-    6
+    7
 }
