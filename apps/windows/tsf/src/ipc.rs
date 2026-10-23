@@ -322,7 +322,10 @@ fn request(frame: &Frame, budget: Duration) -> Option<Frame> {
     match exchange(conn, frame, budget) {
         Ok(f) => Some(f),
         Err(e) => {
-            tsf_debug!("IPC 往返失败（{e}），丢弃连接等后台重连");
+            // 走 `warn` 而不是 `debug`：这一条正是「server 不可用、本次按键降级成
+            // 直接上屏」的现场证据。用户在 `info` 级排障时看不到 debug 明细，
+            // 却一定会问「为什么一个候选都不出」——答案就在这一行。
+            tsf_warn!("IPC 往返失败（{e}），丢弃连接等后台重连");
             // 丢掉整条连接：超时后管道里可能残留半个响应，复用会读到错位的帧。
             *guard = None;
             None

@@ -14,8 +14,13 @@
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 install
 
 .EXAMPLE
-    # 直接看日志尾部
+    # 直接看日志尾部（日志按天分文件，自动挑最新的 tsf-<日期>.log）
     powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log
+
+.EXAMPLE
+    # 看每个日志文件多大 / 手动清掉超过 7 天的
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log size
+    powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean
 
 .EXAMPLE
     # 打开逐键 debug 日志（改完要重启宿主程序才生效）
@@ -43,7 +48,7 @@ param(
     # 位置必须显式声明：PowerShell 按声明顺序分配位置参数，不写 Position 的话
     # `debug on` 里的 `on` 会落到下一个按顺序排列的参数上。
     [Parameter(Position = 1)]
-    [ValidateSet('', 'on', 'off', 'status', 'start', 'stop', 'slow')]
+    [ValidateSet('', 'on', 'off', 'status', 'start', 'stop', 'slow', 'size', 'clean')]
     [string]$Sub = '',
 
     [Parameter(Position = 2)]
@@ -73,9 +78,12 @@ if (-not $DistDir) { $DistDir = Join-Path $PSScriptRoot '..\dist' }
 $setup = Join-Path $DistDir 'heinrich-setup.exe'
 $serverExe = Join-Path $DistDir 'heinrich-server.exe'
 $logDir = Join-Path $env:LOCALAPPDATA 'Heinrich'
-$logPath = Join-Path $logDir 'logs\tsf.log'
-$serverLogPath = Join-Path $logDir 'logs\server.log'
+$logsDir = Join-Path $logDir 'logs'
+$legacyLogPath = Join-Path $logsDir 'tsf.log'
+$legacyServerLogPath = Join-Path $logsDir 'server.log'
 $debugMarker = Join-Path $logDir 'debug.on'
+# 与 crates/heinrich-log 的 KEEP_DAYS 保持一致（那边是权威）。
+$keepDays = 7
 
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -83,17 +91,79 @@ function Test-Elevated {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-LatestLog {
+    # 日志按天分文件（tsf-20261023.log），「当前日志」不是一个固定路径。
+    # 按修改时间挑最新的那个，跨天不用改脚本。
+    param([string]$Pattern)
+    $files = @(Get-ChildItem -Path $logsDir -Filter $Pattern -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending)
+    if ($files.Count -gt 0) { return $files[0].FullName }
+    return $null
+}
+
+function Write-LegacyHint {
+    if ((Test-Path $legacyLogPath) -or (Test-Path $legacyServerLogPath)) {
+        Write-Host '检测到旧版单文件日志（tsf.log / server.log）：那是升级前的 DLL / server 写的。' -ForegroundColor DarkGray
+        Write-Host '新版按天写 tsf-<日期>.log / server-<日期>.log；旧文件可用 `log clean` 删掉。' -ForegroundColor DarkGray
+    }
+}
+
 function Show-Log {
-    if (-not (Test-Path $logPath)) {
-        Write-Host "日志还没有生成：$logPath" -ForegroundColor Yellow
+    $path = Get-LatestLog 'tsf-*.log'
+    if (-not $path) {
+        Write-Host "还没有日志文件。位置：$logsDir\tsf-<日期>.log" -ForegroundColor Yellow
         Write-Host '先切到「亨利五笔」在记事本里打几个字母，再回来看。'
+        Write-LegacyHint
         return
     }
-    $info = Get-Item $logPath
-    Write-Host ("== 日志 {0}（{1:N0} 字节，最后写入 {2:HH:mm:ss}）" -f $logPath, $info.Length, $info.LastWriteTime) -ForegroundColor Cyan
+    $info = Get-Item $path
+    Write-Host ("== 日志 {0}（{1:N0} 字节，最后写入 {2:HH:mm:ss}）" -f $info.FullName, $info.Length, $info.LastWriteTime) -ForegroundColor Cyan
     # 必须显式 UTF8：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI(936) 解码，
     # 而 DLL 写的是 UTF-8，不指定编码时中文会变成「鈥斺€?鎸夐敭」。
-    Get-Content $logPath -Tail $TailLines -Encoding UTF8
+    Get-Content $path -Tail $TailLines -Encoding UTF8
+}
+
+function Show-LogFiles {
+    if (-not (Test-Path $logsDir)) {
+        Write-Host "日志目录还不存在：$logsDir" -ForegroundColor Yellow
+        return
+    }
+    $files = @(Get-ChildItem -Path $logsDir -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending)
+    Write-Host "== 日志目录 $logsDir" -ForegroundColor Cyan
+    if ($files.Count -eq 0) {
+        Write-Host '  （空）' -ForegroundColor DarkGray
+        return
+    }
+    $total = 0
+    foreach ($f in $files) {
+        $total += $f.Length
+        Write-Host ("  {0,-24} {1,10:N0} B  {2:yyyy-MM-dd HH:mm}" -f $f.Name, $f.Length, $f.LastWriteTime)
+    }
+    Write-Host ("  合计 {0:N0} B；按天保留 {1} 天，单日 8 MiB 后只记 warn/error、32 MiB 停写。" -f $total, $keepDays) -ForegroundColor DarkGray
+}
+
+function Clear-OldLogs {
+    if (-not (Test-Path $logsDir)) {
+        Write-Host "日志目录不存在，无需清理：$logsDir" -ForegroundColor DarkGray
+        return
+    }
+    $cutoff = (Get-Date).AddDays(-$keepDays)
+    $victims = @(Get-ChildItem -Path $logsDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff })
+    # 旧格式单文件不带日期，永远不会「自然过期」，这里一并收掉。
+    foreach ($legacy in @($legacyLogPath, $legacyServerLogPath)) {
+        if (Test-Path $legacy) { $victims += Get-Item $legacy }
+    }
+    if ($victims.Count -eq 0) {
+        Write-Host "没有需要清理的日志（保留 {0} 天内的）。" -f $keepDays -ForegroundColor Green
+        return
+    }
+    foreach ($v in $victims) {
+        Write-Host ("  删除 {0}（{1:N0} B，{2:yyyy-MM-dd HH:mm}）" -f $v.Name, $v.Length, $v.LastWriteTime) -ForegroundColor Yellow
+        Remove-Item -LiteralPath $v.FullName -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host '已清理。' -ForegroundColor Green
 }
 
 function Set-DebugSwitch {
@@ -191,9 +261,12 @@ function Invoke-ServerAction {
             }
             Write-Host "慢 server 已就位 pid $($won.Id)，每帧延迟 $SlowMs ms。" -ForegroundColor Green
 
+            # 日志按天分文件：先记下「当前这个文件已经有多少行」，之后只读新增部分。
+            # 跨天时文件名会变，循环里检测到换文件就把 skip 归零。
+            $logFile = Get-LatestLog 'tsf-*.log'
             $skip = 0
-            if (Test-Path $logPath) {
-                $skip = @(Get-Content $logPath -Encoding UTF8).Count
+            if ($logFile) {
+                $skip = @(Get-Content $logFile -Encoding UTF8).Count
             }
 
             Write-Host ''
@@ -211,8 +284,13 @@ function Invoke-ServerAction {
                 $lastRemain = -1
                 while ((Get-Date) -lt $deadline) {
                     Start-Sleep -Milliseconds 500
-                    if (Test-Path $logPath) {
-                        $new = @(Get-Content $logPath -Encoding UTF8 | Select-Object -Skip $skip)
+                    $latest = Get-LatestLog 'tsf-*.log'
+                    if ($latest -and $latest -ne $logFile) {
+                        $logFile = $latest
+                        $skip = 0
+                    }
+                    if ($logFile -and (Test-Path $logFile)) {
+                        $new = @(Get-Content $logFile -Encoding UTF8 | Select-Object -Skip $skip)
                     }
                     $degraded = $new | Where-Object { $_ -match 'server 不可用' } | Select-Object -First 1
                     if ($degraded) { break }
@@ -287,13 +365,14 @@ function Invoke-ServerAction {
             else {
                 Write-Host '管道：无' -ForegroundColor DarkGray
             }
-            if (Test-Path $serverLogPath) {
+            $serverLog = Get-LatestLog 'server-*.log'
+            if ($serverLog) {
                 Write-Host ''
-                Write-Host ("== server 日志（最后 10 行，{0}）" -f $serverLogPath) -ForegroundColor Cyan
-                Get-Content $serverLogPath -Tail 10 -Encoding UTF8
+                Write-Host ("== server 日志（最后 10 行，{0}）" -f $serverLog) -ForegroundColor Cyan
+                Get-Content $serverLog -Tail 10 -Encoding UTF8
             }
             else {
-                Write-Host "server 日志还没生成：$serverLogPath" -ForegroundColor DarkGray
+                Write-Host "server 日志还没生成：$logsDir\server-<日期>.log" -ForegroundColor DarkGray
             }
         }
     }
@@ -305,7 +384,11 @@ if ($Action -eq 'debug') {
 }
 
 if ($Action -eq 'log') {
-    Show-Log
+    switch ($Sub) {
+        'size' { Show-LogFiles }
+        'clean' { Clear-OldLogs }
+        default { Show-Log }
+    }
     exit 0
 }
 

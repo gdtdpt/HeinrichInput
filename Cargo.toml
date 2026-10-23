@@ -12,6 +12,7 @@ resolver = "2"
 # crates/ 不动。届时构建脚本必须用 -p 显式指定（--workspace 会去编别的平台的壳）。
 members = [
     "crates/heinrich-tip-id",
+    "crates/heinrich-log",
     "crates/heinrich-scheme",
     "crates/heinrich-core",
     "crates/heinrich-proto",
@@ -34,6 +35,7 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 heinrich-tip-id = { path = "crates/heinrich-tip-id", version = "0.1.0" }
+heinrich-log = { path = "crates/heinrich-log", version = "0.1.0" }
 heinrich-scheme = { path = "crates/heinrich-scheme", version = "0.1.0" }
 heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
 heinrich-proto = { path = "crates/heinrich-proto", version = "0.1.0" }

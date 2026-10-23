@@ -184,6 +184,37 @@ ranking.half_life_days = 45
   实测重编码一致率只有 1.19%。所以只给码、给键位，不猜拆法。
 - 未知码不会联想或纠错，原样吐字母——这是刻意的，宁可不猜也不错字。
 
+## 日志与排障
+
+日志在 `%LOCALAPPDATA%\Heinrich\logs\`，一天一个文件：
+
+- `tsf-20261023.log` —— 输入法在宿主程序里的动作（激活、按键、候选窗、语言栏）
+- `server-20261023.log` —— 常驻引擎的动作（装载词库、连接、退出）
+
+默认 `info` 级，只写本机，可以随时关掉。**保留最近 7 天**，更早的自动清除；
+单个文件写满 32 MiB 就停到第二天（避免某个循环故障把磁盘写爆）。
+每一行都对应一次真实触发，不做合并——所以「发生了几次」可以直接数出来。
+
+```powershell
+# 看最新一天的日志尾部
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log
+
+# 每个日志文件多大
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log size
+
+# 立刻清掉 7 天前的（不用等自动清理）
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean
+```
+
+要看逐键级的细节，先 `debug on`，**然后重启要观察的程序**（日志级别在每个进程里只解析一次），
+查完记得 `debug off`——忘了关会让日志很快变大。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug on
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug off
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 debug status
+```
+
 ## 更多
 
 - 想改代码、了解构建与数据管线： [`docs/dev-guide.md`](docs/dev-guide.md)

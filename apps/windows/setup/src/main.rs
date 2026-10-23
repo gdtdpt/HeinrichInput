@@ -181,11 +181,33 @@ fn dll_path() -> Result<PathBuf, String> {
     Ok(dll)
 }
 
-fn log_file() -> PathBuf {
+fn log_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_default();
-    base.join("Heinrich").join("logs").join("tsf.log")
+    base.join("Heinrich").join("logs")
+}
+
+/// `logs` 目录里最新的 `tsf-<yyyymmdd>.log`。
+///
+/// 日志按天分文件，所以「用户名下的日志」不是一个固定路径。这里不自己算日期：
+/// 按修改时间挑最新的那个，跨天、跨机器都不用改代码。
+fn latest_tsf_log() -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(log_dir()).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("tsf-") || !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| modified > *t) {
+            best = Some((modified, entry.path()));
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +405,10 @@ fn print_next_steps() {
     println!("     ⚠ 这时**应当照常输出英文字母**——M1.0 还不接管按键，这是正确的中间态。");
     println!();
     println!("  3) 看日志，确认每个按键都进来了：");
-    println!("     {}", log_file().display());
+    println!(
+        "     {} （按天一个文件，如 tsf-20261023.log）",
+        log_dir().display()
+    );
     println!();
     println!("卸载：heinrich-setup uninstall");
 }
@@ -604,14 +629,19 @@ fn status() -> i32 {
             format!("缺少 {}", heinrich_tip_id::DLL_FILE_NAME),
         ),
     }
-    let log = log_file();
-    match std::fs::metadata(&log) {
-        Ok(meta) => row(
-            '✓',
+    match latest_tsf_log() {
+        Some(log) => {
+            let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+            row('✓', "日志", format!("{} （{} 字节）", log.display(), len));
+        }
+        None => row(
+            '–',
             "日志",
-            format!("{} （{} 字节）", log.display(), meta.len()),
+            format!(
+                "尚未生成（{} 里按天命名，如 tsf-20261023.log）",
+                log_dir().display()
+            ),
         ),
-        Err(_) => row('–', "日志", format!("尚未生成（{}）", log.display())),
     }
     // 两个「从哪儿进设置」的入口。都缺也能用（直接双击 exe），只是体验差。
     let settings = local_dll

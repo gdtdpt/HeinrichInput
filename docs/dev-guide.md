@@ -263,12 +263,14 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 uninstall
    —— 装完**不会自动**出现，Windows 要求用户确认一次。
 2. 切到「亨利五笔」，在记事本里敲 `vbgd`。
    **应当照常输出英文字母**——M1.0 还不消费按键，这是正确的中间态。
-3. 看 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`：
+3. 看 `%LOCALAPPDATA%\Heinrich\logs\tsf-<今天日期>.log`（日志按天一个文件，D76；
+   也可以 `tools\tsf.ps1 log` 直接看最新那天的尾部）：
 
 ```
-2026-10-20 14:12:03.451 [11824] I #1 Activate tid=0 pid=11824 —— 按键 sink 与焦点 sink 已挂
-2026-10-20 14:12:05.902 [11824] I #1 down vk=0x56 'V' - 
-2026-10-20 14:12:06.114 [11824] I #1 down vk=0x42 'B' - 
+2026-10-23 14:12:03.451 [11824] I ==== 亨利五笔 DLL：notepad++.exe pid=11824，ABI 7，协议 v6，日志 info ====
+2026-10-23 14:12:03.455 [11824] I #1 Activate tid=0 pid=11824 —— 按键 sink 与焦点 sink 已挂
+2026-10-23 14:12:05.902 [11824] I #1 down vk=0x56 'V' - 
+2026-10-23 14:12:06.114 [11824] I #1 down vk=0x42 'B' - 
 ```
 
 有 `Activate` 行 = 激活成功；有 `down` 行 = 按键进来了。两者都出现即 M1.0 通过。
@@ -1247,7 +1249,7 @@ TIP DLL（模块表 + 日志为证），判据是否发生在点选行时未查�
 2. **已有窗口就复用**——`FindWindowW(heinrich_tip_id::SETTINGS_CLASS)` 命中就
    `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。settings 侧自己也有同样的
    检查（`ui::focus_existing`，见下），两道各自独立、都靠窗口类名。
-3. **失败也返回 `S_OK`**，原因写 `tsf.log`。
+3. **失败也返回 `S_OK`**，原因写 `tsf-<日期>.log`。
 
 **设置窗口自己的单实例**：`main` 在 `--selftest-ui` 之后、`App::new` 之前调
 `ui::focus_existing()`——`FindWindowW(SETTINGS_CLASS)` 命中就还原+前置、打印 pid、
@@ -1313,6 +1315,46 @@ cd dist
 - 断言必须读到**目标路径**（`IShellLinkW::GetPath`），不能只 `IPersistFile::Load`。
   `Load` 只证明文件结构合法——指向随便一个文件也能过，那是假绿。反向验证：把期望值
   改成 `notepad.exe`，断言立刻失败并打出 lnk 里的真实目标。
+
+### 4.20 日志：按天分文件与总量闸（D76，`crates/heinrich-log`）
+
+DLL 的 `tsf.log` 与 server 的 `server.log` 共用一份实现，两侧 `log.rs` 只是薄壳
+（级别枚举 + 宏名 + 启动 banner）。要改格式 / 轮转规则，改 `crates/heinrich-log/src/lib.rs`。
+
+| 项 | 规则 |
+|---|---|
+| 路径 | `%LOCALAPPDATA%\Heinrich\logs\{tsf,server}-<yyyymmdd>.log` |
+| 保留 | 7 天（`KEEP_DAYS`）。每进程**首次写日志**时扫目录删过期文件，不放在每行上 |
+| 单日软阈值 | 8 MiB（`SOFT_CAP`）：此后只放行 `warn` / `error`，并写一行 `W` 说明 |
+| 单日硬上限 | 32 MiB（`HARD_CAP`）：当天停写，第二天自然换新文件 |
+| 去重 | **没有**。每触发一次落一行——「发生一次」与「发生一万次」必须能从日志区分 |
+| banner | 每进程首行：宿主 exe + pid + ABI + 协议版本 + 当前级别 |
+
+**为什么不做「写满就 rename」**：写者是几十个我们控制不了生命周期的外部进程
+（chrome 的每个 tab、explorer、编辑器）。rename 需要所有写者先松手，
+而改名那一刻正在写的进程会用旧句柄写进一个已不存在的路径——内容直接丢，
+而且丢得无声无息。文件名带日期则「跨天」不需要任何动作：
+本来就要 `open` 一个新文件，切分是这件事的副产品。
+
+**为什么不去重**：这条是用户明确要求的。日志要表明真实情况，触发一次就要写一行；
+「10 秒内同类只记一条」会让「偶发一次」和「每 5 秒一次的重试」在日志里长得一样，
+而这恰恰是最需要区分的量（`E server 拒绝握手` 5 秒一条 = 每个受影响进程 5 秒重试一次，
+能反推有几个宿主还加载着旧 DLL）。体积因此交给**总量闸**：单日 32 MiB 到顶就停。
+
+**读日志**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log        # 最新一天尾部 40 行
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log size   # 每个文件多大
+powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天 + 旧格式单文件
+```
+
+级别开关仍走 `tools\tsf.ps1 debug on|off|status`（标志文件 `%LOCALAPPDATA%\Heinrich\debug.on`）
+或环境变量 `HEINRICH_TSF_LOG` / `HEINRICH_SERVER_LOG`。**排障完记得 `debug off`**——
+`debug.on` 忘了关是「日志为什么这么大」的头号原因（这次就是 10-21 开的，一直开着）。
+
+单测在 `crates/heinrich-log/src/lib.rs` 的 `tests`：级别排序与解析、`Spec` 能被
+`const` 声明为 `static`、当天路径的形状（`<stem>-*.log`）。
 
 ## 5. 数据管线
 
@@ -1512,7 +1554,7 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     那一刻 `自定义词库：0 条生效`；`1 条生效` 是 **10:19:21**（保存之后）；再之后用户打的
     是 `wmty`——码序记错（微 `tm` + 信 `wy` = `tmwy`）。也就是说功能当场就生效了，
     截的是加词前那一拍。三条判据，以后照这个顺序查：
-    - `server.log` 的 `自定义词库：N 条生效（五笔 x / 拼音 y）` 是「真的合并进去了」的唯一
+    - server 日志的 `自定义词库：N 条生效（五笔 x / 拼音 y）` 是「真的合并进去了」的唯一
       证据；同一次重连的 `Welcome.entry_count` 会跟着 +1（136239 → 136240）。
     - 想知道**常驻 server 此刻**返回什么，**别用 `heinrich-cli look`**：它自己新起一个
       `Host`、自己读一遍词库，所以它永远说「有」——看不出热重载到底有没有生效。
@@ -1570,7 +1612,7 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     （实际微软五笔/拼音拿不到接口也有按钮）；v1.44 反推成「只给微软自家画」
     ——**那次的证据是把一张未展开的截图读成了「微软五笔那行也只有删除」**，
     图上没有的东西不能当证据。最后：我们 `ITfFnConfigure` 是 `S_OK` 没按钮、搜狗五笔
-    也没有；`SystemSettings.exe` 渲染列表时不加载任何 TIP DLL（模块表 + tsf.log 零调用）。
+    也没有；`SystemSettings.exe` 渲染列表时不加载任何 TIP DLL（模块表 + 日志零调用）。
     判定条件至今未找到 → 已放弃（D70）。两条可复用的教训：
     - 引用截图/日志时**先回去看原始像素**，别凭当时的印象复述；「所以不用做了」这类
       结论尤其危险，它会顺着自己撑自己的证据走。
@@ -1637,6 +1679,21 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     ——「profile 有了有效图标，系统就把那格抢走」这条推断从头到尾是错的，它只是从
     「v1.48 改了 IconFile、症状也在 v1.48 出现」这个**时间相邻**推出来的假因果。
     时间相邻只能产生候选，**要定论必须让其它变量都不动、只翻这一个**。
+
+56. **日志的「真实」和「能读」是一对矛盾，别用去重去解决体积。** 4 天 31.4 万行 /
+    32 MiB 里，86.8% 是两条消息：`E server 拒绝握手：协议版本不匹配`（159,187 条）
+    和 `D 握手失败：管道的另一端上无任何进程`（113,953 条），而 `W` 级一条没有。
+    第一反应是「同类事件 10 秒内只记一条」，但这样一来「偶发一次」和「每 5 秒重试一次」
+    在日志里就长得一样了——**而次数本身正是信息**：5 秒一条能反推「有几个宿主还加载着
+    旧 DLL」，合并掉就没法反推了。所以改成「一次不落地写 + 单日总量闸」。
+    另外三件事值得记住：
+    ① **rename 轮转在注入型 DLL 上不能用**。写者不受控，改名那一刻的写入会打进
+       已不存在的路径（见 §4.20）。
+    ② **先查 `debug status`**。这次 `debug.on` 从 10-21 一直开着，默认级别根本不是
+       `info` 而是 `debug`——「为什么日志这么大」的第一嫌疑不是刷屏，是开关忘了关。
+    ③ **刷屏本身可能是真故障**。15.9 万条版本不匹配说明旧 DLL 与新 server 长期共存；
+       日志只负责让它可见，修它要重启宿主 / 重装。banner 就是为「下次一眼看出哪个 pid
+       是哪版」加的。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```

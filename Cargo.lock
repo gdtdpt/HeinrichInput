@@ -115,6 +115,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "heinrich-log"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "heinrich-proto"
 version = "0.1.0"
 
@@ -127,6 +134,7 @@ name = "heinrich-server"
 version = "0.1.0"
 dependencies = [
  "heinrich-core",
+ "heinrich-log",
  "heinrich-proto",
  "rusqlite",
  "windows",
@@ -162,6 +170,7 @@ version = "0.1.0"
 name = "heinrich-win"
 version = "0.1.0"
 dependencies = [
+ "heinrich-log",
  "heinrich-proto",
  "heinrich-tip-id",
  "heinrich-ui",

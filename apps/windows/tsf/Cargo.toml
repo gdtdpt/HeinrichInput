@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 heinrich-tip-id.workspace = true
+heinrich-log.workspace = true
 # 协议 crate 是零依赖的纯字节编解码，引它不违反 D8 的意图（不给每个宿主进程
 # 多背 serde/bincode）。
 heinrich-proto.workspace = true

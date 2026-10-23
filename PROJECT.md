@@ -91,7 +91,7 @@
 
 | D21 | **release profile 必须 `panic = "unwind"`，不得 `abort`** | 移除 workspace 里原有的 `panic = "abort"`；每个 COM 方法额外用 `guarded()` 包 `catch_unwind` | `heinrich-win` 跑在**别人的进程**里（chrome 每个 tab、explorer、任意编辑器）。`abort` 的语义是「终止整个进程」——DLL 里一次越界就让用户没保存的文档凭空消失。代价是二进制大一点、每次跨 FFI 多一层栈帧；收益是「输入法出错只影响输入法」。注意：即使 unwind，panic 跨出 `extern "system"` 也是 UB，所以 `catch_unwind` 不可省 |
 | D22 | **TSF 身份常量集中在 `heinrich-tip-id`（零依赖），值由 `uuid5` 生成、发布后不可改** | CLSID `0EB96F60-…`、Profile GUID `06CF8277-…`、LANGID 0x0804、显示名、`InstallLayoutOrTip` 描述串全部由该 crate 提供，DLL 与注册器共引 | ① 两边各写一份 GUID 是典型的静默故障源：注册器写 A、DLL 认 B，表现为「列表里有名字、一切换就废」② 值一旦注册过就进了用户注册表，改动等于留下永久死条目 ③ 描述串格式在单测里钉死——`InstallLayoutOrTip` **返回值是 void**，写错完全静默 |
-| D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` |
+| D23 | **DLL 日志落文件，每次写入独立 open→append→close** | 路径 `%LOCALAPPDATA%\Heinrich\logs\tsf.log`，行首带 PID；`append(true)` 在 Windows 映射为 `FILE_APPEND_DATA`，内核保证原子追加；级别由 `HEINRICH_TSF_LOG` 控制，默认 `info` | ① DLL 被注入到无控制台的进程，`println!` 无人可见 ② 「打开一次长期持有」的多写者写法会从过时文件指针覆盖他人内容（Mino 项目实测丢过整段日志）③ **M1.0 的按键日志刻意用 `info` 级**：这一阶段唯一的验收标准就是「日志里能看到每个 vkey」，压在 `debug` 级会让用户必须给每个宿主进程单独设环境变量，验收等于做不成。M1.1 起降回 `debug` ④ **路径与轮转由 D76（v1.52）更新**：改为按天分文件 + 保留 7 天 + 单日双阈值；「每次写入独立 open→append→close」这条根基不变 |
 | D24 | **工程分两层：`crates/` 放平台中立件，`apps/<platform>/` 放平台专属产物** | Windows 壳从 `crates/heinrich-win`、`crates/heinrich-setup` 迁到 `apps/windows/tsf`、`apps/windows/setup`；**包名与产物名不变**。`heinrich-server` 仍归 `crates/`。M5 加平台时只新增平级 `apps/macos/`、`apps/linux/`，`crates/` 不动 | ① **四家实证**：Weasel（C++）与 windows-chewing-tsf（纯 Rust）都只有 Windows，前者平铺组件目录 + 一个 sln、后者全塞 `crates/`——在单平台前提下都成立；青简与 WindInput 因为真的有第二、三个平台，才长出平台目录层。② **壳用什么语言写，决定壳放哪**：WindInput 的壳是 C++17 / Swift，物理上进不了 cargo workspace，只能放在仓库根；我们的壳是 Rust，要共享 `heinrich-core` 就必须同 workspace（跨 workspace 的 path 依赖要各写一份 `[patch]`），于是平台目录层是必然而非选择。③ **server 不按平台复制**：WindInput 一份 `apps/service`，用 `[target.'cfg(target_os = "linux")'.dependencies]` + `linux-host` feature 分形态，且它真在 Linux 发版；青简的 `apps/windows/server` + `apps/linux/server` 两份属未验证部分 |
 | D25 | **最多保留一个极窄的平台能力 trait 注入面，不做平台抽象层** | v1 不设；M5 若需要，按 WindInput 的判据收录：「协调器逻辑中途要**同步 pull** 的平台能力，且 `cfg` 兜底值是语义错误」才进 trait，其余用 `#[cfg]` + 合理兜底 | WindInput 的 `HostServices` 整份只装剪贴板三个方法，而它的 AGENTS.md 明确写着「`cfg` 兜底值在缺失平台**可接受**的探测函数 → **不进 trait**，同名函数三平台并列 `cfg` + 兜底」。TSF / IMKit / IBus 在注册方式、按键回传、组合串生命周期、候选窗归属四处几乎无共性，抽「全平台抽象 trait」只会得到一堆空实现 |
 | D26 | **「吃不吃这个键」由唯一一个纯函数回答，两条回调路径共用** | `keys::decide(mode, buffer_len, vk, mods)` **不碰任何 Windows API、无副作用**；`OnTestKeyDown`/`OnTestKeyUp` 只问不改编码缓冲，`OnKeyDown`/`OnKeyUp` 才执行。**唯一例外是 Shift 采样状态机（D29）**：四条回调都要调，因为 test 路径宿主从不调 `OnKeyDown` | **M1.0 真机日志实测**：Notepad++（Scintilla）只回调 `OnTestKeyDown`，WorkBuddy（Electron/Chromium）只回调 `OnKeyDown`，两条路径**互斥**。只写一条会在另一半宿主里完全失效，症状是「某些程序能用、某些毫无反应」，极难归因。做成纯函数还带来两个好处：① `OnTestKeyDown` 说「要」的那一刻键已被吃掉，事后没有反悔机会，所以判定依据必须本进程可算（D18 更硬的一面）② 该模块可在任意平台跑单测 |
@@ -950,8 +950,20 @@ cargo 默认打 console——从输入法或开始菜单拉起来时，背后会
 | emoji 用户层 | `%APPDATA%\Heinrich\emoji.user.toml` |
 | 设置窗口 | `dist\heinrich-settings.exe`（§6.10，可独立运行，不需要输入法在跑） |
 | 自定义词组 | `%APPDATA%\Heinrich\words.tsv`（§6.9，可手改，改完最坏 3 秒生效；D67 的缓存有效期） |
-| 日志 | `%LOCALAPPDATA%\Heinrich\logs\`（默认 info，仅本机，可关闭） |
+| 日志 | `%LOCALAPPDATA%\Heinrich\logs\tsf-<yyyymmdd>.log` 与 `server-<yyyymmdd>.log`（按天一个文件，保留 7 天；默认 info，仅本机，可关闭。D76） |
 | 程序 | `%ProgramFiles%\Heinrich\`（server + DLL + data + 设置程序） |
+
+**日志规格（D76，v1.52 起）**：实现收在 `crates/heinrich-log`，DLL 与 server 各留一层薄壳（级别枚举、宏名、启动 banner）。
+
+| 项 | 规则 |
+|---|---|
+| 文件 | `tsf-20261023.log` / `server-20261023.log`，按天一个 |
+| 轮转 | **不做 rename**（`xxx.log → xxx.log.1`）。写者是几十个我们控制不了生命周期的外部进程，改名那一刻正在写入的进程会写进已不存在的路径，日志直接丢；文件名带日期则「跨天」不需要任何动作 |
+| 保留 | 7 天。每个进程**首次写日志时**扫一遍目录删过期文件（不放在每行写入上） |
+| 单日上限 | ≥ 8 MiB 后只写 `warn` / `error`；≥ 32 MiB 当天停写。因此单日 ≤ 32 MiB、总量 ≈ ≤ 224 MiB（实际远小） |
+| 去重 | **不去重**：每触发一次就落一行，次数必须可数。体积由上面的总量闸控，而不是靠丢掉重复 |
+| 启动 banner | 每个进程首条日志前插一行：宿主 exe + pid + ABI + 协议版本 + 当前级别。排障时「这个 pid 是哪个程序、加载的是哪版 DLL」不必再猜 |
+| 工具 | `tsf.ps1 log`（最新一天尾部）· `tsf.ps1 log size`（每个文件多大）· `tsf.ps1 log clean`（删超 7 天 + 旧格式单文件） |
 
 **`config.toml` 现状（M3.4a 起）**：三项，缺文件即全默认。
 
@@ -1079,7 +1091,7 @@ ranking.half_life_days = 45
 | 27 | **定名「亨利输入法 / HeinrichInput」**（D20），品牌短名「亨利」，语言栏显示「亨利五笔」，ASCII 前缀 `heinrich`；原「析字 / Xizi」全部废弃 |
 | 28 | `heinrich-win` 的 release 构建改为 `panic = "unwind"` + 每个 COM 方法 `catch_unwind`（D21） |
 | 29 | 新增 `heinrich-tip-id`（零依赖）统一 TSF 身份常量，值 `uuid5` 生成、发布后不可改（D22） |
-| 30 | DLL 日志：`%LOCALAPPDATA%\Heinrich\logs\tsf.log`，每次写入独立 open→append→close（D23） |
+| 30 | DLL 日志：`%LOCALAPPDATA%\Heinrich\logs\tsf-<yyyymmdd>.log`（按天分文件、保留 7 天、单日 8/32 MiB 双阈值，D76），每次写入独立 open→append→close（D23） |
 | 31 | **注册器主动提权**（`ShellExecuteW("runas")` 重启自身），不用 `requireAdministrator` 清单——否则连 `status` 都弹 UAC |
 | 32 | `register_profile` 的 `fEnabledByDefault` 传 **true**；`hklSubstitute` 传 `NULL`（与 Weasel 一致） |
 | 33 | **工程分两层**：`crates/` 只放平台中立件，平台专属产物进 `apps/<platform>/`；Windows 壳迁至 `apps/windows/{tsf,setup}`，包名与产物名不变（D24） |
@@ -1097,6 +1109,7 @@ ranking.half_life_days = 45
 | 45 | **语言栏 `GetIcon` 每次返回新 HICON**（D73）：Win10 输入指示器按句柄缓存位图，句柄复用 = 不重画 + 不派点击。代价是每次切换多画一次 16×16 图（微秒级），只保留最近 16 个句柄（约几十 KB）。**不要「优化」成按模式缓存**——单测 `every_get_icon_call_hands_out_a_fresh_handle` 就是钉这条的 |
 | 46 | **「输入法列表图标」与「可点可切的角标」可共存**（D74，实测推翻 D72 期间的猜测）：`IconFile` 指向 `heinrich.ico` 的同时，语言栏条目照常绘制、照常收点击。曾推断「profile 一旦有有效图标，系统输入指示器就接管那一格、把 TIP 条目挤到后面」，真机对照（同一份新句柄构建，`IconFile` 指 DLL 与指 ico 两态）症状不变，而修好句柄问题后两态都正常 → 该推断不成立。教训：**「A 改动后出现 B 症状」不等于「A 导致 B」**，时间相邻只是候选，必须做单变量 A/B 才能定论 |
 | 47 | **验收口径按「里程碑性质」分层，不为已被自测覆盖的路径做人工复验**（D75）：M3.6 以自测为准、不做真机手测；M4a 必须真机验。① M3.6 是数据层 + CLI，六条判据每条都有可复现断言（`word add` 的推导值、`look` 的命中、`word rm` 后的全量替换、权重中位数、坏行、chip），人工再走一遍只是把自测重跑一次。② 它唯一的真机风险是「跨进程生效」，而这条链路（`words.tsv` → server mtime 重载 → DLL 3 秒缓存）**换写入口不改变**：M4a 的设置窗口写的是同一份文件，其 ① ② 已在真机把整条链走通。③ 「升级不丢」是代码结构事实（文件在 `%APPDATA%`，安装器只写注册表与快捷方式），验证它要弹 UAC 重装一次，成本大于信息量。④ 反向成立：M4a 的 Win32 控件 + IME + DPI/字体渲染组合正是自测照不到的地方（F46 面板残留、F47 Static 白块、F48 黑框全是截图才发现的），这类必须人眼过 |
+| 48 | **日志按天分文件，不做 rename 轮转；不去重，体积靠总量闸控**（D76）：`crates/heinrich-log` 统一 DLL 与 server 的落盘规则——文件名 `<stem>-<yyyymmdd>.log`、保留 7 天（每进程首次写入时扫一遍目录）、单日 8 MiB 后只写 `warn`/`error`、32 MiB 当天停写；每进程首行写 banner（宿主 exe + pid + ABI + 协议 + 级别）。① **rename 轮转在这里是错的**：写者是几十个生命周期不受控的外部进程，改名那一刻的写入会打进已不存在的路径，日志直接丢；带日期的文件名让「跨天」变成「本来就要 open 一个新的」。② **不去重是用户的明确要求**：日志要表明真实情况，触发一次就得写一行，否则无法从日志区分「发生了一次」和「发生了一万次」。因此体积问题不用「合并重复」解决，而用「单日总量上限」兜住——同一条坏路径刷到 32 MiB 就停，第二天重开。③ 软/硬双阈值的原因：真正的刷屏源往往就是 `error`（版本不匹配的拒握手、队列满），只设软阈值等于不设。④ banner 补的是排障缺口：`tsf.log` 里 15.9 万条「协议版本不匹配」曾无法判断「是哪个宿主、加载的哪版 DLL」，只能靠时间戳猜。 |
 
 ### 11.2 仍待确认
 
@@ -1175,3 +1188,4 @@ ranking.half_life_days = 45
 
 | v1.50 | 2026-10-23 | **M4a8 语言栏按钮真机验收通过（D74）+ 撤回「IconFile 抢格」推断**：正式配色（深灰底白「亨」/「英」）下四项全过——图标随 Shift 与左键切换、右键菜单（设置 / 打开词库文件夹）可用、Alt+Tab 往返后图标仍在、输入法列表那行同时有图标。因此确认 **D72 的 `IconFile` 与语言栏条目可共存**，v1.49 期间「profile 有有效图标 → 系统输入指示器接管那一格」的推断不成立（同一份新句柄构建下，`IconFile` 指 DLL 与指 ico 症状一致；修好句柄后两态皆正常）。注册表 `IconFile` 保留 `dist\heinrich.ico`（`IconIndex = 0`）。新增决策 46 记这条教训：「改动后出现症状」只是候选因果，必须单变量 A/B 才能定论 |
 | v1.51 | 2026-10-23 | **M3.6 与 M4a 验收（D75：验收口径按里程碑性质分层）**：M4a（设置窗口 + 词组页）**真机功能验收通过**——六项功能（加词后打得出 / 删词后消失 / 手填压过推导 / 同码同词不新增 / 坏行只影响自己 / 编辑框内可用亨利打中文）全部通过；UI 细节（F46/F47/F48/DPI）属前序版本已修项，本轮未逐条重走。M3.6（自定义词组）**以自测为准、不做真机手测**：其六条判据均有可复现断言，唯一的真机风险「跨进程热生效」由 M4a 经同一份 `words.tsv`、同一条 mtime 重载链、同一份 DLL 3 秒缓存间接覆盖；「升级不丢」属代码结构事实（文件在 `%APPDATA%`，安装器只写注册表与快捷方式），不值得为它弹 UAC 重装。新增决策 47 记录这条分层原则，并明确反向纪律：**自测照不到的（Win32 控件渲染 / IME / DPI）必须真机人眼过** |
+| v1.52 | 2026-10-23 | **日志改造（D76）：按天分文件 + 保留 7 天 + 单日双阈值，并给每个进程加 banner**。起因是 `tsf.log` 4 天涨到 32 MiB / 31.4 万行、`server.log` 到 100 MiB：其中 `E server 拒绝握手：协议版本不匹配` 159,187 条（50.6%）、`D 握手失败：管道的另一端上无任何进程` 113,953 条（36.2%），而 `W` 级 0 条。① 新增 `crates/heinrich-log`（零第三方依赖，仅 std + `GetLocalTime`）：`Spec::new(env_var, stem)` 的 `const` 构造让两侧都能直接声明 `static`；路径 `<stem>-<yyyymmdd>.log`，**不做 rename**（外部写者不受控，改名必丢写入）；过期清理放在「每进程首次写」；单日 8 MiB 后只放行 `warn`/`error`、32 MiB 停写。② 两侧 `log.rs` 收成薄壳（级别枚举 + 宏名 + banner），banner 带宿主 exe / pid / ABI / 协议 / 级别——补上「15.9 万条版本不匹配却看不出是哪个宿主、哪版 DLL」的缺口。③ 启用 `Warn` 档：`ipc::request` 的「IPC 往返失败…降级」由 `debug` 提为 `warn`（这正是「一个候选都不出」的现场证据），新增 `tsf_warn!`。④ `tsf.ps1` 新增 `log size` / `log clean`，`log` 与 `server slow` 自动挑最新的按天文件；`setup --status` 与安装提示同步。⑤ 旧 `tsf.log`（32 MiB）/ `server.log`（100 MiB）已按你的决定删除。**明确不做去重**：日志要如实反映触发次数，体积交给总量闸门。 |

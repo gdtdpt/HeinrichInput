@@ -1,0 +1,12 @@
+[package]
+name = "heinrich-log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "亨利五笔的共享文件日志：按天分文件、保留 N 天、单日体积上限"
+
+# 零第三方依赖：注入型 DLL 要在每个宿主进程里多背一份，D8 也管着这个 crate。
+# 只用 std + windows（GetLocalTime），非 Windows 走 SystemTime 兜底，能 cargo check 过。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_SystemInformation"] }
