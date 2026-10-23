@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.45
+> **版本**：v1.46
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）、M3 拆为 M3.1–M3.5（D46/D47）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，真实库与日志已核（175 词 / 累计 377 次），其后按真机日志两次修正学习算法——D54 改绝对分差、D58 直接废除门槛（第一次上屏不计分），连打期缓存时机由 D57 修正 D55 的判据，**M2.4 学习算法已真机验收**（2026-10-22 三轮日志：连打不跳位 / 换码后回来升位 / 原首位上屏一次不夺回；抖动区边界由 D59 记录）**；M3.1（拼音数据）+ M3.2（混输裁决）已验收，M3.3（接进 TSF，含 D47 协议 v3、D48 五笔优先 + `'` 强制拼音、D49 `-`/`=` 翻页与组合态内吞字符键）**已验收**；M3.4a（码提示 chip，D51 协议 v4，含 D52 撤销 `Ctrl+Shift+/`、D53 Tab 改为组合态内吞掉）**已验收**；M3.4b（码位键位图，D50，含 D60 协议 v5 下发字根表、D61 触发键改 `Ctrl+Alt`）**已验收**；M3.5（`z` 末位通配 + 段级多段标记，D62；多段组合经 D64 收紧为只出词典真词、chip 改词中提示）**已验收（2026-10-23）**；M3.6（自定义词组，D65：`%APPDATA%\Heinrich\words.tsv` + 取码规则 + 1 秒热重载）**代码与自测完成，待你真机验收**；**M4 拆为 M4a–M4e（D66）：M4a（设置窗口 + 词组页）代码与自测完成、待你真机验收，M4b（通用页 + 学习数据页）、M4c（emoji 引擎，协议 v7）、M4d（emoji 改绑页 + `config_version`）、M4e（安装包 + 全量回归）依次排布；M5 整体后移**；外链查询已降为 M5 可选**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -855,16 +855,22 @@ IME 组合串一起实现——工作量约为原生的三倍，而这张表的�
 用户级——开发态下 DLL 直接注册 `dist`、从没跑过 `install`，这是唯一不弹 UAC 的入口。
 卸载时两处都删。
 
-**「选项」按钮的真相（D70，实测更正 v1.43 的假设）**：v1.43 推断「接口取不到就不画按钮」，
-只对了一半。取接口是**必要**条件，不是**充分**条件——本机 Win10 22H2 (19045.6466) 上：
+**「选项」按钮：两次假设都被实测推翻，已放弃（D70）**。硬事实（2026-10-23，Win10 22H2
+19045.6466，本机注册表 + 探针 + 进程模块表）：
 
-- 微软五笔 `{a028ae76…}` 在该 IID 上是 `S_OK`，语言选项页里它那一行**照样只有「删除」**；
-- 装上第三方输入法后，连微软拼音的「选项」都会变成空白（社区多年反馈）。
+- 微软五笔 `{6a498709…}` / 微软拼音 `{81d4e9c9…}`（CImeServerChs）**没有 `InprocServer32`**，
+  `CoCreateInstance(IID_ITfFnConfigure)` 直接 `REGDB_E_CLASSNOTREG (0x80040154)`——
+  它们照样有「选项」（真机截图：微软五笔展开后「选项」+「删除」）。
+- 亨利 `{0EB96F60…}` 该 IID 是 `S_OK`，设置页**不**画按钮；搜狗五笔同样不画。
+- 页面渲染列表时 `SystemSettings.exe` 根本不加载任何 TIP DLL（模块表无一个、`tsf.log`
+  零调用）——判据不发生在渲染时，是否发生在点选行时未查明。
 
-即：这个页面只对**微软自家 IME 的专门设置页**画按钮，第三方 TIP 实现 `ITfFnConfigure`
-也只是让它「有资格」，系统仍然不画。所以不要把它当入口宣传，也不要为它再动注册表；
-`ITfFnConfigure` 的实现保留（成本为零，别的调用方——如 `control intl.cpl` 的属性框——
-可能用它），`status` 里那项检查保留，但含义是「接口就绪」而非「按钮可见」。
+两次错误结论都已撤回：v1.43「取不到接口就不画按钮」（把必要条件当成了因果）、
+v1.44「只给微软自家 IME 画」（把未展开的截图读成了「只有删除」）。**真正的判定条件
+没有找到，也不打算再找**：这个入口的可见性完全在微软手里，第三方 IME（含搜狗）都拿
+不到，不值得继续投入。`ITfFnConfigure` 的实现保留——它是 MS 文档的正统路径、零维护
+成本，遗留属性框（`intl.cpl` 一类）可能用它；`status` 里那项检查保留，含义是
+「接口就绪」而非「按钮可见」。
 
 `Show` 的三条约定（将来任何调用方都适用）：
 
@@ -1040,7 +1046,7 @@ ranking.half_life_days = 45
 | 39 | **修饰键状态一律采样 `GetKeyState` 与上次比对，不依赖按键上下事件**，且四条回调都要采样（D29） |
 | 40 | 日志级别可用标志文件 `%LOCALAPPDATA%\Heinrich\debug.on` 临时提到 `debug`（`tools\tsf.ps1 debug on`），不必去改环境变量；环境变量仍优先 |
 | 41 | **设置窗口的两个入口都做**（D69）：系统设置页的「选项」（`ITfFnConfigure`）+ 开始菜单快捷方式。**不做托盘图标**——server 是纯管道服务、没有窗口也没有消息循环，加托盘等于给它加整套 Shell 集成（含 Explorer 重启后重挂），性价比最低；也不做输入法内快捷键（与 IDE 默认键冲突概率高、用户记不住） |
-| 42 | **系统设置的「选项」按钮不可指望**（D70）：Win10 22H2 上微软五笔有 `ITfFnConfigure` 也照样不画按钮，第三方 TIP 更不会。入口以**开始菜单为主**，写两处位置（提权写公共、否则用户级），并加 `heinrich-setup shortcut` 子命令（不提权、只写用户级）供开发态使用。`ITfFnConfigure` 的实现保留但不再当卖点 |
+| 42 | **放弃系统设置「选项」入口**（D70）：判定条件未找到（两次推断均被实测推翻），搜狗五笔也没有该按钮，第三方 IME 在这条路上拿不到可见性。入口以**开始菜单为主**，写两处位置（提权写公共、否则用户级），并加 `heinrich-setup shortcut` 子命令（不提权、只写用户级）供开发态使用。`ITfFnConfigure` 的实现保留但不再当卖点。**下一个候选入口参考横向调研**：小狼毫走 TSF 语言栏按钮（`ITfLangBarItemButton`，任务栏角标的「中/A」点击弹菜单）、搜狗走自绘悬浮状态栏 |
 
 ### 11.2 仍待确认
 
@@ -1112,3 +1118,4 @@ ranking.half_life_days = 45
 | v1.43 | 2026-10-23 | **M4a7 设置入口**（D69）：给 TSF 的 `TextService` 加 `ITfFnConfigure`（父接口 `ITfFunction` 只有 `GetDisplayName`），`Show` 经新增的 `launch.rs` 拉起同目录 `heinrich-settings.exe`——先 `FindWindowW("HeinrichSettings")` 复用已开的窗口，否则 `CreateProcessW`；无论成败**立即返回 `S_OK`**（失败原因入 `tsf.log`）。三点实现细节：`DllMain` 改存模块句柄（`GetModuleFileNameW(None)` 拿到的是**宿主** exe，不是 DLL）；类名与 exe 文件名收进 `heinrich-tip-id`（`SETTINGS_CLASS` / `SETTINGS_EXE_NAME`），settings 侧不再写第二份；不传 `hwndParent`（独立顶层窗口，认成 SystemSettings 的子窗口会跟着它一起消失）。安装器新增 `shortcut.rs`：`FOLDERID_CommonPrograms` 下建「亨利五笔 设置.lnk」、卸载时删除，步骤编号 5→6 步；`status` 与 `install` 的校验各增一项 `CoCreateInstance + ITfFnConfigure`。`HeinrichTsfAbiVersion` 5→6。实测：该 IID 由 `E_NOINTERFACE` 变 `S_OK`（反向验证：拆掉 `#[implement]` 里的接口即回到 `E_NOINTERFACE`）；探针 `tools/probe/probe_fnconfigure.py` 走 `CoCreateInstance → GetDisplayName`（返回「亨利五笔 · 设置」）→ `Show`，`Show` 10.9 ms 返回、第二次调用 pid 不变（复用未开新窗）；快捷方式用临时目录自测（公共开始菜单非提权写是 `E_ACCESSDENIED`，属预期） |
 | v1.44 | 2026-10-23 | **入口改走开始菜单**（D70）：真机截图显示设置页那一行只有「删除」，无「选项」。查清是 Windows 自己的判定——Win10 22H2 上微软五笔在 `IID_ITfFnConfigure` 上是 `S_OK`，页面照样不画按钮；装了第三方输入法后连微软拼音的「选项」也会空白。结论：该按钮只对微软自家 IME 的专门设置页出现，第三方 TIP 实现接口也只是「有资格」。故 `shortcut.rs` 改为双向布局：`create_settings_shortcut` 先写 `FOLDERID_CommonPrograms`，失败（非提权 `E_ACCESSDENIED`）退`FOLDERID_Programs`（`%APPDATA%`，不需要提权）；`shortcut_path` 取实际存在的那份，`remove_settings_shortcut` 两处都删。新增 `heinrich-setup shortcut` 子命令（只写用户级、不提权），解决开发态「DLL 直接注册 dist、从没跑过 install、于是永远没有入口」的问题。`writes_a_valid_shortcut_file` 增 `IShellLinkW::GetPath` 回读断言（原来只 `Load`，指向随便一个文件也能过，是假绿），反向验证：把期望改成 `notepad.exe` 立刻失败，`left` 打出 lnk 里的真实目标；新增 `user_programs_dir_exists`（断言落在 `%APPDATA%` 下）。setup 依赖加 `Win32_Storage_FileSystem`（`GetPath` 的 feature 门控）。**实机**：`heinrich-setup shortcut` 建出 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\亨利五笔 设置.lnk`，`status` 的「开始菜单入口」一行变成 ✓ |
 | v1.45 | 2026-10-23 | **设置窗口单实例（按窗口类名）**：`ui::focus_existing` 在 `main` 里（`--selftest-ui` 之后）先 `FindWindowW(SETTINGS_CLASS)`，命中就 `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`、打印 pid 后退出。防的是「两个入口都开着 → 两个窗口各持一份内存词表快照 → 后保存的一方把先保存的改动当作已删除」。不用命名互斥体：判据取「有没有窗口」而不是「有没有进程」，进程在但窗口已销毁时新实例应该正常开窗。实测：第一次启动 1 个进程；第二次启动退出码 0、输出「已有设置窗口（pid=11616），已切到前台」、进程数仍为 1；反向验证（把 `focus_existing()` 换成 `.filter(|_| false)`）立刻变成 2 个进程 |
+| v1.46 | 2026-10-23 | **撤回 D70 两次错误推断并放弃「选项」入口**：用户指出上一版结论「微软五笔那行也只有删除」查无实据（原始截图里该行未展开，无任何按钮）；同日用户实测搜狗五笔也没有该按钮。更正 §6.10 与踩坑 49 为实测事实：微软五笔/拼音（CImeServerChs）无 `InprocServer32`、`CoCreateInstance` → `REGDB_E_CLASSNOTREG` 却仍有「选项」；我们 `S_OK` 无按钮；`SystemSettings.exe` 渲染列表时不加载任何 TIP DLL（模块表 + tsf.log 零调用）。判定条件未查明，不再追。新增横向调研记录：小狼毫入口 = TSF 语言栏按钮（`ITfLangBarItemButton`，`WeaselTSF/LanguageBar.cpp`）+ 开始菜单；搜狗五笔入口 = 自绘悬浮状态栏右键【设置属性】+ 工具箱 + 开始菜单——业界无一家依赖系统设置页。README 的「选项」说明同步更正 |
