@@ -28,7 +28,10 @@ fn main() -> ExitCode {
         PathBuf::from("data/wubi86")
     };
     let data = take_arg(rest, "--data").unwrap_or(default_data);
-    let pinyin_dir = take_arg(rest, "--pinyin");
+    // 拼音目录：显式给就用；没给时**猜同级目录**（dist 的布局是 data/wubi86 与
+    // data/pinyin 并排）。不自作主张的话，`look jiankangma` 会因为「没装拼音」
+    // 而回空——用户刚加的词明明有拼音，看起来像功能没生效。
+    let pinyin_dir = take_arg(rest, "--pinyin").or_else(|| guess_pinyin_dir(&data));
 
     match cmd {
         "repl" => match Scheme::load(&data) {
@@ -189,7 +192,7 @@ fn main() -> ExitCode {
         }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给时自动用 <--data 的同级>/pinyin（存在时）。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。"
             );
             ExitCode::SUCCESS
         }
@@ -211,6 +214,18 @@ fn take_arg(args: &[String], flag: &str) -> Option<PathBuf> {
 }
 
 /// 取字符串型参数（`--pinyin` / `--code` / `--weight` 这类，值不是路径）。
+/// 猜拼音数据目录：`<data>/../pinyin` 存在就用它。
+///
+/// 只在「用户没写 `--pinyin`」时兜底，且**永不**在 `data` 本身就是拼音目录时瞎猜
+/// （`check-pinyin` 的 `--data` 指的正是拼音目录）。
+fn guess_pinyin_dir(data: &Path) -> Option<PathBuf> {
+    if data.file_name()? == "pinyin" {
+        return None;
+    }
+    let guess = data.parent()?.join("pinyin");
+    guess.is_dir().then_some(guess)
+}
+
 fn take_str(args: &[String], flag: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
