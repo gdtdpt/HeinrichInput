@@ -1195,8 +1195,29 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 
 1. **立即返回**——不等窗口关闭。
 2. **已有窗口就复用**——`FindWindowW(heinrich_tip_id::SETTINGS_CLASS)` 命中就
-   `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。settings 没有单实例锁。
+   `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。settings 侧自己也有同样的
+   检查（`ui::focus_existing`，见下），两道各自独立、都靠窗口类名。
 3. **失败也返回 `S_OK`**，原因写 `tsf.log`。
+
+**设置窗口自己的单实例**：`main` 在 `--selftest-ui` 之后、`App::new` 之前调
+`ui::focus_existing()`——`FindWindowW(SETTINGS_CLASS)` 命中就还原+前置、打印 pid、
+退出码 0。**不用命名互斥体**：要防的是「两个窗口各持一份内存词表快照」，判据取
+「有没有窗口」比「有没有进程」更贴近；进程活着但窗口已销毁时，新实例应该正常开窗。
+验证（两次启动 + 数进程）：
+
+```python
+import subprocess, time
+exe = r"dist\heinrich-settings.exe"
+p1 = subprocess.Popen([exe]); time.sleep(1.8)
+p2 = subprocess.Popen([exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+out, _ = p2.communicate(timeout=10)
+print(p2.returncode, out.decode("utf-8", "replace"))   # 0 已有设置窗口（pid=…），已切到前台
+# 再用 tasklist 数 heinrich-settings.exe：应为 1
+```
+
+反向验证：把调用换成 `ui::focus_existing().filter(|_| false)`，重编译后两次启动会留下
+2 个进程。**别用 Start-Process 起 GUI**（工具侧会拦，且 job object 会连带收掉进程树）；
+`subprocess.Popen` 在同一条命令里启动、检查、`terminate` 才稳。
 
 **自验**（不需要点设置页）：
 

@@ -33,16 +33,17 @@ use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
-    RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA,
-    GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
-    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW,
-    WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect,
+    GetMessageW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, LoadCursorW, MessageBoxW, MoveWindow,
+    PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, TranslateMessage,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE,
+    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE,
+    WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN,
+    WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC,
+    WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -1355,6 +1356,35 @@ fn create_window(app: &App) -> Result<HWND, String> {
 }
 
 /// 建窗、跑消息循环。返回进程退出码。
+/// 已经有一个设置窗口就还原 + 前置，返回它的 pid；没有则 `None`。
+///
+/// **为什么需要**：这个 exe 没有单实例锁，而现在有两个入口指向它（开始菜单快捷方式、
+/// 系统设置的「选项」）。点两次就开出两个窗口，各自持一份**内存里的**词表快照：
+/// 在 A 里加的词，B 的列表里没有；在 B 里再保存一次，A 刚写的改动就按 B 的旧快照
+/// 被算成「已删除」。所以第二个实例只负责把第一个叫到前台，自己立刻退出。
+///
+/// 还原用**异步** `ShowWindowAsync`：同步 `ShowWindow` 碰上无响应的目标会把调用方
+/// 一起卡住（目标可能正卡在写 `words.tsv` 上）。
+pub fn focus_existing() -> Option<u32> {
+    unsafe {
+        let class: Vec<u16> = heinrich_tip_id::SETTINGS_CLASS
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let hwnd = match FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) {
+            Ok(h) if !h.0.is_null() => h,
+            _ => return None,
+        };
+        // 最小化时 `SetForegroundWindow` 只改前台身份、屏幕上看不见；
+        // 判「用户能看见」必须是「还原 + 前置」这一对。
+        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        let _ = SetForegroundWindow(hwnd);
+        let mut pid = 0u32;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        Some(pid)
+    }
+}
+
 pub fn run(app: Box<App>) -> Result<i32, String> {
     let hwnd = create_window(&app)?;
     unsafe {

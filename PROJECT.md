@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.44
+> **版本**：v1.45
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）、M3 拆为 M3.1–M3.5（D46/D47）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，真实库与日志已核（175 词 / 累计 377 次），其后按真机日志两次修正学习算法——D54 改绝对分差、D58 直接废除门槛（第一次上屏不计分），连打期缓存时机由 D57 修正 D55 的判据，**M2.4 学习算法已真机验收**（2026-10-22 三轮日志：连打不跳位 / 换码后回来升位 / 原首位上屏一次不夺回；抖动区边界由 D59 记录）**；M3.1（拼音数据）+ M3.2（混输裁决）已验收，M3.3（接进 TSF，含 D47 协议 v3、D48 五笔优先 + `'` 强制拼音、D49 `-`/`=` 翻页与组合态内吞字符键）**已验收**；M3.4a（码提示 chip，D51 协议 v4，含 D52 撤销 `Ctrl+Shift+/`、D53 Tab 改为组合态内吞掉）**已验收**；M3.4b（码位键位图，D50，含 D60 协议 v5 下发字根表、D61 触发键改 `Ctrl+Alt`）**已验收**；M3.5（`z` 末位通配 + 段级多段标记，D62；多段组合经 D64 收紧为只出词典真词、chip 改词中提示）**已验收（2026-10-23）**；M3.6（自定义词组，D65：`%APPDATA%\Heinrich\words.tsv` + 取码规则 + 1 秒热重载）**代码与自测完成，待你真机验收**；**M4 拆为 M4a–M4e（D66）：M4a（设置窗口 + 词组页）代码与自测完成、待你真机验收，M4b（通用页 + 学习数据页）、M4c（emoji 引擎，协议 v7）、M4d（emoji 改绑页 + `config_version`）、M4e（安装包 + 全量回归）依次排布；M5 整体后移**；外链查询已降为 M5 可选**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -871,10 +871,19 @@ IME 组合串一起实现——工作量约为原生的三倍，而这张表的�
 - **立即返回**。`ITfFnConfigure::Show` 的文档写「对话框关闭前不要返回」，那是给模态
   对话框的；我们的窗口是独立顶层窗口，阻塞会把 SystemSettings 的 UI 线程挂住。
 - **已有窗口就复用**。先 `FindWindowW("HeinrichSettings")`，找到就
-  `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。settings 没有单实例锁，
-  不复用就开出两个、两边各存各的，后保存的把先保存的盖掉。
+  `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。两边各存各的会互相覆盖
+  （见下面「单实例」）。
 - **失败也返回 `S_OK`**，原因写 `tsf.log`。系统那边对这个错误无能为力，把失败弹给
   用户只是换个地方看不见。
+
+**单实例靠窗口类名，不用互斥体**：`heinrich-settings.exe` 自己启动时也做一次
+`FindWindowW(SETTINGS_CLASS)`，命中就 `ShowWindowAsync(SW_RESTORE)` +
+`SetForegroundWindow`、打印 pid 后**立即退出**（`ui::focus_existing`）。理由：两个入口
+（开始菜单、系统设置的「选项」）都启动同一个 exe，而它没有互斥体；开出两个窗口时各自
+持一份**内存里的**词表快照——在 A 里加的词 B 的列表里没有，B 再保存一次就把 A 的改动
+按 B 的旧快照算成「已删除」。用窗口类名而不是命名互斥体，是因为「有没有窗口」比
+「有没有进程」更接近要防的那件事：进程活着但窗口已销毁时，新实例应该正常开窗。
+`--selftest-ui` 在检查之前返回（自测要自己建窗），不受影响。
 
 **已知缺口**：没有 comctl32 v6 清单，控件是经典外观（Win95 风）。加清单要引入资源
 编译（`.rc` 或 `build.rs` 链接参数），留给 M4d/M4e 与安装器一起做。
@@ -1102,3 +1111,4 @@ ranking.half_life_days = 45
 | v1.42 | 2026-10-23 | **F47：字段名居中 + Static 背景与父窗口一致**。真机反馈「这行的 label 可以居中吗，背景是否可以与父背景一致」。改法：四个字段名（词/拼音/码/权重）改 `SS_CENTER | SS_CENTERIMAGE`；`WM_CTLCOLORSTATIC` 返回的画刷从 `COLOR_WINDOW`（白）改成 `COLOR_BTNFACE`（与主窗口类 `hbrBackground` 同色）。`--selftest-ui` 新增 `check_labels`：断言四个字段名的样式位，并**真发一次 `WM_CTLCOLORSTATIC` 比对返回画刷**（色差只有 15 级，截图复查容易漏），已反向验证能抓到「回白底」与「去掉居中」两种回退；dev-guide 踩坑 47（`SS_*` 在 `Win32::System::SystemServices`、该 feature 未开，写字面量） |
 | v1.43 | 2026-10-23 | **M4a7 设置入口**（D69）：给 TSF 的 `TextService` 加 `ITfFnConfigure`（父接口 `ITfFunction` 只有 `GetDisplayName`），`Show` 经新增的 `launch.rs` 拉起同目录 `heinrich-settings.exe`——先 `FindWindowW("HeinrichSettings")` 复用已开的窗口，否则 `CreateProcessW`；无论成败**立即返回 `S_OK`**（失败原因入 `tsf.log`）。三点实现细节：`DllMain` 改存模块句柄（`GetModuleFileNameW(None)` 拿到的是**宿主** exe，不是 DLL）；类名与 exe 文件名收进 `heinrich-tip-id`（`SETTINGS_CLASS` / `SETTINGS_EXE_NAME`），settings 侧不再写第二份；不传 `hwndParent`（独立顶层窗口，认成 SystemSettings 的子窗口会跟着它一起消失）。安装器新增 `shortcut.rs`：`FOLDERID_CommonPrograms` 下建「亨利五笔 设置.lnk」、卸载时删除，步骤编号 5→6 步；`status` 与 `install` 的校验各增一项 `CoCreateInstance + ITfFnConfigure`。`HeinrichTsfAbiVersion` 5→6。实测：该 IID 由 `E_NOINTERFACE` 变 `S_OK`（反向验证：拆掉 `#[implement]` 里的接口即回到 `E_NOINTERFACE`）；探针 `tools/probe/probe_fnconfigure.py` 走 `CoCreateInstance → GetDisplayName`（返回「亨利五笔 · 设置」）→ `Show`，`Show` 10.9 ms 返回、第二次调用 pid 不变（复用未开新窗）；快捷方式用临时目录自测（公共开始菜单非提权写是 `E_ACCESSDENIED`，属预期） |
 | v1.44 | 2026-10-23 | **入口改走开始菜单**（D70）：真机截图显示设置页那一行只有「删除」，无「选项」。查清是 Windows 自己的判定——Win10 22H2 上微软五笔在 `IID_ITfFnConfigure` 上是 `S_OK`，页面照样不画按钮；装了第三方输入法后连微软拼音的「选项」也会空白。结论：该按钮只对微软自家 IME 的专门设置页出现，第三方 TIP 实现接口也只是「有资格」。故 `shortcut.rs` 改为双向布局：`create_settings_shortcut` 先写 `FOLDERID_CommonPrograms`，失败（非提权 `E_ACCESSDENIED`）退`FOLDERID_Programs`（`%APPDATA%`，不需要提权）；`shortcut_path` 取实际存在的那份，`remove_settings_shortcut` 两处都删。新增 `heinrich-setup shortcut` 子命令（只写用户级、不提权），解决开发态「DLL 直接注册 dist、从没跑过 install、于是永远没有入口」的问题。`writes_a_valid_shortcut_file` 增 `IShellLinkW::GetPath` 回读断言（原来只 `Load`，指向随便一个文件也能过，是假绿），反向验证：把期望改成 `notepad.exe` 立刻失败，`left` 打出 lnk 里的真实目标；新增 `user_programs_dir_exists`（断言落在 `%APPDATA%` 下）。setup 依赖加 `Win32_Storage_FileSystem`（`GetPath` 的 feature 门控）。**实机**：`heinrich-setup shortcut` 建出 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\亨利五笔 设置.lnk`，`status` 的「开始菜单入口」一行变成 ✓ |
+| v1.45 | 2026-10-23 | **设置窗口单实例（按窗口类名）**：`ui::focus_existing` 在 `main` 里（`--selftest-ui` 之后）先 `FindWindowW(SETTINGS_CLASS)`，命中就 `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`、打印 pid 后退出。防的是「两个入口都开着 → 两个窗口各持一份内存词表快照 → 后保存的一方把先保存的改动当作已删除」。不用命名互斥体：判据取「有没有窗口」而不是「有没有进程」，进程在但窗口已销毁时新实例应该正常开窗。实测：第一次启动 1 个进程；第二次启动退出码 0、输出「已有设置窗口（pid=11616），已切到前台」、进程数仍为 1；反向验证（把 `focus_existing()` 换成 `.filter(|_| false)`）立刻变成 2 个进程 |

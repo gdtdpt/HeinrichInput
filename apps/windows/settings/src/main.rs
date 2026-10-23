@@ -86,6 +86,14 @@ fn main() -> std::process::ExitCode {
         };
     }
 
+    // 已经开着就把它叫到前台，自己退出。两个入口（开始菜单、系统设置的「选项」）
+    // 都启动这个 exe，而它没有单实例锁——两个窗口各持一份内存里的词表，后保存的
+    // 那份会把先保存的改动当成「已删除」。放在 `--selftest-ui` 之后：自测要自己建窗。
+    if let Some(pid) = ui::focus_existing() {
+        println!("已有设置窗口（pid={pid}），已切到前台");
+        return std::process::ExitCode::SUCCESS;
+    }
+
     match ui::App::new(args.data, args.words) {
         Ok(app) => match ui::run(Box::new(app)) {
             Ok(_) => std::process::ExitCode::SUCCESS,
