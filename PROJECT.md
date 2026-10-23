@@ -950,7 +950,7 @@ cargo 默认打 console——从输入法或开始菜单拉起来时，背后会
 | emoji 用户层 | `%APPDATA%\Heinrich\emoji.user.toml` |
 | 设置窗口 | `dist\heinrich-settings.exe`（§6.10，可独立运行，不需要输入法在跑） |
 | 自定义词组 | `%APPDATA%\Heinrich\words.tsv`（§6.9，可手改，改完最坏 3 秒生效；D67 的缓存有效期） |
-| 日志 | `%LOCALAPPDATA%\Heinrich\logs\tsf-<yyyymmdd>.log` 与 `server-<yyyymmdd>.log`（按天一个文件，保留 7 天；默认 info，仅本机，可关闭。D76） |
+| 日志 | `%LOCALAPPDATA%\Heinrich\logs\tsf-<yyyymmdd>.log` 与 `server-<yyyymmdd>.log`（按天一个文件，保留 7 天；默认 info，仅本机，可关闭。D76）。单测进程另写 `tsf-test-<yyyymmdd>.log`，不进真机日志（D77） |
 | 程序 | `%ProgramFiles%\Heinrich\`（server + DLL + data + 设置程序） |
 
 **日志规格（D76，v1.52 起）**：实现收在 `crates/heinrich-log`，DLL 与 server 各留一层薄壳（级别枚举、宏名、启动 banner）。
@@ -963,7 +963,15 @@ cargo 默认打 console——从输入法或开始菜单拉起来时，背后会
 | 单日上限 | ≥ 8 MiB 后只写 `warn` / `error`；≥ 32 MiB 当天停写。因此单日 ≤ 32 MiB、总量 ≈ ≤ 224 MiB（实际远小） |
 | 去重 | **不去重**：每触发一次就落一行，次数必须可数。体积由上面的总量闸控，而不是靠丢掉重复 |
 | 启动 banner | 每个进程首条日志前插一行：宿主 exe + pid + ABI + 协议版本 + 当前级别。排障时「这个 pid 是哪个程序、加载的是哪版 DLL」不必再猜 |
-| 工具 | `tsf.ps1 log`（最新一天尾部）· `tsf.ps1 log size`（每个文件多大）· `tsf.ps1 log clean`（删超 7 天 + 旧格式单文件） |
+| 工具 | `tsf.ps1 log`（最新一天尾部，自动跳过 `*-test-*`）· `tsf.ps1 log size`（每个文件多大）· `tsf.ps1 log clean`（删超 7 天 + 旧格式单文件） |
+
+**日志可信度（D77，v1.53 起）**：三条都是为了「日志里出现的东西都能当证据用」。
+
+| 项 | 规则 |
+|---|---|
+| 单测分流 | `cargo test` 的二进制（`heinrich_win-<hash>.exe`）会真构造语言栏按钮、切模式、调 `Show(false)`，写 `tsf-test-<日期>.log`；`cfg(test)` 切 stem，`tsf.ps1` 取最新日志时排掉 `*-test-*` |
+| `sink` 缺失分级 | 构造期（`AddItem` 之前）没有 sink 是正常时序 → `debug`；挂上后被管理器摘掉才是故障 → `error`。用 `advised` 标志区分，否则构造期会刷一堆可忽略的 `E` |
+| 连接日志的 pid | `GetNamedPipeServerProcessId(管道句柄)` 取对端 pid 写进「已连上 server」。不给 `Frame::Welcome` 加字段：加字段要升 `PROTO_VERSION`，代价是机器上所有旧 DLL 一起失效 |
 
 **`config.toml` 现状（M3.4a 起）**：三项，缺文件即全默认。
 
@@ -1110,6 +1118,7 @@ ranking.half_life_days = 45
 | 46 | **「输入法列表图标」与「可点可切的角标」可共存**（D74，实测推翻 D72 期间的猜测）：`IconFile` 指向 `heinrich.ico` 的同时，语言栏条目照常绘制、照常收点击。曾推断「profile 一旦有有效图标，系统输入指示器就接管那一格、把 TIP 条目挤到后面」，真机对照（同一份新句柄构建，`IconFile` 指 DLL 与指 ico 两态）症状不变，而修好句柄问题后两态都正常 → 该推断不成立。教训：**「A 改动后出现 B 症状」不等于「A 导致 B」**，时间相邻只是候选，必须做单变量 A/B 才能定论 |
 | 47 | **验收口径按「里程碑性质」分层，不为已被自测覆盖的路径做人工复验**（D75）：M3.6 以自测为准、不做真机手测；M4a 必须真机验。① M3.6 是数据层 + CLI，六条判据每条都有可复现断言（`word add` 的推导值、`look` 的命中、`word rm` 后的全量替换、权重中位数、坏行、chip），人工再走一遍只是把自测重跑一次。② 它唯一的真机风险是「跨进程生效」，而这条链路（`words.tsv` → server mtime 重载 → DLL 3 秒缓存）**换写入口不改变**：M4a 的设置窗口写的是同一份文件，其 ① ② 已在真机把整条链走通。③ 「升级不丢」是代码结构事实（文件在 `%APPDATA%`，安装器只写注册表与快捷方式），验证它要弹 UAC 重装一次，成本大于信息量。④ 反向成立：M4a 的 Win32 控件 + IME + DPI/字体渲染组合正是自测照不到的地方（F46 面板残留、F47 Static 白块、F48 黑框全是截图才发现的），这类必须人眼过 |
 | 48 | **日志按天分文件，不做 rename 轮转；不去重，体积靠总量闸控**（D76）：`crates/heinrich-log` 统一 DLL 与 server 的落盘规则——文件名 `<stem>-<yyyymmdd>.log`、保留 7 天（每进程首次写入时扫一遍目录）、单日 8 MiB 后只写 `warn`/`error`、32 MiB 当天停写；每进程首行写 banner（宿主 exe + pid + ABI + 协议 + 级别）。① **rename 轮转在这里是错的**：写者是几十个生命周期不受控的外部进程，改名那一刻的写入会打进已不存在的路径，日志直接丢；带日期的文件名让「跨天」变成「本来就要 open 一个新的」。② **不去重是用户的明确要求**：日志要表明真实情况，触发一次就得写一行，否则无法从日志区分「发生了一次」和「发生了一万次」。因此体积问题不用「合并重复」解决，而用「单日总量上限」兜住——同一条坏路径刷到 32 MiB 就停，第二天重开。③ 软/硬双阈值的原因：真正的刷屏源往往就是 `error`（版本不匹配的拒握手、队列满），只设软阈值等于不设。④ banner 补的是排障缺口：`tsf.log` 里 15.9 万条「协议版本不匹配」曾无法判断「是哪个宿主、加载的哪版 DLL」，只能靠时间戳猜。 |
+| 49 | **日志可信度三修**（D77，v1.53）：单测进程另写 `tsf-test-<yyyymmdd>.log`、`sink` 缺失按「挂过 / 未挂」分两级、连接日志用 `GetNamedPipeServerProcessId` 填真实 pid。① `cargo test` 的二进制叫 `heinrich_win-<hash>.exe`，它真的会构造语言栏按钮、切模式、调 `Show(false)`——与真机宿主写同一个文件时，`tsf.ps1 log` 的第一屏有一半是单测的调试行，还混进只属于测试的 `E 语言栏：没有 sink`，等于把「错误」这个词贬值。`cfg(test)` 换 stem 解决；`tsf.ps1` 取最新日志时排掉 `*-test-*`——测试文件总是最新，不排会顶掉真机日志。② 「没有 sink」有两种成因：构造期本来没挂（正常时序）、挂上后又被管理器摘掉（真故障，通知全石沉大海）。两者 `sink` 都是 `None`，只有 `advised` 标志能把它们分开：未挂过降 `debug`，挂过再丢保持 `error`。③ `已连上 server（pid 未知）` 与上一行的 `已拉起 server（pid 4004）` 自相矛盾，读者会以为连的是另一个 server；对端 pid 从管道句柄问得出，不必给 `Welcome` 加字段（加字段要升 `PROTO_VERSION`，代价是机器上所有旧 DLL 一起失效） |
 
 ### 11.2 仍待确认
 
@@ -1189,3 +1198,4 @@ ranking.half_life_days = 45
 | v1.50 | 2026-10-23 | **M4a8 语言栏按钮真机验收通过（D74）+ 撤回「IconFile 抢格」推断**：正式配色（深灰底白「亨」/「英」）下四项全过——图标随 Shift 与左键切换、右键菜单（设置 / 打开词库文件夹）可用、Alt+Tab 往返后图标仍在、输入法列表那行同时有图标。因此确认 **D72 的 `IconFile` 与语言栏条目可共存**，v1.49 期间「profile 有有效图标 → 系统输入指示器接管那一格」的推断不成立（同一份新句柄构建下，`IconFile` 指 DLL 与指 ico 症状一致；修好句柄后两态皆正常）。注册表 `IconFile` 保留 `dist\heinrich.ico`（`IconIndex = 0`）。新增决策 46 记这条教训：「改动后出现症状」只是候选因果，必须单变量 A/B 才能定论 |
 | v1.51 | 2026-10-23 | **M3.6 与 M4a 验收（D75：验收口径按里程碑性质分层）**：M4a（设置窗口 + 词组页）**真机功能验收通过**——六项功能（加词后打得出 / 删词后消失 / 手填压过推导 / 同码同词不新增 / 坏行只影响自己 / 编辑框内可用亨利打中文）全部通过；UI 细节（F46/F47/F48/DPI）属前序版本已修项，本轮未逐条重走。M3.6（自定义词组）**以自测为准、不做真机手测**：其六条判据均有可复现断言，唯一的真机风险「跨进程热生效」由 M4a 经同一份 `words.tsv`、同一条 mtime 重载链、同一份 DLL 3 秒缓存间接覆盖；「升级不丢」属代码结构事实（文件在 `%APPDATA%`，安装器只写注册表与快捷方式），不值得为它弹 UAC 重装。新增决策 47 记录这条分层原则，并明确反向纪律：**自测照不到的（Win32 控件渲染 / IME / DPI）必须真机人眼过** |
 | v1.52 | 2026-10-23 | **日志改造（D76）：按天分文件 + 保留 7 天 + 单日双阈值，并给每个进程加 banner**。起因是 `tsf.log` 4 天涨到 32 MiB / 31.4 万行、`server.log` 到 100 MiB：其中 `E server 拒绝握手：协议版本不匹配` 159,187 条（50.6%）、`D 握手失败：管道的另一端上无任何进程` 113,953 条（36.2%），而 `W` 级 0 条。① 新增 `crates/heinrich-log`（零第三方依赖，仅 std + `GetLocalTime`）：`Spec::new(env_var, stem)` 的 `const` 构造让两侧都能直接声明 `static`；路径 `<stem>-<yyyymmdd>.log`，**不做 rename**（外部写者不受控，改名必丢写入）；过期清理放在「每进程首次写」；单日 8 MiB 后只放行 `warn`/`error`、32 MiB 停写。② 两侧 `log.rs` 收成薄壳（级别枚举 + 宏名 + banner），banner 带宿主 exe / pid / ABI / 协议 / 级别——补上「15.9 万条版本不匹配却看不出是哪个宿主、哪版 DLL」的缺口。③ 启用 `Warn` 档：`ipc::request` 的「IPC 往返失败…降级」由 `debug` 提为 `warn`（这正是「一个候选都不出」的现场证据），新增 `tsf_warn!`。④ `tsf.ps1` 新增 `log size` / `log clean`，`log` 与 `server slow` 自动挑最新的按天文件；`setup --status` 与安装提示同步。⑤ 旧 `tsf.log`（32 MiB）/ `server.log`（100 MiB）已按你的决定删除。**明确不做去重**：日志要如实反映触发次数，体积交给总量闸门。 |
+| v1.53 | 2026-10-23 | **日志可信度三修（D77）**。① `cargo test` 的测试宿主 `heinrich_win-<hash>.exe` 会把「切换模式 / Show(false) / 没有 sink」写进真机 `tsf-<日期>.log`，`tsf.ps1 log` 的第一屏被它占了八成——`log.rs` 按 `cfg(test)` 切到 `tsf-test-<日期>.log`，`tsf.ps1` 的 `Get-LatestLog` 排掉 `*-test-*`。② `E 语言栏：没有 sink` 在构造期是正常时序（`AddItem` 之前本来没有 sink），只有「挂上又被摘」才是故障；`LangBarButton` 加 `advised` 标志分级：未挂过 `debug`、挂过再丢 `error`，单测补两条断言。③ 连接日志的 `pid 未知` 改成真实 pid：`GetNamedPipeServerProcessId` 从管道句柄取对端进程 id，`Conn` 加 `server_pid`，windows feature 加 `Win32_System_Pipes`，协议不动。 |

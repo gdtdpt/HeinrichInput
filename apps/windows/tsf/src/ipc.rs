@@ -40,6 +40,7 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
+use windows::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, ResetEvent, WaitForSingleObject,
@@ -104,6 +105,12 @@ const SCHEME_ID: &str = "wubi86";
 struct Conn {
     pipe: HANDLE,
     event: HANDLE,
+    /// 管道对端的 server 进程 id，`0` = 取不到。
+    ///
+    /// 日志里必须写它：上一行可能是「已拉起 server（pid 4004）」，下一个进程再连时
+    /// 若写成「pid 未知」，读者会以为连的是另一个 server。协议不必为此加字段——
+    /// 管道句柄自己问得出来，而改协议要多背一次版本号（还得连带升级所有旧 DLL）。
+    server_pid: u32,
 }
 
 // 句柄本身可以在线程间传递，windows-rs 只是不替我们担保这一点。
@@ -610,7 +617,15 @@ fn open() -> Result<Conn, OpenFail> {
         tsf_debug!("CreateEventW 失败，本轮放弃");
         return Err(OpenFail::Broken);
     };
-    let conn = Conn { pipe, event };
+    let mut server_pid = 0u32;
+    unsafe {
+        let _ = GetNamedPipeServerProcessId(pipe, &mut server_pid);
+    }
+    let conn = Conn {
+        pipe,
+        event,
+        server_pid,
+    };
 
     match exchange(
         &conn,
@@ -628,7 +643,12 @@ fn open() -> Result<Conn, OpenFail> {
         }) => {
             FEATURES.store(features, Ordering::Relaxed);
             tsf_info!(
-                "已连上 server（pid 未知，{} 条词条，{}，{}）",
+                "已连上 server（pid {}，{} 条词条，{}，{}）",
+                if conn.server_pid == 0 {
+                    "未知".to_string()
+                } else {
+                    conn.server_pid.to_string()
+                },
                 entry_count,
                 if mode == Mode::Chinese {
                     "中文"

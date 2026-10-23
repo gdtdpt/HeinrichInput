@@ -1318,7 +1318,7 @@ cd dist
 
 ### 4.20 日志：按天分文件与总量闸（D76，`crates/heinrich-log`）
 
-DLL 的 `tsf.log` 与 server 的 `server.log` 共用一份实现，两侧 `log.rs` 只是薄壳
+DLL 的 `tsf-<日期>.log` 与 server 的 `server-<日期>.log` 共用一份实现，两侧 `log.rs` 只是薄壳
 （级别枚举 + 宏名 + 启动 banner）。要改格式 / 轮转规则，改 `crates/heinrich-log/src/lib.rs`。
 
 | 项 | 规则 |
@@ -1340,6 +1340,23 @@ DLL 的 `tsf.log` 与 server 的 `server.log` 共用一份实现，两侧 `log.r
 「10 秒内同类只记一条」会让「偶发一次」和「每 5 秒一次的重试」在日志里长得一样，
 而这恰恰是最需要区分的量（`E server 拒绝握手` 5 秒一条 = 每个受影响进程 5 秒重试一次，
 能反推有几个宿主还加载着旧 DLL）。体积因此交给**总量闸**：单日 32 MiB 到顶就停。
+
+**单测进程要换个文件名**：`cargo test` 编出的二进制叫 `heinrich_win-<hash>.exe`，
+它真的会构造语言栏按钮、切模式、调 `Show(false)`。如果和真机宿主写同一个文件，
+`tsf.ps1 log` 的第一屏有一半是单测的调试行，还会混进只属于测试的 `E`。
+所以 `apps/windows/tsf/src/log.rs` 按 `cfg(test)` 换 stem 到 `tsf-test-<日期>.log`，
+`tsf.ps1` 挑「当前日志」时同时排掉 `*-test-*`（否则测试文件总是最新，会被当成真机日志）。
+
+**「没有 sink」要分两种情况**（`langbar.rs::update`）：构造期（`AddItem` 之前）
+本来就没有 sink，那时刷图标是正常时序；挂上之后又被管理器摘掉才是真故障
+（通知全部石沉大海）。两者的 `sink` 都是 `None`，靠 `advised` 标志分开——
+未挂过降为 `debug`，挂过再丢保持 `error`。不让构造期报 `E` 的理由很实际：
+一堆永远可以忽略的错误，会把 `error` 这个词贬值，真出事时反而没人看。
+
+**连接日志里的 pid 从管道句柄问**：`GetNamedPipeServerProcessId(pipe)` 直接给出对端
+server 的 pid，不必给 `Frame::Welcome` 加字段——加字段要升 `PROTO_VERSION`，
+代价是机器上所有旧 DLL 一起失效。日志里写「pid 未知」尤其有害：上一行刚是
+`已拉起 server（pid 4004）`，下一行「pid 未知」会让读者以为连的是另一个 server。
 
 **读日志**：
 

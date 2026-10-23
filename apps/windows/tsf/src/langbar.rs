@@ -100,6 +100,13 @@ pub struct LangBarButton {
     status: Cell<u32>,
     /// 语言栏管理器挂上来的更新 sink。
     sink: RefCell<Option<ITfLangBarItemSink>>,
+    /// 管理器**曾经**挂上过 sink 吗。
+    ///
+    /// 只用来给「没有 sink」这条日志定级：构造期（`AddItem` 之前）本来就没有 sink，
+    /// 那时刷图标是正常时序；而挂上之后又被摘掉才是真故障（通知石沉大海）。
+    /// 两种情况 `sink` 都是 `None`，只有这个标志能把它们分开——否则日志里会出现
+    /// 一堆永远可以忽略的 E，真出事时反而没人看。
+    advised: Cell<bool>,
     /// 输入模式 compartment（`GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`）。
     /// 切换模式时必须同步它：这是 Windows 用来判断「当前是中文还是英文」的
     /// 正式通道，不同步的话系统托盘指示器会按旧值重画，把我们的图标顶掉。
@@ -112,6 +119,7 @@ impl LangBarButton {
             mode,
             status: Cell::new(0),
             sink: RefCell::new(None),
+            advised: Cell::new(false),
             compartment: RefCell::new(None),
         }
     }
@@ -288,7 +296,11 @@ impl LangBarButton_Impl {
         // 的通知全部石沉大海）——两种情况修法完全不同，日志必须能分开。
         let sink = self.sink.borrow().clone();
         let Some(sink) = sink else {
-            tsf_error!("语言栏：没有 sink，{flags:#x} 通知发不出去");
+            if self.advised.get() {
+                tsf_error!("语言栏：sink 曾被挂上又被摘掉，{flags:#x} 通知发不出去");
+            } else {
+                tsf_debug!("语言栏：sink 尚未挂上，{flags:#x} 跳过（构造期，正常）");
+            }
             return;
         };
         unsafe {
@@ -666,6 +678,7 @@ impl ITfSource_Impl for LangBarButton_Impl {
             return Err(connect_err(CONNECT_E_ADVISELIMIT));
         }
         *slot = Some(sink);
+        self.advised.set(true);
         Ok(SINK_COOKIE)
     }
 
@@ -676,6 +689,7 @@ impl ITfSource_Impl for LangBarButton_Impl {
         if self.sink.borrow_mut().take().is_none() {
             return Err(connect_err(CONNECT_E_NOCONNECTION));
         }
+        self.advised.set(false);
         Ok(())
     }
 }
@@ -740,6 +754,10 @@ mod tests {
                 .expect("挂 sink")
         };
         assert_eq!(cookie, SINK_COOKIE);
+        assert!(
+            obj.advised.get(),
+            "挂上之后必须记住，否则丢 sink 会被当成构造期"
+        );
 
         // 再挂一个 → 限一次。
         let sink_obj2 = ComObject::new(RecordingSink::default());
@@ -766,6 +784,7 @@ mod tests {
         // 错 cookie 摘不掉；对 cookie 摘掉后不再通知。
         assert!(unsafe { src.UnadviseSink(0) }.is_err());
         assert!(unsafe { src.UnadviseSink(SINK_COOKIE) }.is_ok());
+        assert!(!obj.advised.get(), "摘除后要复位，重挂是另一次生命周期");
         sink_obj.updates.set(0);
         obj.toggle_mode();
         assert_eq!(obj.mode.get(), Mode::Chinese);

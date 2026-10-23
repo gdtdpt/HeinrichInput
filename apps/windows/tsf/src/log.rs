@@ -21,8 +21,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use heinrich_log::Level;
 
-/// 本进程的日志目的地。`static` 保证级别解析、目录解析各只做一次。
+// 本进程的日志目的地。`static` 保证级别解析、目录解析各只做一次。
+//
+// 单测进程换个文件名：`cargo test` 编出的测试二进制（`heinrich_win-<hash>.exe`）
+// 会真的构造语言栏按钮、切模式、调 `Show(false)`，如果和真机宿主写同一个文件，
+// 排障时第一屏全是单测的调试行，还会混进「构造期没有 sink」这种只属于测试的错。
+// 真机日志只留真宿主。
+#[cfg(not(test))]
 static SPEC: heinrich_log::Spec = heinrich_log::Spec::new("HEINRICH_TSF_LOG", "tsf");
+#[cfg(test)]
+static SPEC: heinrich_log::Spec = heinrich_log::Spec::new("HEINRICH_TSF_LOG", "tsf-test");
 /// 「已经写过 banner 了」。
 static BANNER: AtomicBool = AtomicBool::new(false);
 

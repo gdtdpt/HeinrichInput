@@ -94,8 +94,11 @@ function Test-Elevated {
 function Get-LatestLog {
     # 日志按天分文件（tsf-20261023.log），「当前日志」不是一个固定路径。
     # 按修改时间挑最新的那个，跨天不用改脚本。
+    # 必须排掉 `*-test-*`：`cargo test` 的测试宿主写 tsf-test-<日期>.log，
+    # 它总是最新的，不排掉的话 `log` 会把单测输出当成真机日志显示。
     param([string]$Pattern)
     $files = @(Get-ChildItem -Path $logsDir -Filter $Pattern -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike '*-test-*' } |
             Sort-Object LastWriteTime -Descending)
     if ($files.Count -gt 0) { return $files[0].FullName }
     return $null
