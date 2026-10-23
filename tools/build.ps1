@@ -124,6 +124,17 @@ else {
     Write-Host '  需要混输请先跑：powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind pinyin' -ForegroundColor DarkGray
 }
 
+# 语言列表图标（D72）：注册表 IconFile 指向它。缺了就退回把 DLL 当图标源
+# （DLL 里没有图标资源 ⇒ 输入法列表里一块空白），所以这里必须带上。
+$iconSrc = Join-Path $root 'data\icon\heinrich.ico'
+if (Test-Path $iconSrc) {
+    Copy-Item $iconSrc -Destination $DistDir -Force
+}
+else {
+    Write-Host '  未找到 data\icon\heinrich.ico，输入法列表里将没有图标' -ForegroundColor Yellow
+    Write-Host '  需要图标请先跑：powershell -ExecutionPolicy Bypass -File tools\make-icon.ps1' -ForegroundColor DarkGray
+}
+
 Write-Host ''
 Write-Host "产物：$DistDir" -ForegroundColor Green
 # 不递归列出 .stale：那是绕过占用留下的旧文件，不属于产物。

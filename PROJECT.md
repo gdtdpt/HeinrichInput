@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.47
+> **版本**：v1.48
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）、M3 拆为 M3.1–M3.5（D46/D47）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，真实库与日志已核（175 词 / 累计 377 次），其后按真机日志两次修正学习算法——D54 改绝对分差、D58 直接废除门槛（第一次上屏不计分），连打期缓存时机由 D57 修正 D55 的判据，**M2.4 学习算法已真机验收**（2026-10-22 三轮日志：连打不跳位 / 换码后回来升位 / 原首位上屏一次不夺回；抖动区边界由 D59 记录）**；M3.1（拼音数据）+ M3.2（混输裁决）已验收，M3.3（接进 TSF，含 D47 协议 v3、D48 五笔优先 + `'` 强制拼音、D49 `-`/`=` 翻页与组合态内吞字符键）**已验收**；M3.4a（码提示 chip，D51 协议 v4，含 D52 撤销 `Ctrl+Shift+/`、D53 Tab 改为组合态内吞掉）**已验收**；M3.4b（码位键位图，D50，含 D60 协议 v5 下发字根表、D61 触发键改 `Ctrl+Alt`）**已验收**；M3.5（`z` 末位通配 + 段级多段标记，D62；多段组合经 D64 收紧为只出词典真词、chip 改词中提示）**已验收（2026-10-23）**；M3.6（自定义词组，D65：`%APPDATA%\Heinrich\words.tsv` + 取码规则 + 1 秒热重载）**代码与自测完成，待你真机验收**；**M4 拆为 M4a–M4e（D66）：M4a（设置窗口 + 词组页）代码与自测完成、待你真机验收，M4b（通用页 + 学习数据页）、M4c（emoji 引擎，协议 v7）、M4d（emoji 改绑页 + `config_version`）、M4e（安装包 + 全量回归）依次排布；M5 整体后移**；外链查询已降为 M5 可选**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -873,8 +873,7 @@ v1.44「只给微软自家 IME 画」（把未展开的截图读成了「只有�
 成本，遗留属性框（`intl.cpl` 一类）可能用它；`status` 里那项检查保留，含义是
 「接口就绪」而非「按钮可见」。
 
-**语言栏按钮（D71，M4a8）**：横向调研（v1.46）里小狼毫走的就是这条路——TIP 自己往语言栏
-挂一个 `ITfLangBarItemButton`，Win10 把它画在任务栏角标（输入法图标旁边）。实现要点：
+**语言栏按钮（D71，M4a8）**：横向调研（v1.46）里小狼毫走的就是这条路——TIP 自己往语言栏挂一个 `ITfLangBarItemButton`，Win10 把它画在任务栏角标（输入法图标旁边）。实现要点：
 
 - 按钮是**独立 COM 对象**（`langbar.rs` 的 `LangBarButton`，`#[implement(ITfLangBarItemButton, ITfSource)]`），
   不引用 `TextService`（避免引用环），中英模式经 `Rc<Cell<Mode>>` 与 `Core.mode` 共享；
@@ -886,12 +885,35 @@ v1.44「只给微软自家 IME 画」（把未展开的截图读成了「只有�
 - 图标运行时 GDI 绘制（深灰圆角底 + 白字「亨」/「英」，按 `SM_CXSMICON`），不落资源文件；
   左键 = 切中英（翻转 + `ipc::set_mode` + sink `OnUpdate`，不 flush 缓冲），
   右键 = 菜单「设置」「打开词库文件夹」。
+- **图标句柄永不销毁**（F50）：缓存放在**进程级**（`IconSlot`，每模式一个），不跟按钮对象
+  走。`GetIcon` 交出去的 HICON 由系统在何时绘制、绘制几次都不由我们决定；对象
+  `Drop` 时 `DestroyIcon` 会让图标变空白——真机表现是「Alt+Tab 切走再切回，图标没了」
+  与「切中英后图标不再出现」。小狼毫用 `LoadImage(..., LR_SHARED)` 拿到同样效果。
+  缓存键带尺寸：DPI 变了就重画一个，旧的故意不销毁。
 - 挂载失败只记日志不拖死输入法（与候选窗同一条纪律）；每步带阶段标注（M4a8 起
   `Activate` 内部失败不再吞错）。
 - 端到端测试（`#[ignore]`，走 `ITfInputProcessorProfileMgr::ActivateProfile` 真激活路径）钉住
   三个坑：**dwflags 必须带 `TF_IPP_FLAG_ACTIVE(1)`**（传 0 恒 E_INVALIDARG，TIP 与普通键盘
   布局皆然）；hkl 传 0 即可（`GetProfile` 查回的也是 0x0）；恢复原 profile 时 clsid 为零说明
   原来是普通键盘布局，要用 `TF_PROFILETYPE_KEYBOARDLAYOUT` 恢复。
+
+**输入法列表的图标（D72，M4a9）**：Win+空格 / 设置 → 语言 里那一行图标不是 TSF 接口给的，
+而是读注册表 `CTF\TIP\{CLSID}\LanguageProfile\<langid>\<profile>\IconFile` + `IconIndex`。
+我们原来把 `IconFile` 指到 `heinrich_win.dll`，但 DLL 里没有图标资源——列表里就是一块空白
+（F49，真机截图可见）。现在：
+
+- `tools\make-icon.ps1` 生成 `data\icon\heinrich.ico`（16/20/24/32/48 五个尺寸，32bpp，
+  手写 ICONDIR + DIB，GDI+ 画与语言栏同一套观感：深灰圆角底 + 白「亨」）。
+- `tools\build.ps1` 复制到 dist；`heinrich-setup install` 把它写进 `IconFile`
+  （常量 `heinrich_tip_id::ICON_FILE_NAME`）。文件不在就退回 DLL，老布局仍能装。
+- 选独立 `.ico` 而不是「给 DLL 嵌资源」：后者要引入 `build.rs` + `.rc`/`winres` 一层，
+  为一张 32×32 图换构建链不划算；`IconIndex = 0` 对单图标文件与 DLL 资源顺序等价。
+
+**设置程序必须是 Windows 子系统（F48）**：`apps/windows/settings` 原来没声明子系统，
+cargo 默认打 console——从输入法或开始菜单拉起来时，背后会多一个黑框命令行窗口
+（真机反馈「打开配置页面会有一个命令行在后面」）。现在
+`#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`：release 是 GUI
+子系统，debug 保留控制台（`--selftest` 要把结果打到 stdout，自测在 debug 下跑）。
 
 `ITfFnConfigure::Show` 的三条约定（将来任何调用方都适用）：
 
@@ -1069,6 +1091,7 @@ ranking.half_life_days = 45
 | 41 | **设置窗口的两个入口都做**（D69）：系统设置页的「选项」（`ITfFnConfigure`）+ 开始菜单快捷方式。**不做托盘图标**——server 是纯管道服务、没有窗口也没有消息循环，加托盘等于给它加整套 Shell 集成（含 Explorer 重启后重挂），性价比最低；也不做输入法内快捷键（与 IDE 默认键冲突概率高、用户记不住） |
 | 42 | **放弃系统设置「选项」入口**（D70）：判定条件未找到（两次推断均被实测推翻），搜狗五笔也没有该按钮，第三方 IME 在这条路上拿不到可见性。入口以**开始菜单为主**，写两处位置（提权写公共、否则用户级），并加 `heinrich-setup shortcut` 子命令（不提权、只写用户级）供开发态使用。`ITfFnConfigure` 的实现保留但不再当卖点。**下一个候选入口参考横向调研**：小狼毫走 TSF 语言栏按钮（`ITfLangBarItemButton`，任务栏角标的「中/A」点击弹菜单）、搜狗走自绘悬浮状态栏 |
 | 43 | **语言栏按钮作为第二入口**（D71，M4a8）：TIP 在 `Activate` 时经 `ITfLangBarItemMgr::AddItem` 往语言栏挂一个 `ITfLangBarItemButton`（Win10 画在任务栏角标），左键切中英、右键菜单开设置 / 词库文件夹。采用小狼毫同款路径（`WeaselTSF/LanguageBar.cpp` 证实可行且免 `ITfFunctionProvider`）；搜狗的自绘状态栏备选未采纳（要自己管理悬浮窗生命周期与 Explorer 重启重挂，成本远高于系统代画） |
+| 44 | **输入法列表的图标用独立 `.ico` 文件**（D72，M4a9）：注册表 `IconFile` 指向 `dist\heinrich.ico`（`tools\make-icon.ps1` 生成、build 复制），`IconIndex = 0`。不给 DLL 嵌图标资源——那要引入 `build.rs` + `.rc`/`winres`，为一张 32×32 图换整条构建链不划算；也不做 runtime 生成（注册表里的路径必须在安装时就存在） |
 
 ### 11.2 仍待确认
 
@@ -1142,3 +1165,5 @@ ranking.half_life_days = 45
 | v1.45 | 2026-10-23 | **设置窗口单实例（按窗口类名）**：`ui::focus_existing` 在 `main` 里（`--selftest-ui` 之后）先 `FindWindowW(SETTINGS_CLASS)`，命中就 `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`、打印 pid 后退出。防的是「两个入口都开着 → 两个窗口各持一份内存词表快照 → 后保存的一方把先保存的改动当作已删除」。不用命名互斥体：判据取「有没有窗口」而不是「有没有进程」，进程在但窗口已销毁时新实例应该正常开窗。实测：第一次启动 1 个进程；第二次启动退出码 0、输出「已有设置窗口（pid=11616），已切到前台」、进程数仍为 1；反向验证（把 `focus_existing()` 换成 `.filter(|_| false)`）立刻变成 2 个进程 |
 | v1.46 | 2026-10-23 | **撤回 D70 两次错误推断并放弃「选项」入口**：用户指出上一版结论「微软五笔那行也只有删除」查无实据（原始截图里该行未展开，无任何按钮）；同日用户实测搜狗五笔也没有该按钮。更正 §6.10 与踩坑 49 为实测事实：微软五笔/拼音（CImeServerChs）无 `InprocServer32`、`CoCreateInstance` → `REGDB_E_CLASSNOTREG` 却仍有「选项」；我们 `S_OK` 无按钮；`SystemSettings.exe` 渲染列表时不加载任何 TIP DLL（模块表 + tsf.log 零调用）。判定条件未查明，不再追。新增横向调研记录：小狼毫入口 = TSF 语言栏按钮（`ITfLangBarItemButton`，`WeaselTSF/LanguageBar.cpp`）+ 开始菜单；搜狗五笔入口 = 自绘悬浮状态栏右键【设置属性】+ 工具箱 + 开始菜单——业界无一家依赖系统设置页。README 的「选项」说明同步更正 |
 | v1.47 | 2026-10-23 | **M4a8 语言栏按钮（D71）代码完成**：新增 `apps/windows/tsf/src/langbar.rs`（`LangBarButton`：`ITfLangBarItemButton` + `ITfSource`，GDI 运行时图标「亨/英」，右键菜单 设置 / 打开词库文件夹，中英模式经 `Rc<Cell<Mode>>` 与 `Core` 共享；单测 4 个）；`Core.mode` 从 `Cell` 改 `Rc<Cell>`，`activate_inner` 挂语言栏（QI `ITfLangBarItemMgr → AddItem`，失败只记日志）、`deactivate_inner` 摘除，`sync_shift` 与按钮互发 `OnUpdate`；`Activate` 内部失败不再吞错、逐阶段标注；`HeinrichTsfAbiVersion` 6→7。端到端测试（`#[ignore]`，`ActivateProfile` 真激活 → 枚举断言 → 恢复原 profile → 断言条目摘除）已修通，钉住三个坑：dwflags 必须带 `TF_IPP_FLAG_ACTIVE(1)`（传 0 恒 E_INVALIDARG）、hkl 可传 0、普通键盘布局要用 `TF_PROFILETYPE_KEYBOARDLAYOUT` 恢复。51 单测 + `check.ps1` 全绿，dist 更新；待真机验收（任务栏角标图标 / 左键切换 / 右键菜单） |
+| v1.48 | 2026-10-23 | **M4a8 真机验收后的三处修复（F48/F49/F50、D72）**：① **F48 设置窗口弹黑框**——`apps/windows/settings` 没声明子系统，cargo 默认 console，从输入法 / 开始菜单拉起来时背后多一个命令行窗口；改 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`（release 是 GUI，debug 留控制台给 `--selftest`）。② **F49 输入法列表没有图标**——注册表 `IconFile` 指到 `heinrich_win.dll`，但 DLL 里没有图标资源，列表里是空白；新增 `tools\make-icon.ps1`（GDI+ 画深灰圆角底 + 白「亨」，手写 ICONDIR + DIB，16/20/24/32/48 五尺寸）产出 `data\icon\heinrich.ico`，`build.ps1` 复制到 dist，`install` 写进 `IconFile`（`ICON_FILE_NAME` 常量，缺文件退回 DLL）。③ **F50 Alt+Tab 后任务栏图标消失**——图标 HICON 缓存在按钮对象上、`Drop` 里 `DestroyIcon`，而语言栏可能仍在用那个句柄；改成进程级 `IconSlot`（每模式一个、按尺寸失效重画、旧句柄永不销毁），与 Weasel 的 `LR_SHARED` 同语义。`check.ps1` 全绿（50 + 1 ignored 等全过），dist 更新 |
+

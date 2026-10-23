@@ -1212,6 +1212,19 @@ cargo test -p heinrich-win --lib langbar_item_survives -- --ignored --nocapture
 `E_INVALIDARG`；用 `ITfClientId::GetClientId` 拿 tid 也不行。所以端到端测试只能走
 `ActivateProfile`。
 
+**图标要改怎么办**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\make-icon.ps1            # 生成 data\icon\heinrich.ico
+powershell -ExecutionPolicy Bypass -File tools\make-icon.ps1 -Preview C:\tmp\p.png   # 顺便出 32×32 预览
+tools\build.ps1                                                          # 复制进 dist
+cd dist; .\heinrich-setup.exe install                                    # 把 IconFile 写进注册表
+```
+
+三处图标彼此独立，别指望改一处全变：**任务栏角标**由 `langbar.rs` 的 `draw_icon` 运行时
+GDI 画（白「亨」/「英」）；**输入法列表**读注册表 `IconFile`（`dist\heinrich.ico`，
+D72）；**设置窗口标题栏**是 Windows 默认图标（没有 exe 资源，M4e 与安装器一起做）。
+
 **为什么「选项」指望不上（D70）**：两次推断都被实测推翻——v1.43「取不到接口就不画按钮」
 （微软五笔/拼音的 CLSID 连 `InprocServer32` 都没有、`CoCreateInstance` 直接
 `REGDB_E_CLASSNOTREG`，却照样有按钮）；v1.44「只给微软自家画」（我们 `S_OK` 没按钮，
@@ -1571,6 +1584,31 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     其次；跨接口的语义假设（A 接口的限制被记到 B 头上）最后。顺带的教训：恢复原
     profile 时 clsid 为零 = 原来是普通键盘布局，要用 `TF_PROFILETYPE_KEYBOARDLAYOUT`
     恢复——类型选错同样是 `E_INVALIDARG`，与 flag 问题叠加时更难分辨。
+
+52. **`GetIcon` 交出去的 HICON 不归你销毁。** 语言栏拿句柄去绘制是异步的，画的次数
+    也不由你决定。我们把图标缓存在按钮对象上、`Drop` 里 `DestroyIcon`，结果每次
+    `Deactivate`（Alt+Tab、切窗口）都会把句柄废掉 → 任务栏角标的图标变空白，而且
+    「切中英后图标不再出现」也是它（切模式时销毁旧图标、换新的，旧的那个还在被画）。
+    正确做法是**进程级缓存 + 永不销毁**：每模式一个 `IconSlot`（尺寸 + 句柄，尺寸变了
+    重画一个、旧的故意留着）。小狼毫的 `LoadImage(..., LR_SHARED)` 是同一个道理。
+    同类陷阱：任何「系统会异步使用」的句柄（HICON / HBITMAP / HMENU）都别在回调返回后
+    立刻销毁，除非文档明确说「调用方负责」。
+
+53. **输入法列表里的图标是注册表给的，不是 TSF 接口给的。** `ITfLangBarItemButton`
+    只管语言栏（任务栏角标）；Win+空格 / 设置 → 语言 那一行的图标读的是
+    `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\<langid>\<profile>`
+    下的 `IconFile` + `IconIndex`（对照本机微软五笔：`ResourceDll.dll` + `IconIndex=1`）。
+    `RegisterProfile` 的 `icon` 参数就是写这个值。我们把 `IconFile` 指到
+    `heinrich_win.dll` 却从没给 DLL 加过图标资源 —— `IconIndex=0` 取不到东西，
+    列表里就是一块空白，没有任何报错。修法是给一个**真的有图标的文件**（我们选了
+    独立的 `heinrich.ico`，见 D72）；写完注册表不用等重启，重新打开列表即可。
+
+54. **GUI 程序的 PE 子系统不是自动的。** cargo 默认把 bin 打成 console 子系统——从
+    别的程序（输入法、开始菜单）拉起来时，背后会多一个黑框命令行窗口，看着像
+    「程序没退干净」。`#![windows_subsystem = "windows"]` 要自己写。取舍是 stdout
+    没了，所以用 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`：
+    release 是 GUI，debug 留控制台给 `--selftest`。验证方法（不用点开窗口）：读 PE
+    头 `e_lfanew + 92` 的 `Subsystem` 字段，2 = GUI、3 = console。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```

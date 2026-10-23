@@ -212,6 +212,15 @@ fn install() -> i32 {
         }
     };
     let dll_str = dll.to_string_lossy().to_string();
+    // 语言列表图标：优先同目录的 heinrich.ico（tools\make-icon.ps1 生成）。
+    // 没它就退回 DLL——DLL 里没有图标资源，列表里会是一块空白，但至少路径有效；
+    // 这比直接失败好，老布局的 dist 也能继续装。
+    let icon_str = dll
+        .parent()
+        .map(|d| d.join(heinrich_tip_id::ICON_FILE_NAME))
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| dll_str.clone());
 
     // [0/6] 先把旧的 server 收掉：它和新 DLL 的协议版本对不上，留着会让新版本
     // 每次握手都吃一个 `Bye`，而它自己又因为「总有人来连」永远退不出去。
@@ -278,7 +287,7 @@ fn install() -> i32 {
         heinrich_tip_id::DISPLAY_NAME,
         heinrich_tip_id::LANGID_ZH_CN
     );
-    match tsf::register_profile(&dll_str) {
+    match tsf::register_profile(&icon_str) {
         Ok(()) => println!("完成"),
         Err(e) => {
             println!("失败");

@@ -45,6 +45,14 @@ pub const SETTINGS_EXE_NAME: &str = "heinrich-settings.exe";
 /// 改了一边忘另一边，表现是「点选项开第二个窗口」，没有任何报错。
 pub const SETTINGS_CLASS: &str = "HeinrichSettings";
 
+/// 语言列表里的图标文件名（与 [`DLL_FILE_NAME`] 放在同一目录）。
+///
+/// Windows 的输入法列表读注册表 `...\LanguageProfile\...\IconFile` + `IconIndex`。
+/// 我们原来把 IconFile 指到 DLL，但 DLL 里没有图标资源，列表里就是一块空白
+/// （真机截图可见）。改成指向这个独立 .ico：由 `tools\make-icon.ps1` 生成、
+/// `tools\build.ps1` 复制到 dist，`heinrich-setup install` 写进注册表。
+pub const ICON_FILE_NAME: &str = "heinrich.ico";
+
 /// `InstallLayoutOrTip` 需要的描述串：`<LANGID 十六进制>:{CLSID}{PROFILE GUID}`。
 ///
 /// 格式见 <https://learn.microsoft.com/en-us/windows/win32/tsf/installlayoutortip>。

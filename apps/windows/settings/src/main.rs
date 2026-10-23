@@ -11,6 +11,10 @@
 //! 所以这里**不需要**管道、不需要协议、不需要重启任何东西（D65）。
 
 #![cfg(windows)]
+// `--selftest` 要把结果打到 stdout，所以 debug 构建保留控制台；release 打成
+// Windows 子系统——否则从输入法（或开始菜单）拉起来时，背后会多开一个黑框
+// 命令行窗口，看起来像程序没退干净（真机反馈就是这个）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod lex;
 mod model;

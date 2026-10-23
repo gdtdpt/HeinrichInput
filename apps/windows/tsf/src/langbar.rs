@@ -37,6 +37,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI32, AtomicIsize, Ordering};
 
 use windows::core::{implement, w, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID};
 use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
@@ -54,7 +55,7 @@ use windows::Win32::UI::TextServices::{
     TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_BTN_MENU, TF_LBI_STYLE_SHOWNINTRAY, TF_LBMENUF_SEPARATOR,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetForegroundWindow, GetSystemMetrics,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetForegroundWindow, GetSystemMetrics,
     TrackPopupMenuEx, HICON, ICONINFO, MF_SEPARATOR, MF_STRING, SM_CXSMICON, TPM_NONOTIFY,
     TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
@@ -87,8 +88,6 @@ pub struct LangBarButton {
     status: Cell<u32>,
     /// 语言栏管理器挂上来的更新 sink。
     sink: RefCell<Option<ITfLangBarItemSink>>,
-    /// 图标缓存：一种模式画一次。
-    icon_cache: RefCell<Option<(Mode, HICON)>>,
 }
 
 impl LangBarButton {
@@ -97,9 +96,67 @@ impl LangBarButton {
             mode,
             status: Cell::new(0),
             sink: RefCell::new(None),
-            icon_cache: RefCell::new(None),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 图标缓存：进程级、永不销毁
+// ---------------------------------------------------------------------------
+//
+// **句柄的生命周期不能跟着按钮对象走。** 语言栏拿到 `GetIcon` 的 HICON 之后
+// 在什么时候绘制、绘制几次都不由我们决定；`Deactivate` 时按钮对象被丢掉、
+// 若顺手 `DestroyIcon`，界面上的图标就变成空白——真机上表现为「Alt+Tab 切走
+// 再切回，图标没了」与「切中英后图标不再出现」。小狼毫用
+// `LoadImage(..., LR_SHARED)` 拿到同样效果：句柄活到进程退出。
+//
+// 缓存键带尺寸：DPI 变了（宿主进程 PerMonitorV2）就重画一个，旧的故意不销毁。
+
+/// 一种模式的图标槽：上次画的尺寸 + 句柄。
+struct IconSlot {
+    size: AtomicI32,
+    handle: AtomicIsize,
+}
+
+impl IconSlot {
+    const fn new() -> Self {
+        Self {
+            size: AtomicI32::new(0),
+            handle: AtomicIsize::new(0),
+        }
+    }
+
+    /// 取（必要时先画）该模式的图标。`None` = 画不出来（`GetIcon` 返 E_FAIL）。
+    fn get(&self, mode: Mode) -> Option<HICON> {
+        let want = unsafe { GetSystemMetrics(SM_CXSMICON) };
+        let have = self.size.load(Ordering::Acquire);
+        let cached = self.handle.load(Ordering::Acquire);
+        if cached != 0 && have == want {
+            return Some(HICON(cached as *mut _));
+        }
+        let icon = draw_icon(mode, want)?;
+        // 两个线程同时首次调用时会各画一个：后写的留下，另一个泄漏一次
+        // （16×16 图标，几百字节）。换成加锁不值得——GetIcon 在 UI 线程上。
+        self.size.store(want, Ordering::Release);
+        self.handle.store(icon.0 as isize, Ordering::Release);
+        Some(icon)
+    }
+}
+
+static ICON_ZH: IconSlot = IconSlot::new();
+static ICON_EN: IconSlot = IconSlot::new();
+
+fn icon_for(mode: Mode) -> Result<HICON> {
+    let slot = match mode {
+        Mode::Chinese => &ICON_ZH,
+        Mode::English => &ICON_EN,
+    };
+    let icon = slot.get(mode).ok_or_else(|| {
+        windows::core::Error::from_hresult(windows::core::HRESULT(
+            0x8000_4005u32 as i32, // E_FAIL
+        ))
+    })?;
+    Ok(icon)
 }
 
 // ---------------------------------------------------------------------------
@@ -234,33 +291,6 @@ impl LangBarButton_Impl {
             let _ = DestroyMenu(menu);
             if cmd.as_bool() {
                 self.run_action(cmd.0 as u32);
-            }
-        }
-    }
-
-    /// 画（或取缓存的）模式图标。
-    fn icon_for(&self, mode: Mode) -> Result<HICON> {
-        if let Some((m, icon)) = &*self.icon_cache.borrow() {
-            if *m == mode {
-                return Ok(*icon);
-            }
-        }
-        let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
-        let icon = draw_icon(mode, size).ok_or_else(|| {
-            windows::core::Error::from_hresult(windows::core::HRESULT(
-                0x8000_4005u32 as i32, // E_FAIL
-            ))
-        })?;
-        *self.icon_cache.borrow_mut() = Some((mode, icon));
-        Ok(icon)
-    }
-}
-
-impl Drop for LangBarButton {
-    fn drop(&mut self) {
-        if let Some((_, icon)) = self.icon_cache.borrow_mut().take() {
-            unsafe {
-                let _ = DestroyIcon(icon);
             }
         }
     }
@@ -439,7 +469,7 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
-        self.icon_for(self.mode.get())
+        icon_for(self.mode.get())
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -562,16 +592,19 @@ mod tests {
         assert_eq!(sink_obj.updates.get(), 0, "摘除后不应再收到通知");
     }
 
-    /// 图标：两种模式都能画出来，且是有效句柄。GDI 在测试进程里可用。
+    /// 图标：两种模式都能画出来、句柄有效，且第二次取到的是同一个句柄
+    /// （进程级缓存）。**故意不销毁**——句柄可能还在语言栏手里。
     #[test]
     fn draws_icons_for_both_modes() {
         for mode in [Mode::Chinese, Mode::English] {
-            let icon = draw_icon(mode, 16).expect("GDI 画图标应成功");
-            assert!(!icon.is_invalid());
-            unsafe {
-                let _ = DestroyIcon(icon);
-            }
+            let first = icon_for(mode).expect("GDI 画图标应成功");
+            assert!(!first.is_invalid());
+            let again = icon_for(mode).expect("缓存命中");
+            assert_eq!(first.0, again.0, "同一模式的图标应复用同一个句柄");
         }
+        let zh = icon_for(Mode::Chinese).unwrap();
+        let en = icon_for(Mode::English).unwrap();
+        assert_ne!(zh.0, en.0, "两种模式不能共用一张图");
     }
 
     /// 菜单 id 与动作的对应关系钉住：设置=1、词库文件夹=2。
