@@ -986,6 +986,75 @@ cargo run -q -p heinrich-cli -- look "hao'vb" --data data/wubi86 --pinyin data/p
 且每条都有码；打 `hao'ktn` 应**只出「好吃」**且 chip 在「好」后面（`好[vbg]吃`）；`hao'vb` 出「好好」；
 `hao'ni'` 这类拼不出真词的组合**不出候选窗**。空格上屏应得到完整的词。
 
+### 4.16 自定义词组（M3.6 / D65）
+
+**为什么有这一节**：词表跟不上新词是长期状态，不是一次性的数据问题。抽 42 个现代常用词，
+14 个（微信 / 扫码 / 点赞 / 朋友圈 / 笔记本电脑 / 表情包 / 健康码 / 弹幕 / 外卖小哥…）
+在两份词库里都不存在。这条功能的目标就是「用户自己补，且不必会拆字」。
+
+**数据流**
+
+```
+%APPDATA%\Heinrich\words.tsv        词 \t 拼音 \t 码 \t 权重（后三列可空）
+        │  user::load（宽容：坏行跳过 + 警告，BOM/CRLF 都吃）
+        │  user::resolve（手填 > 反查 > 推导）
+        ▼
+Resolved { word, pinyin?, code?, weight }
+        │  split_for_merge
+        ├─ Scheme::apply_user_words        （五笔侧：码 → 词，恒 4 码全文）
+        └─ PinyinLexicon::apply_user_words （拼音侧：拼音 → 词 + 该词的五笔码）
+```
+
+**三列各自怎么补**（`user::resolve`）
+
+| 列 | 手填缺失时 | 还拿不到 |
+|---|---|---|
+| 拼音 | 拼音词库整词反查（`pinyin_of`，取权重最高的读音）→ 逐字拼（`pinyin_of_text`） | 警告；这个词只在五笔里可用 |
+| 码 | `Scheme::word_code`（86 词组规则） | 警告；这个词只在拼音里可用 |
+| 权重 | `Scheme::default_weight`（同词长**非零**权重中位数） | — |
+
+两条都拿不到的词整条丢弃并记警告——它哪条路都打不出来。
+
+**取码规则不是猜的**：拿词库 61,194 条现成词组回推对照，一致 61,172 条（99.96%），
+不一致的 22 条集中在「足字旁同码」（`蹒跚` 词库给 `kakm`、规则给 `khkh`）——那类人工
+特例不影响「用户能打出来」这个目的。单字全码表来自 `Scheme::chars`（惰性建，
+取字典序最小，与 `attach_wubi_codes` 同一约定）。
+
+**合并是全量替换，不是叠加**：`apply_user_words` 先把 `entries` 截回 `base_len`
+（装载时的基础条数），再追加这一份用户词。这样「删一行 → 重载 → 那个词真的消失」，
+而且不需要任何撤销逻辑。截断安全的前提是用户词恒追加在末尾——**别在别处往
+`entries` 中间插东西**。
+
+**去重**：同一 `(码, 词)` 只留一条，冲突时删下标更大的那条（基础库在前 ⇒ 基础库胜）。
+拼音侧遇到相同 `(拼音, 词)` 不新增，但如果基础条目的 `wubi` 为空就把它补上——
+拼音词库本来没有五笔码，补上之后混打时那条候选才有 chip。
+
+**热生效**：`WordsState` 与 `HintState` 同一套「节流 1 秒 + `(len, mtime)` stamp」，
+挂在 `Host::query` 开头。**没有新增协议帧**：最初打算加 `Reload` / `Reloaded` 并升 v7，
+实现时发现这条路径本来就在跑配置热更新，而「按键」是看到候选的前提——升协议的真实
+代价是「旧 DLL 被 `Bye` 拒 → 重装 → 重启所有程序」，为一个看不见的差别不值（这段
+取舍记在 `PROTO_VERSION` 的版本史里）。
+
+**自测里不读用户目录**：`Host::open` 不碰 `%APPDATA%`，`--selftest` 也强制 `None`。
+否则「同一份代码在两台机器上结论不同」，而那正是自测要排除的东西。
+
+**怎么验**
+
+```
+# 加词（拼音与码全自动）
+cargo run -q -p heinrich-cli -- word add 微信 --file out/t.tsv --data data/wubi86
+# 查得到：tmwy 的第一条
+cargo run -q -p heinrich-cli -- look tmwy --data data/wubi86 --pinyin data/pinyin --words out/t.tsv
+# 拼音侧也通，且带码
+cargo run -q -p heinrich-cli -- look weixin --data data/wubi86 --pinyin data/pinyin --words out/t.tsv
+# 删词后必须消失（全量替换）
+cargo run -q -p heinrich-cli -- word rm 微信 --file out/t.tsv --data data/wubi86
+```
+
+`check.ps1` 的「自定义词自测」把这条链跑一遍（临时文件，绝不碰真词库）。
+真机（先换 server.exe、不必动 DLL——协议没变）：`word add 微信` → 切回输入框 →
+打 `tmwy` 或 `weixin` 应看到「微信」；再 `word rm 微信`，1 秒后那个词消失。
+
 ## 5. 数据管线
 
 ```
@@ -1189,6 +1258,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
 | M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
 | M3.5 `z` 通配 + 段级多段 | ✅ **2026-10-23 真机验收通过**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收。验收中发现词表缺新词，转 D65 预研——见 §8 后继） |
+| M3.6 自定义词组 | 🟡 **代码与自测完成，待真机验收**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」） |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。

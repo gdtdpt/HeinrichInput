@@ -97,5 +97,42 @@ Invoke-Step '通配 / 多段自测' {
     }
 }
 
+# 自定义词组（D65）：加词 → 能查到 → 删词 → 真的消失。
+# 这条链要验的是「全量替换」语义：删掉一行后重载，那个词不能再从旧词表里冒出来。
+# 全程用临时文件，绝不碰 %APPDATA% 里的真词库——自测不许改用户的词。
+Invoke-Step '自定义词自测' {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-words-{0}.tsv" -f $PID)
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+    try {
+        $add = & cargo run --release -q -p heinrich-cli -- word add 微信 --file $tmp --data $DataDir 2>&1
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        # 码是按词组规则推出来的（微信 = 微 tmgt + 信 wyg → tmwy），拼音是逐字兜底
+        if (-not ($add -match '已加入「微信」：拼音 weixin · 码 \w{4}')) {
+            Write-Host "加词没给出「微信 / weixin / 4 位码」：`n$add" -ForegroundColor Red
+            exit 1
+        }
+        $list = & cargo run --release -q -p heinrich-cli -- word list --file $tmp --data $DataDir
+        if (-not ($list -match '微信')) {
+            Write-Host "词表里没有「微信」：`n$list" -ForegroundColor Red
+            exit 1
+        }
+        $hit = & cargo run --release -q -p heinrich-cli -- look tmwy --data $DataDir --pinyin $PinyinDir --words $tmp
+        if (-not ($hit -match '微信\s+tmwy')) {
+            Write-Host "加了词却查不到「微信」：`n$hit" -ForegroundColor Red
+            exit 1
+        }
+        & cargo run --release -q -p heinrich-cli -- word rm 微信 --file $tmp --data $DataDir | Out-Null
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $gone = & cargo run --release -q -p heinrich-cli -- look tmwy --data $DataDir --pinyin $PinyinDir --words $tmp
+        if ($gone -match '微信') {
+            Write-Host "删了词却还在（全量替换没生效）：`n$gone" -ForegroundColor Red
+            exit 1
+        }
+    }
+    finally {
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

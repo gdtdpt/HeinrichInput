@@ -48,6 +48,8 @@ struct Args {
     db: Option<PathBuf>,
     /// 用户配置文件。`Some` 才会去读；`--no-config` 或 `--selftest` 为 `None`。
     config: Option<PathBuf>,
+    /// 自定义词库。`Some` 才会去读；`--no-words` 或 `--selftest` 为 `None`。
+    words: Option<PathBuf>,
     /// 命令行强制的码提示模式，压过配置文件（验三档时用）。
     hint: Option<HintMode>,
     debug_sleep: Duration,
@@ -63,6 +65,7 @@ impl Args {
             pinyin_explicit: false,
             db: default_db_path(),
             config: default_config_path(),
+            words: default_words_path(),
             hint: None,
             debug_sleep: Duration::ZERO,
             idle_exit: Duration::from_secs(30 * 60),
@@ -92,6 +95,10 @@ impl Args {
                     args.config = Some(PathBuf::from(it.next().ok_or("--config 需要一个路径")?));
                 }
                 "--no-config" => args.config = None,
+                "--words" => {
+                    args.words = Some(PathBuf::from(it.next().ok_or("--words 需要一个路径")?));
+                }
+                "--no-words" => args.words = None,
                 "--hint" => {
                     let raw = it
                         .next()
@@ -149,6 +156,8 @@ fn print_help() {
     println!("  --memory-db          不落盘，学习数据只存在内存里（调试用）");
     println!("  --config <file>      用户配置（默认 %APPDATA%\\Heinrich\\config.toml）");
     println!("  --no-config          不读配置文件，全部取默认值");
+    println!("  --words <file>       自定义词库（默认 %APPDATA%\\Heinrich\\words.tsv）");
+    println!("  --no-words           不读自定义词库");
     println!("  --hint <mode>        码提示：mixed / first_time / off（压过配置文件）");
     println!("  --debug-sleep <ms>   每次查询前故意睡若干毫秒（验零阻塞）");
     println!("  --idle-exit <secs>   无连接多久后退出，0 = 不退出（默认 1800）");
@@ -171,6 +180,16 @@ fn default_db_path() -> Option<PathBuf> {
 fn default_config_path() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join("Heinrich").join("config.toml"))
+}
+
+/// 自定义词库默认位置：`%APPDATA%\Heinrich\words.tsv`（D65）。
+///
+/// 与 `config.toml` 同目录、同样用漫游：自定义词是**用户偏好**，换台机器还该有；
+/// 学习库与本机手感绑定，才留在 `LOCALAPPDATA`。也正因为不在 dist 里，
+/// 升级、卸载重装都不会把用户攒的词冲掉。
+fn default_words_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("words.tsv"))
 }
 
 /// 默认方案目录：与 exe 同级的 `data/wubi86`。
@@ -494,6 +513,15 @@ fn main() {
         args.config.clone()
     };
     host.configure_hint(config_path, args.hint);
+
+    // 自定义词库同理：自测不吃开发机上的 words.tsv，否则同一份代码在两台机器上
+    // 结论不同。真机上若文件不存在，`reload_user_words` 就是一次空跑。
+    let words_path = if args.selftest {
+        None
+    } else {
+        args.words.clone()
+    };
+    host.configure_words(words_path);
 
     if args.selftest {
         let code = selftest(&mut host);

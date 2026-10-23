@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use heinrich_core::{Engine, MemoryStore, Mixed, RankingConfig, Source, Tier};
+use heinrich_scheme::user::{self as user_words, UserWord};
 use heinrich_scheme::{Code, PinyinLexicon, Roots, Scheme};
 
 fn main() -> ExitCode {
@@ -92,21 +93,51 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             match Scheme::load(&data) {
-                Ok(scheme) => {
-                    let mut eng = Engine::new(scheme, MemoryStore::new(), RankingConfig::default());
+                Ok(mut scheme) => {
+                    let mut pinyin = None;
                     if let Some(dir) = &pinyin_dir {
                         match PinyinLexicon::load(dir) {
-                            // 码提示的数据前提与 server 一致：装载后反查五笔全码
-                            // （§6.3 / D64 的 chip 都吃这一列）。
-                            Ok(mut lex) => {
-                                lex.attach_wubi_codes(eng.scheme());
-                                eng = eng.with_pinyin(lex);
-                            }
+                            Ok(lex) => pinyin = Some(lex),
                             Err(e) => {
                                 eprintln!("拼音词库装载失败（{}）：{e}", dir.display());
                                 return ExitCode::FAILURE;
                             }
                         }
+                    }
+                    // 自定义词库：`--words <文件>` 给出时才合并。默认**不读**
+                    // 用户目录里的那份——自测与回归要求「同一份代码在任何机器上
+                    // 结论相同」，读开发机的 words.tsv 会把这条保证打掉。
+                    if let Some(wpath) = take_arg(rest, "--words") {
+                        match user_words::load(&wpath) {
+                            Ok(f) => {
+                                for w in &f.warnings {
+                                    eprintln!("{}：{w}", wpath.display());
+                                }
+                                let (resolved, warns) =
+                                    user_words::resolve(&f.words, &scheme, pinyin.as_ref());
+                                for w in &warns {
+                                    eprintln!("提示：{w}");
+                                }
+                                let (wubi, pin) = user_words::split_for_merge(&resolved);
+                                scheme.apply_user_words(&wubi);
+                                if let Some(lex) = pinyin.as_mut() {
+                                    lex.apply_user_words(&pin);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("自定义词库装载失败（{}）：{e}", wpath.display());
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    }
+                    // 码提示的数据前提与 server 一致：装载后反查五笔全码
+                    // （§6.3 / D64 的 chip 都吃这一列）。
+                    if let Some(lex) = pinyin.as_mut() {
+                        lex.attach_wubi_codes(&scheme);
+                    }
+                    let mut eng = Engine::new(scheme, MemoryStore::new(), RankingConfig::default());
+                    if let Some(lex) = pinyin {
+                        eng = eng.with_pinyin(lex);
                     }
                     let mixed = eng.mixed(code, now_unix());
                     print_candidates(code, mixed);
@@ -144,9 +175,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "word" => {
+            let args = positional(rest);
+            let sub = args.first().copied().unwrap_or("");
+            let rest_pos: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            match word_cmd(sub, &rest_pos, &data, pinyin_dir.as_deref(), rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给则纯五笔。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。"
             );
             ExitCode::SUCCESS
         }
@@ -162,6 +205,17 @@ fn take_arg(args: &[String], flag: &str) -> Option<PathBuf> {
     while let Some(a) = it.next() {
         if a == flag {
             return it.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// 取字符串型参数（`--pinyin` / `--code` / `--weight` 这类，值不是路径）。
+fn take_str(args: &[String], flag: &str) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == flag {
+            return it.next().cloned();
         }
     }
     None
@@ -680,4 +734,192 @@ fn check(dir: &Path) -> Result<bool, String> {
     line("精确索引自洽", exact_ok, "抽样 2000 条".into());
 
     Ok(ok)
+}
+
+// ---------------------------------------------------------------------------
+// 自定义词组（D65）
+// ---------------------------------------------------------------------------
+
+/// 默认词库文件：`%APPDATA%\Heinrich\words.tsv`，与 server 的 `--words` 默认值同一个。
+fn default_words_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("words.tsv"))
+}
+
+/// 装载五笔（必需）与拼音（可选）。
+///
+/// 没给 `--pinyin` 时会顺手试 `<data>/../pinyin`：dist 里的布局就是
+/// `data/wubi86` 与 `data/pinyin` 并排，加个词还要另找路径没有道理。
+fn load_lexicons(
+    data: &Path,
+    pinyin_dir: Option<&Path>,
+) -> Result<(Scheme, Option<PinyinLexicon>), String> {
+    let scheme =
+        Scheme::load(data).map_err(|e| format!("装载方案 {} 失败：{e}", data.display()))?;
+    let dir = pinyin_dir.map(Path::to_path_buf).or_else(|| {
+        let guess = data.parent()?.join("pinyin");
+        guess.is_dir().then_some(guess)
+    });
+    let lex = match dir {
+        Some(d) => Some(
+            PinyinLexicon::load(&d)
+                .map_err(|e| format!("装载拼音词库 {} 失败：{e}", d.display()))?,
+        ),
+        None => None,
+    };
+    Ok((scheme, lex))
+}
+
+fn word_cmd(
+    sub: &str,
+    pos: &[String],
+    data: &Path,
+    pinyin_dir: Option<&Path>,
+    args: &[String],
+) -> Result<(), String> {
+    let path = take_arg(args, "--file")
+        .or_else(default_words_path)
+        .ok_or("取不到 %APPDATA%，请用 --file 指定词库文件")?;
+    let mut file =
+        user_words::load(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+
+    match sub {
+        "add" => {
+            let word = pos.get(1).ok_or(
+                "用法：heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]",
+            )?;
+            let weight = match take_str(args, "--weight") {
+                Some(s) => Some(
+                    s.parse::<f64>()
+                        .map_err(|_| format!("--weight 不是数字：{s}"))?,
+                ),
+                None => None,
+            };
+            let entry = UserWord {
+                word: word.clone(),
+                pinyin: take_str(args, "--pinyin"),
+                code: take_str(args, "--code"),
+                weight,
+            };
+            let (scheme, lex) = load_lexicons(data, pinyin_dir)?;
+            let (resolved, warns) =
+                user_words::resolve(std::slice::from_ref(&entry), &scheme, lex.as_ref());
+            for w in &warns {
+                eprintln!("提示：{w}");
+            }
+            let Some(r) = resolved.first() else {
+                return Err(format!("「{word}」既推不出五笔码、也查不到拼音，没有写入"));
+            };
+            // 把推导结果落进文件：写下来才看得见、也才能手改；权重仍然留空
+            // （空 = 每次按同词长中位数重算，词库更新后不会僵在一个旧值上）。
+            let stored = UserWord {
+                word: word.clone(),
+                pinyin: r.pinyin.clone(),
+                code: r.code.clone(),
+                weight,
+            };
+            let is_new = user_words::upsert(&mut file.words, stored);
+            user_words::save(&path, &file.words)
+                .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+            println!(
+                "{}「{word}」：拼音 {} · 码 {} · 权重 {:.0}",
+                if is_new { "已加入" } else { "已更新" },
+                r.pinyin.as_deref().unwrap_or("—"),
+                r.code.as_deref().unwrap_or("—（只能拼音打）"),
+                r.weight
+            );
+            println!(
+                "共 {} 条 · {}（下一次按键生效）",
+                file.words.len(),
+                path.display()
+            );
+            Ok(())
+        }
+        "list" => {
+            if file.words.is_empty() {
+                println!(
+                    "还没有自定义词。加一个试试：heinrich-cli word add 微信\n词库位置：{}",
+                    path.display()
+                );
+                return Ok(());
+            }
+            let (scheme, lex) = load_lexicons(data, pinyin_dir)?;
+            println!("{:<10} {:<14} {:<6} {:>12}", "词", "拼音", "码", "权重");
+            for w in &file.words {
+                let (r, _) = user_words::resolve(std::slice::from_ref(w), &scheme, lex.as_ref());
+                let resolved = r.first();
+                // `*` 标注「这一列是推出来的，不是你写的」——手写值与推导值混在一张
+                // 表里而不区分，用户会以为自己曾经写过那么多东西。
+                let pin = match (&w.pinyin, resolved.and_then(|r| r.pinyin.as_deref())) {
+                    (Some(p), _) => p.clone(),
+                    (None, Some(p)) => format!("{p}*"),
+                    (None, None) => "—".into(),
+                };
+                let code = match (&w.code, resolved.and_then(|r| r.code.as_deref())) {
+                    (Some(c), _) => c.clone(),
+                    (None, Some(c)) => format!("{c}*"),
+                    (None, None) => "—".into(),
+                };
+                let weight = match (w.weight, resolved.map(|r| r.weight)) {
+                    (Some(x), _) => format!("{x:.0}"),
+                    (None, Some(x)) => format!("{x:.0}*"),
+                    (None, None) => "—".into(),
+                };
+                println!("{:<10} {:<14} {:<6} {:>12}", w.word, pin, code, weight);
+            }
+            println!(
+                "\n共 {} 条 · {}（* = 自动推导）",
+                file.words.len(),
+                path.display()
+            );
+            Ok(())
+        }
+        "rm" => {
+            let word = pos.get(1).ok_or("用法：heinrich-cli word rm <词>")?;
+            let before = file.words.len();
+            file.words.retain(|w| &w.word != word);
+            if file.words.len() == before {
+                return Err(format!("词库里没有「{word}」"));
+            }
+            user_words::save(&path, &file.words)
+                .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+            println!(
+                "已删除「{word}」，剩 {} 条（下一次按键生效）",
+                file.words.len()
+            );
+            Ok(())
+        }
+        "import" => {
+            let src = pos.get(1).ok_or("用法：heinrich-cli word import <文件>")?;
+            let text = std::fs::read_to_string(src)
+                .map_err(|e| format!("读取导入文件 {src} 失败：{e}"))?;
+            let incoming = user_words::parse(&text);
+            for w in &incoming.warnings {
+                eprintln!("{src}：{w}");
+            }
+            if incoming.words.is_empty() {
+                return Err(format!("{src} 里没有能读的词"));
+            }
+            let mut added = 0;
+            let total = incoming.words.len();
+            for w in incoming.words {
+                if !file.words.iter().any(|x| x.word == w.word) {
+                    added += 1;
+                }
+                user_words::upsert(&mut file.words, w);
+            }
+            user_words::save(&path, &file.words)
+                .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+            println!(
+                "导入 {total} 条（新增 {added} / 覆盖 {}），共 {} 条 · {}（下一次按键生效）",
+                total - added,
+                file.words.len(),
+                path.display()
+            );
+            Ok(())
+        }
+        other => Err(format!(
+            "未知的 word 子命令 `{other}`。可用：add / list / rm / import"
+        )),
+    }
 }

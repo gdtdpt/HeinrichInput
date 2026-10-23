@@ -1,0 +1,10 @@
+# 测试用迷你方案清单（非产品数据）——用户词库（D65）自测用
+id = "wubi-mini"
+name = "Wubi Mini (测试)"
+version = "0.0.1"
+alphabet = "abcdefghijklmnopqrstuvwxy"
+max_code_len = 4
+source = "crates/heinrich-scheme/tests/fixtures/wubi-mini（手写）"
+license = "internal-test-only"
+entry_count = 5
+lexicon_sha256 = "skip"

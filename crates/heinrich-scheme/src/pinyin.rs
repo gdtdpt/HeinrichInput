@@ -46,6 +46,16 @@ pub struct PinyinEntry {
     pub wubi: String,
 }
 
+/// 一条**自定义词组**在拼音侧的样子（D65）。
+#[derive(Clone, Debug)]
+pub struct PinyinUserEntry {
+    pub pinyin: String,
+    pub word: String,
+    pub weight: f64,
+    /// 这个词的五笔码，空串 = 没有（只走拼音）
+    pub wubi: String,
+}
+
 /// 拼音词库。
 #[derive(Debug)]
 pub struct PinyinLexicon {
@@ -60,6 +70,15 @@ pub struct PinyinLexicon {
     max_syllable: usize,
     /// 全部词条的词集合（[`PinyinLexicon::has_word`] 用，首次调用时建）
     words: std::sync::OnceLock<HashSet<String>>,
+    /// 词 → 拼音（[`PinyinLexicon::pinyin_of`] 用，首次调用时建）。
+    ///
+    /// 只有「加自定义词」时才需要反查——正常打字走的是拼音 → 词，不需要反向表。
+    /// 65,128 条约占几 MB，所以不放进常规路径。
+    word_pinyin: std::sync::OnceLock<std::collections::HashMap<String, String>>,
+    /// 基础词库条数（不含用户词），重载时截断到这里（D65）
+    base_len: usize,
+    /// 权重归一化分母，用户词要用同一个分母（D65）
+    weight_denom: f64,
     pub entry_count: usize,
     pub syllable_count: usize,
 }
@@ -176,12 +195,15 @@ impl PinyinLexicon {
         let syllable_count = syllables.len();
 
         Ok(Self {
+            base_len: entries.len(),
+            weight_denom: denom,
             entries,
             sorted,
             syllables,
             syllable_set,
             max_syllable,
             words: std::sync::OnceLock::new(),
+            word_pinyin: std::sync::OnceLock::new(),
             entry_count,
             syllable_count,
         })
@@ -282,6 +304,109 @@ impl PinyinLexicon {
         self.words
             .get_or_init(|| self.entries.iter().map(|e| e.word.clone()).collect())
             .contains(word)
+    }
+
+    /// 词 → 拼音（加自定义词时用，D65）。
+    ///
+    /// 同一词有多条拼音时取权重最高的那条：多音字在这里要「常用读音」，
+    /// 而不是字典序第一条。返回的串是不带分隔的小写连续拼音。
+    pub fn pinyin_of(&self, word: &str) -> Option<&str> {
+        let map = self.word_pinyin.get_or_init(|| {
+            let mut map: std::collections::HashMap<String, (f64, String)> =
+                std::collections::HashMap::new();
+            for e in &self.entries {
+                match map.get(&e.word) {
+                    Some((w, _)) if *w >= e.weight => {}
+                    _ => {
+                        map.insert(e.word.clone(), (e.weight, e.pinyin.clone()));
+                    }
+                }
+            }
+            map.into_iter().map(|(k, (_, v))| (k, v)).collect()
+        });
+        map.get(word).map(String::as_str)
+    }
+
+    /// 逐字取拼音再拼起来（词库查不到整词时的兜底，D65）。
+    ///
+    /// 「微信」这类词不在词库里，但「微」「信」两字都在——拼出 `weixin` 就能打。
+    /// 多音字只能取该字的常用读音，所以调用方应允许用户手填覆盖。
+    pub fn pinyin_of_text(&self, text: &str) -> Option<String> {
+        let mut out = String::with_capacity(text.len() * 3);
+        for ch in text.chars() {
+            let mut buf = [0u8; 4];
+            out.push_str(self.pinyin_of(ch.encode_utf8(&mut buf))?);
+        }
+        Some(out)
+    }
+
+    /// 基础词库条数（不含已合并的用户词）。
+    pub fn base_entry_count(&self) -> usize {
+        self.base_len
+    }
+
+    /// 用一份用户词**全量替换**已合并的自定义词（D65），返回生效条数。
+    ///
+    /// 与 [`crate::Scheme::apply_user_words`] 同一套语义：截回基础库再追加，
+    /// 这样「删掉一行 → 重载 → 真的消失」。`wubi` 跟着一起给——混打时那条候选
+    /// 的码提示要靠它，空串就等于「这个词没有五笔码」。
+    pub fn apply_user_words(&mut self, items: &[PinyinUserEntry]) -> usize {
+        self.entries.truncate(self.base_len);
+        let mut added = 0;
+        for it in items {
+            if it.word.is_empty() || it.pinyin.is_empty() {
+                continue;
+            }
+            if !it.pinyin.bytes().all(|b| b.is_ascii_lowercase()) {
+                continue;
+            }
+            // 完全相同的 (拼音, 词) 已经在基础库里就不重复加；但要把用户给的
+            // 五笔码补进去——基础库里这条往往 `wubi` 为空（拼音词库本来没有码），
+            // 补上之后这个词在拼音候选上才有 chip。词已在库里但拼音不同时保留
+            // 用户这条，那正是「多音字改读音」的用法。
+            if let Some(pos) = self
+                .entries
+                .iter()
+                .position(|e| e.pinyin == it.pinyin && e.word == it.word)
+            {
+                if !it.wubi.is_empty() && self.entries[pos].wubi.is_empty() {
+                    self.entries[pos].wubi = it.wubi.clone();
+                }
+                continue;
+            }
+            let weight = if it.weight.is_finite() {
+                it.weight.max(0.0)
+            } else {
+                0.0
+            };
+            let w_norm = if self.weight_denom > 0.0 {
+                (((1.0 + weight).ln() / self.weight_denom) as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            self.entries.push(PinyinEntry {
+                pinyin: it.pinyin.clone(),
+                word: it.word.clone(),
+                weight,
+                w_norm,
+                wubi: it.wubi.clone(),
+            });
+            added += 1;
+        }
+        self.entry_count = self.entries.len();
+        let mut sorted: Vec<u32> = (0..self.entries.len() as u32).collect();
+        sorted.sort_unstable_by(|&a, &b| {
+            let ea = &self.entries[a as usize];
+            let eb = &self.entries[b as usize];
+            ea.pinyin
+                .cmp(&eb.pinyin)
+                .then_with(|| eb.weight.total_cmp(&ea.weight))
+                .then_with(|| ea.word.cmp(&eb.word))
+        });
+        self.sorted = sorted;
+        self.words = std::sync::OnceLock::new();
+        self.word_pinyin = std::sync::OnceLock::new();
+        added
     }
 
     /// 匹配：先精确（拼音串完全等于输入），再前缀（拼音串以输入开头）。

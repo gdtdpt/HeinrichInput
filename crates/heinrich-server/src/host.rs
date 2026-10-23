@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use heinrich_core::scheme::user as user_words;
 use heinrich_core::scheme::{Config, HintMode, PinyinLexicon, Roots, Scheme};
 use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
 use heinrich_proto::{
@@ -31,6 +32,9 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 /// 查询发生在**每个字母键**上（D37），所以不能每次都去 stat 配置文件。1 秒足够
 /// 「改完配置切回输入框就生效」，同时把文件系统调用压到每秒最多一次。
 const HINT_RECHECK: Duration = Duration::from_secs(1);
+
+/// 自定义词库的最短重查间隔（D65）。与配置文件同一条理由：按键路径上不能每次 stat。
+const WORDS_RECHECK: Duration = Duration::from_secs(1);
 
 /// 学习数据的两种落地形态。
 ///
@@ -112,6 +116,52 @@ pub struct Host {
     /// 字根表（§6.7 键位图）。`None` = 字根表没装成，DLL 那边就不接管
     /// `Ctrl+Shift+N`——键位图是锦上添花，不能因为它挡住打字。
     roots: Option<Roots>,
+    /// 自定义词组（D65），带词库文件热更新。
+    words: WordsState,
+}
+
+/// 自定义词库的热更新状态（D65）。
+///
+/// 与 [`HintState`] 同一套节流 + stamp 打法：查询路径上只 stat 一次，文件真变了
+/// 才重读词库。重读是**全量替换**（[`Scheme::apply_user_words`] 自己会截回基础库），
+/// 所以「删掉一行 → 1 秒后那个词真的消失」。
+struct WordsState {
+    /// `None` = 不读用户词库（单测、`--no-words`）
+    path: Option<PathBuf>,
+    /// 上次看到的 `(长度, 修改时间)`
+    stamp: Option<(u64, Option<SystemTime>)>,
+    /// 上次检查的时刻（节流）
+    checked_at: Instant,
+    /// 当前生效的自定义词条数（日志与 `Reloaded` 用）
+    count: usize,
+}
+
+impl WordsState {
+    fn new() -> Self {
+        Self {
+            path: None,
+            stamp: None,
+            checked_at: Instant::now(),
+            count: 0,
+        }
+    }
+
+    /// 文件有没有变过（`None` 路径恒为「没变」）。
+    fn changed(&mut self) -> bool {
+        let Some(path) = &self.path else {
+            return false;
+        };
+        let meta = std::fs::metadata(path).ok();
+        let stamp = meta
+            .as_ref()
+            .map(|m| (m.len(), m.modified().ok()))
+            .unwrap_or((0, None));
+        if self.stamp.as_ref() == Some(&stamp) {
+            return false;
+        }
+        self.stamp = Some(stamp);
+        true
+    }
 }
 
 /// 码提示（§6.3）的生效模式。
@@ -280,7 +330,61 @@ impl Host {
             recorded: 0,
             hint: HintState::new(None, None),
             roots,
+            words: WordsState::new(),
         })
+    }
+
+    /// 接上自定义词库：`path` 为 `None` 表示不读（单测与 `--selftest` 的默认）。
+    ///
+    /// 与 `configure_hint` 同一条理由——不把「读用户目录」写进 `open`，否则单测
+    /// 会意外吃到开发机上的 `words.tsv`。
+    pub fn configure_words(&mut self, path: Option<PathBuf>) {
+        self.words.path = path;
+        self.words.stamp = None;
+        self.reload_user_words();
+    }
+
+    /// 重读自定义词库并合并（D65），返回生效条数。
+    ///
+    /// 文件不存在就是「一个自定义词都没有」的正常状态；读失败只记日志、保留上一份
+    /// ——用户正在编辑时文件可能短暂不可读，那不该让已生效的词突然消失。
+    pub fn reload_user_words(&mut self) -> usize {
+        let Some(path) = self.words.path.clone() else {
+            return self.words.count;
+        };
+        let file = match user_words::load(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                srv_error!("读取自定义词库 {} 失败：{e}；保留上一份", path.display());
+                return self.words.count;
+            }
+        };
+        for w in &file.warnings {
+            srv_error!("自定义词库 {}：{w}", path.display());
+        }
+        let (resolved, warns) =
+            user_words::resolve(&file.words, &self.scheme, self.pinyin.as_ref());
+        for w in &warns {
+            srv_error!("自定义词库 {}：{w}", path.display());
+        }
+        let (wubi, pin) = user_words::split_for_merge(&resolved);
+        let n_wubi = self.scheme.apply_user_words(&wubi);
+        let n_pin = match self.pinyin.as_mut() {
+            Some(lex) => lex.apply_user_words(&pin),
+            None => 0,
+        };
+        let count = n_wubi.max(n_pin);
+        if count != self.words.count || self.words.count == 0 {
+            srv_info!(
+                "自定义词库：{} 条生效（五笔 {} / 拼音 {}）· {}",
+                count,
+                n_wubi,
+                n_pin,
+                path.display()
+            );
+        }
+        self.words.count = count;
+        count
     }
 
     /// 接上码提示配置：`path` 为 `None` 表示不读文件，`forced` 压过文件值。
@@ -481,6 +585,13 @@ impl Host {
         // 所以必须在排序之前调用，否则这一拍仍在用上一份配置。
         let hint = self.hint.mode();
         self.sync_ranking();
+        // 自定义词库的热检查（D65）。必须排在查询之前，否则这一拍仍在用旧词表。
+        if self.words.checked_at.elapsed() >= WORDS_RECHECK {
+            self.words.checked_at = Instant::now();
+            if self.words.changed() {
+                self.reload_user_words();
+            }
+        }
         let mixed = pinyin::query_with_limit(
             &self.scheme,
             self.pinyin.as_ref(),
@@ -1110,5 +1221,86 @@ mod tests {
             Some(Frame::Result { entries, .. }) => assert!(entries.is_empty()),
             other => panic!("期望空 Result，得到 {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 自定义词库（D65）
+    // -----------------------------------------------------------------------
+
+    /// 写一份临时词库文件。名字带 pid，避免并发测试互相覆盖。
+    fn temp_words(tag: &str, body: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("heinrich-words-{}-{tag}.tsv", std::process::id()));
+        std::fs::write(&p, body).expect("写临时词库失败");
+        p
+    }
+
+    fn words_of(reply: Option<Frame>) -> Vec<String> {
+        match reply {
+            Some(Frame::Result { entries, .. }) => entries.into_iter().map(|e| e.word).collect(),
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_words_are_queryable() {
+        let path = temp_words("add", "好吃\t\tvbkt\n");
+        let mut h = host();
+        h.configure_words(Some(path.clone()));
+        let words = words_of(h.handle(Frame::Query {
+            code: "vbkt".into(),
+            limit: 9,
+        }));
+        assert!(words.contains(&"好吃".to_string()), "{words:?}");
+        // 词库条数跟着涨：Welcome 里的 entry_count 是「实际能查到多少条」
+        match h.handle(hello()) {
+            Some(Frame::Welcome { entry_count, .. }) => assert_eq!(entry_count, 13),
+            other => panic!("期望 Welcome，得到 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 用户词的权重照常参与码表序：权重排在谁中间，出现的位置就在谁中间。
+    ///
+    /// 权重超过词库最大值时会被归一化钳到 1.0——那时它与原有最高权重的词并列，
+    /// 由「同分按词排序」定先后。这是「权重与正常词库一致」的必然结果：
+    /// 不给用户词任何特权位，想让它更靠前就多打几次，让学习分把它抬上去。
+    #[test]
+    fn user_word_weight_drives_order() {
+        // 夹具里 vbgd 上依次是 号(900) / 豪(600) / 呵(50) / 蒿(20)
+        let path = temp_words("order", "好\t\tvbgd\t850\n");
+        let mut h = host();
+        h.configure_words(Some(path.clone()));
+        let words = words_of(h.handle(Frame::Query {
+            code: "vbgd".into(),
+            limit: 9,
+        }));
+        assert_eq!(words, ["号", "好", "豪", "呵", "蒿"], "{words:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 重载是全量替换：文件删光了词就该真的消失，条数回落到 0。
+    #[test]
+    fn reload_drops_removed_words() {
+        let path = temp_words("reload", "好吃\t\tvbkt\n");
+        let mut h = host();
+        h.configure_words(Some(path.clone()));
+        assert!(words_of(h.handle(Frame::Query {
+            code: "vbkt".into(),
+            limit: 9,
+        }))
+        .contains(&"好吃".to_string()));
+
+        std::fs::write(&path, "# 清空\n").unwrap();
+        assert_eq!(h.reload_user_words(), 0);
+        assert!(
+            words_of(h.handle(Frame::Query {
+                code: "vbkt".into(),
+                limit: 9,
+            }))
+            .is_empty(),
+            "重载后旧词应消失"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
