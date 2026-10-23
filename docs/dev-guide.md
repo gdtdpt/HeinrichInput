@@ -1055,6 +1055,15 @@ cargo run -q -p heinrich-cli -- word rm 微信 --file out/t.tsv --data data/wubi
 真机（先换 server.exe、不必动 DLL——协议没变）：`word add 微信` → 切回输入框 →
 打 `tmwy` 或 `weixin` 应看到「微信」；再 `word rm 微信`，1 秒后那个词消失。
 
+**最后一道坎在 DLL，不在 server**（D67 / 踩坑 45）：每个宿主进程各有一份候选缓存，
+它原来的失效条件只有「上屏后标脏」，于是**加词之前打过的码**加完再打还是旧结果，
+而且因为命中缓存，server 日志里连 `Query` 都不会出现——看起来就像 server 没生效。
+现在 `CACHE_TTL = 3 秒`：同一个码最坏等 3 秒就重问一次。改这一处之后**必须换 DLL**，
+而 DLL 是进程内加载的，**已经开着的宿主（Notepad++ / Chrome）要重启才会用上新的**。
+
+想知道「常驻 server 此刻到底返回什么」，用 `out/probe_pipe.py`（见踩坑 45），
+别用 `heinrich-cli look`——它自己新起一个 `Host`，永远是「有」。
+
 ### 4.17 混输总验收语料（M3 总验收）
 
 `crates/heinrich-core/tests/mixed_corpus.rs` + `tests/corpus/mixed.tsv`。这是**唯一**跑真实词库的
@@ -1108,18 +1117,35 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 `weixin*`（推导）就变成 `weixin`（手填）——从此词库升级再也影响不到这个词。
 这是「可编辑 = 文件内容 / 显示 = 最终效果」的分界，界面上靠 `*` 与脚注交代。
 
+**面板常驻可编辑，没有「新增」按钮**（M4a 返工）。原设计是「点新增 → 清空面板 → 填词 →
+保存」，问题是按「新增」列表毫无反应（它本来就只清面板），用户合理地以为词已经进去了。
+现在：面板从打开窗口就能输入，点「保存」即加入/更新；「清空」只做字面那件事（清面板 +
+取消选中）；「删除」要求有选中且面板里就是那个词。按钮亮灰跟着 `EN_CHANGE` 走（词框空时
+「保存」是灰的），所以不存在「点亮了但点下去只得到一句抱怨」的假按钮。开窗也**不再自动
+选中第一行**——面板是给新词用的，一开窗躺着某条已有的词，改完点保存就把它改掉了。
+
+面板下方那行说明是动态的：没选中 → 讲怎么加词；选中某行 → 直接写「打字时输 `tmwy`」。
+这条是踩坑 45 换来的。
+
 **自己验**
 
 ```
 cargo run -q -p heinrich-settings -- --selftest --data data/wubi86      # 数据层七项
-cargo run -q -p heinrich-settings -- --selftest-ui --data data/wubi86   # z 序 + 命中测试
+cargo run -q -p heinrich-settings -- --selftest-ui --data data/wubi86   # z 序 + 命中 + 面板流程
 # 带一组假词开窗口（不会碰 %APPDATA%）
 cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 ```
 
-`--selftest-ui` 是踩坑 44 换来的：**界面看着对、点哪儿都没反应**这种问题，截图与
-`WM_COMMAND` 脚本都照不出来，只有查「这个点命中的是谁」才照得出来。它建窗时用
-`SW_SHOWNOACTIVATE` 显示一下（不抢焦点），验完即销毁，跑的是一份临时词库。
+`--selftest-ui` 是踩坑 44/45 换来的，两段断言：
+
+1. **z 序 + 命中**：`RealChildWindowFromPoint` 在 10 个可交互控件的 5 个点上做命中测试，
+   命中的必须是它自己。界面看着对、点哪儿都没反应这种问题，截图与 `WM_COMMAND` 脚本
+   都照不出来。
+2. **面板 → 保存 → 列表**：空面板三个按钮全灰 → 填词后「保存」「清空」亮 → `BM_CLICK`
+   保存后**磁盘文件里真的有这个词**、列表选中它 → 「清空」回到新词态。断言落在文件上，
+   不落在界面字符串上（界面骗人的事刚发生过）。
+
+它建窗时用 `SW_SHOWNOACTIVATE` 显示一下（不抢焦点），验完即销毁，跑的是临时词库。
 
 窗口的观感/对齐靠 `win-ui-selfscreenshot` 那套截图（`PrintWindow` 对普通窗口有效，
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
@@ -1318,9 +1344,28 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     - 验收方式：`--selftest-ui` 用 `RealChildWindowFromPoint` 在 10 个可交互控件的 5 个点上做命中测试，
       命中的必须是它自己。**别用 `WindowFromPoint`**：那是在整个桌面上找窗口，会被别的窗口甚至
       锁屏界面（`LockScreenBackstopFrame`）抢走结果，锁屏时全部测不出来。
+45. **「改了没生效」先对齐时间线，别急着改代码。** M4a 真机复验报的是「保存了「微信」，
+    Notepad++ 里打 `tmwy` 还是那几个生僻字」。翻日志：`tmwy` 那次查询发生在 **10:19:12**，
+    那一刻 `自定义词库：0 条生效`；`1 条生效` 是 **10:19:21**（保存之后）；再之后用户打的
+    是 `wmty`——码序记错（微 `tm` + 信 `wy` = `tmwy`）。也就是说功能当场就生效了，
+    截的是加词前那一拍。三条判据，以后照这个顺序查：
+    - `server.log` 的 `自定义词库：N 条生效（五笔 x / 拼音 y）` 是「真的合并进去了」的唯一
+      证据；同一次重连的 `Welcome.entry_count` 会跟着 +1（136239 → 136240）。
+    - 想知道**常驻 server 此刻**返回什么，**别用 `heinrich-cli look`**：它自己新起一个
+      `Host`、自己读一遍词库，所以它永远说「有」——看不出热重载到底有没有生效。
+      要发真帧：`out/probe_pipe.py`（`Hello` + `Query`，纯 stdlib）。
+    - 写这种探针时**必须给 `WriteFile`/`ReadFile` 设 `argtypes`**。不设的话 x64 下指针参数
+      被按 32 位 int 截断，表现是「`WriteFile` 返回成功、对面永远收不到 Hello」——极容易
+      误判成「server 卡死/管道坏了」。另外管道名带会话后缀（本机 `\\.\pipe\heinrich-14`），
+      挨个试 0..39 比猜规则稳。
+    - 产品侧的修法不是解释，而是**把码摆在眼前**：选中某行时脚注直接写「打字时输 `tmwy`」。
+    - **真正的代码 bug 是另一条**（D67）：DLL 的候选缓存本来永不失效。用户加词前打过
+      `tmwy`，那一份就被缓存住了；加完词再打，DLL 直接返回旧结果，server 连 `Query`
+      都收不到——日志上表现为「server 明明 1 条生效，却什么查询都没有」。修法：缓存条目
+      带 `Instant`，超过 `CACHE_TTL`（3 秒）就当没有。**改 DLL 之后已开的宿主必须重启**
+      （Notepad++ / Chrome 都把 DLL 加载在进程里），这一点一定要在交付说明里写上。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
-
 ```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序

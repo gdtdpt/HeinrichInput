@@ -60,7 +60,7 @@ const ID_L_WORD: usize = 120;
 const ID_L_PINYIN: usize = 121;
 const ID_L_CODE: usize = 122;
 const ID_L_WEIGHT: usize = 123;
-const ID_B_ADD: usize = 130;
+const ID_B_CLEAR: usize = 130;
 const ID_B_SAVE: usize = 131;
 const ID_B_DEL: usize = 132;
 const ID_B_IMPORT: usize = 133;
@@ -100,7 +100,7 @@ pub struct App {
     l_pinyin: HWND,
     l_code: HWND,
     l_weight: HWND,
-    b_add: HWND,
+    b_clear: HWND,
     b_save: HWND,
     b_del: HWND,
     b_import: HWND,
@@ -113,10 +113,8 @@ pub struct App {
     lex: Option<Lexicons>,
     lex_note: Option<String>,
     rows: Vec<Row>,
-    /// 编辑面板当前挂着哪一行（`None` = 不在编辑）
+    /// 编辑面板当前挂着哪一行（`None` = 面板是空的，保存时按新词处理）
     editing: Option<usize>,
-    /// 「新增」状态：面板是空的，保存时插入新词而不是改已有词
-    adding: bool,
     /// 上一次删除的 (原位置, 词条)，给「撤销删除」用
     undo: Option<(usize, UserWord)>,
 }
@@ -171,7 +169,7 @@ impl App {
             l_pinyin: HWND::default(),
             l_code: HWND::default(),
             l_weight: HWND::default(),
-            b_add: HWND::default(),
+            b_clear: HWND::default(),
             b_save: HWND::default(),
             b_del: HWND::default(),
             b_import: HWND::default(),
@@ -184,7 +182,6 @@ impl App {
             lex_note,
             rows: Vec::new(),
             editing: None,
-            adding: false,
             undo: None,
         })
     }
@@ -318,7 +315,16 @@ impl App {
         self.e_code = child(hwnd, w!("Edit"), "", edit_style, ID_E_CODE, self.font)?;
         self.e_weight = child(hwnd, w!("Edit"), "", edit_style, ID_E_WEIGHT, self.font)?;
 
-        self.b_add = child(hwnd, w!("Button"), "新增", WS_TABSTOP, ID_B_ADD, self.font)?;
+        // 「新增」被去掉了：编辑面板一直可输入，点「保存」就是加入/更新，
+        // 多一步「先点新增」只会让人以为词已经进列表了。
+        self.b_clear = child(
+            hwnd,
+            w!("Button"),
+            "清空",
+            WS_TABSTOP,
+            ID_B_CLEAR,
+            self.font,
+        )?;
         self.b_save = child(hwnd, w!("Button"), "保存", WS_TABSTOP, ID_B_SAVE, self.font)?;
         self.b_del = child(hwnd, w!("Button"), "删除", WS_TABSTOP, ID_B_DEL, self.font)?;
         self.b_import = child(
@@ -412,7 +418,7 @@ impl App {
 
         let by = py + row + gap;
         let mut bx = cx;
-        place(self.b_add, self.s(72), row, by, &mut bx);
+        place(self.b_clear, self.s(72), row, by, &mut bx);
         place(self.b_save, self.s(72), row, by, &mut bx);
         place(self.b_del, self.s(72), row, by, &mut bx);
         place(self.b_import, self.s(96), row, by, &mut bx);
@@ -452,6 +458,24 @@ impl App {
         }
         self.update_buttons();
         self.set_status_counts();
+        self.update_note();
+    }
+
+    /// 取消列表选中（「清空」回到新词态时要连高亮一起去掉）。
+    fn clear_selection(&self) {
+        let mut item = LVITEMW {
+            state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(0),
+            stateMask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0),
+            ..Default::default()
+        };
+        unsafe {
+            send(
+                self.list,
+                LVM_SETITEMSTATE,
+                WPARAM(usize::MAX), // -1 = 所有行
+                LPARAM(&mut item as *mut _ as isize),
+            );
+        }
     }
 
     fn select(&mut self, idx: usize) {
@@ -474,9 +498,9 @@ impl App {
             send(self.list, LVM_ENSUREVISIBLE, WPARAM(idx), LPARAM(0));
         }
         self.editing = Some(idx);
-        self.adding = false;
         self.fill_panel(Some(idx));
         self.update_buttons();
+        self.update_note();
     }
 
     fn selected(&self) -> Option<usize> {
@@ -521,9 +545,46 @@ impl App {
 
     fn update_buttons(&self) {
         let has_sel = self.editing.is_some();
-        enable_window(self.b_save, true);
-        enable_window(self.b_del, has_sel);
+        let has_word = !get_text(self.e_word).trim().is_empty();
+        let dirty = has_word
+            || !get_text(self.e_pinyin).trim().is_empty()
+            || !get_text(self.e_code).trim().is_empty()
+            || !get_text(self.e_weight).trim().is_empty();
+        // 「保存」只在真的填了词时才亮：空面板上点亮它就是个假按钮，
+        // 点下去只能弹一句「词不能为空」，和原来那个「新增」一样没意义。
+        enable_window(self.b_save, has_word);
+        enable_window(self.b_del, has_sel && has_word);
+        enable_window(self.b_clear, dirty || has_sel);
         enable_window(self.b_undo, self.undo.is_some());
+    }
+
+    /// 面板下方那行说明。没选中时讲「怎么加词」，选中某行时直接告出**该打什么**。
+    ///
+    /// 后半句是这次反馈逼出来的：用户加了词、回去却打不出来，最常见的原因不是没生效，
+    /// 而是码序记错（微信 = 微 tm + 信 wy = `tmwy`，不是 `wmty`）。把码摆在眼前，
+    /// 比让用户自己去列表里找要省事。
+    fn update_note(&self) {
+        let text = match self.editing.and_then(|i| self.rows.get(i)) {
+            Some(r) => {
+                let how = match (&r.code, &r.pinyin) {
+                    (Some(c), _) => format!("打字时输 {c}"),
+                    (None, Some(p)) => format!("打字时输 {p}"),
+                    (None, None) => "这条推不出码：在「码」框里手填一个".to_string(),
+                };
+                format!(
+                    "「{}」· 码 {} · 拼音 {} · {}　（* = 按规则自动推导，想固定就在框里手填）",
+                    r.raw.word,
+                    r.code_cell(),
+                    r.pinyin_cell(),
+                    how
+                )
+            }
+            None => {
+                "在上面四个框里填词，点「保存」就加入；点列表任一行可以改它。拼音/码留空自动推导"
+                    .to_string()
+            }
+        };
+        set_text(self.note, &text);
     }
 
     fn set_status(&self, text: &str) {
@@ -559,18 +620,22 @@ impl App {
         }
     }
 
-    fn on_add(&mut self) {
-        self.adding = true;
+    /// 「清空」= 回到新词态：清掉四个框、取消列表高亮。它不写文件，
+    /// 只是把面板腾出来——保存才是唯一落盘动作。
+    fn on_clear(&mut self) {
         self.editing = None;
+        self.clear_selection();
         self.fill_panel(None);
         set_focus(self.e_word);
-        self.set_status("输入词后点「保存」；拼音与码留空就自动推导");
+        self.update_buttons();
+        self.update_note();
+        self.set_status("已清空编辑区；填好词点「保存」即加入");
     }
 
     fn on_save(&mut self) {
         let mut w = self.panel_word();
         if w.word.trim().is_empty() {
-            message(self.hwnd, "提示", "「词」不能为空");
+            self.set_status("「词」不能为空——先在上面填一个词再点保存");
             set_focus(self.e_word);
             return;
         }
@@ -587,7 +652,6 @@ impl App {
         if !self.save() {
             return;
         }
-        self.adding = false;
         self.editing = Some(idx);
         self.refresh();
         self.select(idx);
@@ -756,12 +820,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 if app.create_children().is_ok() {
                     app.layout();
                     app.refresh();
-                    if app.editing.is_none() {
-                        app.editing = (!app.rows.is_empty()).then_some(0);
-                        if app.editing.is_some() {
-                            app.select(0);
-                        }
-                    }
+                    // 刻意**不**自动选中第一行：面板是给「新词」用的，一开窗就
+                    // 躺着上次的词会让人以为已经选中了它，改完点保存就把那条词改了。
                 }
             }
             LRESULT(0)
@@ -776,9 +836,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let id = wparam.0 & 0xffff;
             let code = ((wparam.0 >> 16) & 0xffff) as u32;
             if let Some(app) = unsafe { app_of(hwnd) } {
-                if code == 0 {
+                // EN_CHANGE = 0x0300：编辑框内容变了，按钮该亮该灰要跟着走。
+                // 不做这一步，「保存」就只能一直亮着（空词点下去只得到一句抱怨）。
+                if code == 0x0300 {
+                    app.update_buttons();
+                } else if code == 0 {
                     match id {
-                        ID_B_ADD => app.on_add(),
+                        ID_B_CLEAR => app.on_clear(),
                         ID_B_SAVE => app.on_save(),
                         ID_B_DEL => app.on_delete(),
                         ID_B_UNDO => app.on_undo(),
@@ -799,7 +863,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if let Some(idx) = app.selected() {
                         if app.editing != Some(idx) {
                             app.editing = Some(idx);
-                            app.adding = false;
                             app.fill_panel(Some(idx));
                             app.update_buttons();
                         }
@@ -906,6 +969,10 @@ fn enable_window(hwnd: HWND, enable: bool) {
     unsafe {
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(hwnd, enable);
     }
+}
+
+fn is_enabled(hwnd: HWND) -> bool {
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(hwnd).as_bool() }
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -1015,6 +1082,64 @@ fn pick_file(owner: HWND) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf16_lossy(&buf[..end])))
 }
 
+/// 面板 → 保存 → 列表这条链的自测（去掉了「新增」按钮之后的约定）：
+///
+/// 1. 空面板时「保存」「清空」「删除」都是灰的——不给假按钮；
+/// 2. 填了词，「保存」「清空」亮，「删除」仍灰（还没选中任何行）；
+/// 3. 点「保存」：文件里真出现这个词，列表选中它，「删除」变亮；
+/// 4. 点「清空」：面板空、无选中，按钮回到第 1 步的灰。
+///
+/// 全部走真实控件消息（`WM_SETTEXT` / `BM_CLICK` 由按钮自己发 `BN_CLICKED`），
+/// 断言落点是**磁盘上的文件**，不是界面上的字符串——界面骗人的事刚发生过（F44）。
+fn check_panel_flow(app: &App, path: &std::path::Path) -> Result<(), String> {
+    let state = |what: &str| -> Result<(), String> {
+        let (save, clear, del) = (
+            is_enabled(app.b_save),
+            is_enabled(app.b_clear),
+            is_enabled(app.b_del),
+        );
+        let want = match what {
+            "空面板" => (false, false, false),
+            "填了词" => (true, true, false),
+            "保存后" => (true, true, true),
+            "清空后" => (false, false, false),
+            _ => unreachable!(),
+        };
+        if (save, clear, del) != want {
+            return Err(format!(
+                "{what}：保存={save} 清空={clear} 删除={del}，期望 {:?}",
+                want
+            ));
+        }
+        Ok(())
+    };
+
+    state("空面板")?;
+    set_text(app.e_word, "微信");
+    state("填了词")?;
+
+    unsafe {
+        send(app.b_save, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("回读词库失败：{e}"))?;
+    if !text.lines().any(|l| l.split('\t').next() == Some("微信")) {
+        return Err(format!("点保存后文件里没有「微信」：{text:?}"));
+    }
+    if app.editing != app.rows.iter().position(|r| r.raw.word == "微信") {
+        return Err("保存后没有选中刚保存的那一行".into());
+    }
+    state("保存后")?;
+
+    unsafe {
+        send(app.b_clear, 0x00F5, WPARAM(0), LPARAM(0));
+    }
+    if !get_text(app.e_word).is_empty() || app.editing.is_some() {
+        return Err("点清空后面板/选中状态没回到新词态".into());
+    }
+    state("清空后")?;
+    Ok(())
+}
+
 /// 建窗（不显示、不进消息循环）。
 fn create_window(app: &App) -> Result<HWND, String> {
     unsafe {
@@ -1078,7 +1203,7 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
     let path = dir.join("words.tsv");
     std::fs::write(&path, "好吃\t\t\n").map_err(|e| format!("造词库失败：{e}"))?;
 
-    let app = Box::new(App::new(data, Some(path))?);
+    let app = Box::new(App::new(data, Some(path.clone()))?);
     let hwnd = create_window(&app)?;
     // 不抢焦点地显示一下：真实路径里窗口是可见的，z 序表现才一致
     unsafe {
@@ -1088,6 +1213,7 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
 
     let result = (|| -> Result<(), String> {
         check_z_order(hwnd)?;
+        check_panel_flow(&app, &path)?;
         // 模拟 Tab 拿到焦点（点中它、或 Tab 键走过去）：它自己会抬到最上层，
         // 我们的子类化过程必须把它压回去
         unsafe {
@@ -1174,7 +1300,7 @@ fn check_z_order(hwnd: HWND) -> Result<(), String> {
         ID_E_PINYIN,
         ID_E_CODE,
         ID_E_WEIGHT,
-        ID_B_ADD,
+        ID_B_CLEAR,
         ID_B_SAVE,
         ID_B_DEL,
         ID_B_IMPORT,
