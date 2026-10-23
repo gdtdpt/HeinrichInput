@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.43
+> **版本**：v1.44
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）、M3 拆为 M3.1–M3.5（D46/D47）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，真实库与日志已核（175 词 / 累计 377 次），其后按真机日志两次修正学习算法——D54 改绝对分差、D58 直接废除门槛（第一次上屏不计分），连打期缓存时机由 D57 修正 D55 的判据，**M2.4 学习算法已真机验收**（2026-10-22 三轮日志：连打不跳位 / 换码后回来升位 / 原首位上屏一次不夺回；抖动区边界由 D59 记录）**；M3.1（拼音数据）+ M3.2（混输裁决）已验收，M3.3（接进 TSF，含 D47 协议 v3、D48 五笔优先 + `'` 强制拼音、D49 `-`/`=` 翻页与组合态内吞字符键）**已验收**；M3.4a（码提示 chip，D51 协议 v4，含 D52 撤销 `Ctrl+Shift+/`、D53 Tab 改为组合态内吞掉）**已验收**；M3.4b（码位键位图，D50，含 D60 协议 v5 下发字根表、D61 触发键改 `Ctrl+Alt`）**已验收**；M3.5（`z` 末位通配 + 段级多段标记，D62；多段组合经 D64 收紧为只出词典真词、chip 改词中提示）**已验收（2026-10-23）**；M3.6（自定义词组，D65：`%APPDATA%\Heinrich\words.tsv` + 取码规则 + 1 秒热重载）**代码与自测完成，待你真机验收**；**M4 拆为 M4a–M4e（D66）：M4a（设置窗口 + 词组页）代码与自测完成、待你真机验收，M4b（通用页 + 学习数据页）、M4c（emoji 引擎，协议 v7）、M4d（emoji 改绑页 + `config_version`）、M4e（安装包 + 全量回归）依次排布；M5 整体后移**；外链查询已降为 M5 可选**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -841,21 +841,32 @@ IME 组合串一起实现——工作量约为原生的三倍，而这张表的�
 `WM_SETFOCUS` 里先 `DefSubclassProc` 再压回底层。验收靠 `--selftest-ui`（命中测试），
 不靠截图——截图上一点都看不出来。
 
-**三条入口，都不需要用户去找 exe**（D69）：
+**入口：开始菜单是主路，系统设置的「选项」指望不上**（D69 / D70）。
 
-| 入口 | 用户怎么点 | 实现 |
-|---|---|---|
-| 系统设置 | 设置 → 时间和语言 → 语言 → 语言选项 → 键盘 → 亨利五笔 → **选项** | DLL 实现 `ITfFnConfigure`（`text_service`）+ 拉起进程（`launch`） |
-| 开始菜单 | 开始菜单搜「亨利」→「亨利五笔 设置」 | `heinrich-setup install` 写 `FOLDERID_CommonPrograms` 下的 `.lnk`（`setup/src/shortcut.rs`） |
-| 双击 exe | `dist\heinrich-settings.exe` | 开发者自用，不作宣传 |
+| 入口 | 用户怎么点 | 实现 | 状态 |
+|---|---|---|---|
+| 开始菜单 | Win → 输入「亨利」→「亨利五笔 设置」 | `setup/src/shortcut.rs` 写 `.lnk` | **主入口**，两处位置 |
+| 系统设置 | 设置 → 语言选项 → 键盘 → 亨利五笔 → 选项 | DLL 实现 `ITfFnConfigure` + `launch` | 接口**有**，Win10 22H2 仍**不给我们画按钮** |
+| 双击 exe | `dist\heinrich-settings.exe` | 开发者自用，不作宣传 | 兜底 |
 
-「选项」按钮**由接口存在与否决定，且失败完全静默**：Windows 的输入法管理界面按
-`CoCreateInstance(CLSID, IID_ITfFnConfigure)` 取接口，取不到就根本不画那个按钮——
-不报错、不写日志。v1.42 截图里「删除」左边那块空白就是这么来的（实测对照：
-微软拼音 `{B115690A…}`、微软五笔 `{a028ae76…}` 在该 IID 上是 `S_OK`，那时我们是
-`E_NOINTERFACE`）。所以 `heinrich-setup status` 把这一项列成了必检项。
+**开始菜单的两个位置**：`FOLDERID_CommonPrograms`（`%ProgramData%`，机器级安装的正统位置，
+所有用户可见）**只有提权进程写得进去**；`FOLDERID_Programs`（`%APPDATA%`）不需要提权。
+`create_settings_shortcut` 先试公共、失败退用户级；`heinrich-setup shortcut` 子命令只写
+用户级——开发态下 DLL 直接注册 `dist`、从没跑过 `install`，这是唯一不弹 UAC 的入口。
+卸载时两处都删。
 
-`Show` 的三条约定：
+**「选项」按钮的真相（D70，实测更正 v1.43 的假设）**：v1.43 推断「接口取不到就不画按钮」，
+只对了一半。取接口是**必要**条件，不是**充分**条件——本机 Win10 22H2 (19045.6466) 上：
+
+- 微软五笔 `{a028ae76…}` 在该 IID 上是 `S_OK`，语言选项页里它那一行**照样只有「删除」**；
+- 装上第三方输入法后，连微软拼音的「选项」都会变成空白（社区多年反馈）。
+
+即：这个页面只对**微软自家 IME 的专门设置页**画按钮，第三方 TIP 实现 `ITfFnConfigure`
+也只是让它「有资格」，系统仍然不画。所以不要把它当入口宣传，也不要为它再动注册表；
+`ITfFnConfigure` 的实现保留（成本为零，别的调用方——如 `control intl.cpl` 的属性框——
+可能用它），`status` 里那项检查保留，但含义是「接口就绪」而非「按钮可见」。
+
+`Show` 的三条约定（将来任何调用方都适用）：
 
 - **立即返回**。`ITfFnConfigure::Show` 的文档写「对话框关闭前不要返回」，那是给模态
   对话框的；我们的窗口是独立顶层窗口，阻塞会把 SystemSettings 的 UI 线程挂住。
@@ -1019,7 +1030,8 @@ ranking.half_life_days = 45
 | 38 | `[CmdletBinding()]` 脚本的 `param` 默认值不得引用 `$PSScriptRoot`（`-File` 调用下为空串，踩坑 #14） |
 | 39 | **修饰键状态一律采样 `GetKeyState` 与上次比对，不依赖按键上下事件**，且四条回调都要采样（D29） |
 | 40 | 日志级别可用标志文件 `%LOCALAPPDATA%\Heinrich\debug.on` 临时提到 `debug`（`tools\tsf.ps1 debug on`），不必去改环境变量；环境变量仍优先 |
-| 41 | **设置窗口的两个入口都做**（D69）：系统设置页的「选项」（`ITfFnConfigure`）+ 开始菜单快捷方式（安装器写公共开始菜单）。**不做托盘图标**——server 是纯管道服务、没有窗口也没有消息循环，加托盘等于给它加整套 Shell 集成（含 Explorer 重启后重挂），性价比最低；也不做输入法内快捷键（与 IDE 默认键冲突概率高、用户记不住） |
+| 41 | **设置窗口的两个入口都做**（D69）：系统设置页的「选项」（`ITfFnConfigure`）+ 开始菜单快捷方式。**不做托盘图标**——server 是纯管道服务、没有窗口也没有消息循环，加托盘等于给它加整套 Shell 集成（含 Explorer 重启后重挂），性价比最低；也不做输入法内快捷键（与 IDE 默认键冲突概率高、用户记不住） |
+| 42 | **系统设置的「选项」按钮不可指望**（D70）：Win10 22H2 上微软五笔有 `ITfFnConfigure` 也照样不画按钮，第三方 TIP 更不会。入口以**开始菜单为主**，写两处位置（提权写公共、否则用户级），并加 `heinrich-setup shortcut` 子命令（不提权、只写用户级）供开发态使用。`ITfFnConfigure` 的实现保留但不再当卖点 |
 
 ### 11.2 仍待确认
 
@@ -1089,3 +1101,4 @@ ranking.half_life_days = 45
 | v1.41 | 2026-10-23 | **修 F46：连加多个词只留最后一条**。真机反馈「多次保存列表只有一条，新数据把旧数据顶掉」；根因是保存后面板没腾干净（`editing` 仍指向上一条），第二次保存被判成「改名」→ 删旧加新。改法：保存成功后清面板、取消选中、焦点回词框；改名只认「从列表点进来的那一行」。同批调整界面：`保存` 移到按钮行第一个（`删除` 紧跟，中间空一格再是文件级三个），`清空` 靠右单独放；四个编辑框挂子类化过程，**回车 = 保存、Esc = 清空**（转发 `WM_COMMAND`，与点按钮同一条路径）。`--selftest-ui` 的 `check_panel_flow` 扩成「连加两条都在 + 点列表行改名后旧词消失」；dev-guide 踩坑 46（含「跨进程读 Edit 用 `GetWindowText` 会得到空串」） |
 | v1.42 | 2026-10-23 | **F47：字段名居中 + Static 背景与父窗口一致**。真机反馈「这行的 label 可以居中吗，背景是否可以与父背景一致」。改法：四个字段名（词/拼音/码/权重）改 `SS_CENTER | SS_CENTERIMAGE`；`WM_CTLCOLORSTATIC` 返回的画刷从 `COLOR_WINDOW`（白）改成 `COLOR_BTNFACE`（与主窗口类 `hbrBackground` 同色）。`--selftest-ui` 新增 `check_labels`：断言四个字段名的样式位，并**真发一次 `WM_CTLCOLORSTATIC` 比对返回画刷**（色差只有 15 级，截图复查容易漏），已反向验证能抓到「回白底」与「去掉居中」两种回退；dev-guide 踩坑 47（`SS_*` 在 `Win32::System::SystemServices`、该 feature 未开，写字面量） |
 | v1.43 | 2026-10-23 | **M4a7 设置入口**（D69）：给 TSF 的 `TextService` 加 `ITfFnConfigure`（父接口 `ITfFunction` 只有 `GetDisplayName`），`Show` 经新增的 `launch.rs` 拉起同目录 `heinrich-settings.exe`——先 `FindWindowW("HeinrichSettings")` 复用已开的窗口，否则 `CreateProcessW`；无论成败**立即返回 `S_OK`**（失败原因入 `tsf.log`）。三点实现细节：`DllMain` 改存模块句柄（`GetModuleFileNameW(None)` 拿到的是**宿主** exe，不是 DLL）；类名与 exe 文件名收进 `heinrich-tip-id`（`SETTINGS_CLASS` / `SETTINGS_EXE_NAME`），settings 侧不再写第二份；不传 `hwndParent`（独立顶层窗口，认成 SystemSettings 的子窗口会跟着它一起消失）。安装器新增 `shortcut.rs`：`FOLDERID_CommonPrograms` 下建「亨利五笔 设置.lnk」、卸载时删除，步骤编号 5→6 步；`status` 与 `install` 的校验各增一项 `CoCreateInstance + ITfFnConfigure`。`HeinrichTsfAbiVersion` 5→6。实测：该 IID 由 `E_NOINTERFACE` 变 `S_OK`（反向验证：拆掉 `#[implement]` 里的接口即回到 `E_NOINTERFACE`）；探针 `tools/probe/probe_fnconfigure.py` 走 `CoCreateInstance → GetDisplayName`（返回「亨利五笔 · 设置」）→ `Show`，`Show` 10.9 ms 返回、第二次调用 pid 不变（复用未开新窗）；快捷方式用临时目录自测（公共开始菜单非提权写是 `E_ACCESSDENIED`，属预期） |
+| v1.44 | 2026-10-23 | **入口改走开始菜单**（D70）：真机截图显示设置页那一行只有「删除」，无「选项」。查清是 Windows 自己的判定——Win10 22H2 上微软五笔在 `IID_ITfFnConfigure` 上是 `S_OK`，页面照样不画按钮；装了第三方输入法后连微软拼音的「选项」也会空白。结论：该按钮只对微软自家 IME 的专门设置页出现，第三方 TIP 实现接口也只是「有资格」。故 `shortcut.rs` 改为双向布局：`create_settings_shortcut` 先写 `FOLDERID_CommonPrograms`，失败（非提权 `E_ACCESSDENIED`）退`FOLDERID_Programs`（`%APPDATA%`，不需要提权）；`shortcut_path` 取实际存在的那份，`remove_settings_shortcut` 两处都删。新增 `heinrich-setup shortcut` 子命令（只写用户级、不提权），解决开发态「DLL 直接注册 dist、从没跑过 install、于是永远没有入口」的问题。`writes_a_valid_shortcut_file` 增 `IShellLinkW::GetPath` 回读断言（原来只 `Load`，指向随便一个文件也能过，是假绿），反向验证：把期望改成 `notepad.exe` 立刻失败，`left` 打出 lnk 里的真实目标；新增 `user_programs_dir_exists`（断言落在 `%APPDATA%` 下）。setup 依赖加 `Win32_Storage_FileSystem`（`GetPath` 的 feature 门控）。**实机**：`heinrich-setup shortcut` 建出 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\亨利五笔 设置.lnk`，`status` 的「开始菜单入口」一行变成 ✓ |

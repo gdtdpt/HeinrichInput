@@ -1171,14 +1171,21 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
 截图必须在同一次调用里「启动 → 睡 2 秒 → 截」。
 
-### 4.19 设置窗口怎么被打开（M4a7 / D69）
+### 4.19 设置窗口怎么被打开（M4a7 / D69、D70）
 
-两条入口，都不要求用户知道 exe 在哪：
+**先记住结论：开始菜单是唯一可靠的入口，系统设置的「选项」按钮指望不上。**
 
-| 入口 | 触发 | 代码 |
-|---|---|---|
-| 系统设置 → 语言选项 → 键盘 → 亨利五笔 → **选项** | Windows `CoCreateInstance(CLSID, IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs`（实现）+ `tsf/src/launch.rs`（拉起） |
-| 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs`（安装时写，卸载时删） |
+| 入口 | 触发 | 代码 | 可用性 |
+|---|---|---|---|
+| 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs` | **主路**，写两处位置 |
+| 系统设置 → 语言选项 → 键盘 → 亨利五笔 → 选项 | `CoCreateInstance(IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs` + `tsf/src/launch.rs` | 接口在，但 Win10 22H2 **不画按钮** |
+
+**为什么「选项」指望不上（D70）**：v1.43 的推断是「取不到接口就不画按钮」，实测只对了一半。
+取接口是必要条件、不是充分条件——本机 Win10 22H2 (19045.6466) 上微软五笔
+`{a028ae76…}` 在该 IID 上是 `S_OK`，它那一行照样只有「删除」；社区反馈里装上第三方
+输入法后连微软拼音的「选项」都会空白。也就是说这个页面只对微软自家 IME 的专门设置页
+画按钮。所以别再为它调注册表、也别拿它当验收点；实现留着（零成本，`control intl.cpl`
+的属性框之类调用方可能用），`status` 里那项只表示「接口就绪」。
 
 **TSF 侧**：`ITfFnConfigure` 挂在 `TextService` 上（不是另起一个 COM 类），所以
 `DllGetClassObject → ClassFactory → QueryInterface` 这条既有链路一行没改。父接口
@@ -1212,10 +1219,24 @@ Show #2               hr=0x00000000  pid=30500（同一进程，已复用）
 进程树会被收掉，「窗口」与「进程」在那种环境下不等价。用 `FindWindowW` 判窗口、用
 `GetWindowThreadProcessId` 取 pid。
 
-**安装器侧**：快捷方式写 `FOLDERID_CommonPrograms`（机器级安装 → 公共开始菜单，避免
-`runas` 到另一个管理员账户时把 .lnk 写进看不到的用户目录）。这里有个测试上的取舍：
-公共开始菜单**只有提权进程能写**，所以 `cargo test` 里换成临时目录（`create_settings_shortcut_in`），
-验的是同一段 ShellLink 代码 + 用 `IPersistFile::Load` 读回来证明文件合法。
+**安装器侧**：`create_settings_shortcut` 先写 `FOLDERID_CommonPrograms`（机器级安装 → 公共
+开始菜单，避免 `runas` 到另一个管理员账户时把 .lnk 写进看不到的用户目录），失败就退
+`FOLDERID_Programs`（`%APPDATA%\...\Start Menu\Programs`，不需要提权）。开发态用
+`heinrich-setup shortcut` —— 只写用户级、不弹 UAC：
+
+```powershell
+cd dist
+.\heinrich-setup.exe shortcut   # ✓ 已创建 %APPDATA%\...\Start Menu\Programs\亨利五笔 设置.lnk
+.\heinrich-setup.exe status     # 「开始菜单入口」一行应为 ✓
+```
+
+两个取舍：
+
+- 公共开始菜单**只有提权进程能写**，所以 `cargo test` 改用临时目录
+  （`create_settings_shortcut_in`），验的是同一段 ShellLink 代码。
+- 断言必须读到**目标路径**（`IShellLinkW::GetPath`），不能只 `IPersistFile::Load`。
+  `Load` 只证明文件结构合法——指向随便一个文件也能过，那是假绿。反向验证：把期望值
+  改成 `notepad.exe`，断言立刻失败并打出 lnk 里的真实目标。
 
 ## 5. 数据管线
 
@@ -1468,14 +1489,19 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     `heinrich-settings.exe`」：如果宿主目录碰巧有同名文件，会开起别人的程序，而你从
     现象上完全看不出是自己找错了目录。
 
-49. **系统设置页的「选项」按钮由接口存在性决定，而且失败完全静默。** Windows 拿
+49. **系统设置页的「选项」按钮：接口是必要条件，不是充分条件。** Windows 拿
     `CoCreateInstance(CLSID, IID_ITfFnConfigure)`，拿不到就**根本不画按钮**——不报错、
-    不写事件日志、`GetLastError` 也没东西。所以「按钮不见」这种问题只能靠探针复现系统的
-    那一次调用（`tools/probe/probe_fnconfigure.py`），截图与读代码都得不出结论。
-    反向验证很便宜：把 `#[implement(...)]` 里的 `ITfFnConfigure` 去掉重新构建，探针应
-    立刻回到 `E_NOINTERFACE`；这条验证做一次就能确认「断言真的在看接口，而不是在看别的」。
-    另一个容易误判的点：**`Show` 不要等窗口关闭**。文档写「对话框关闭前不要返回」，
-    那是给模态对话框的；我们的窗口是独立顶层窗口，阻塞会挂住 SystemSettings 的 UI 线程。
+    不写事件日志、`GetLastError` 也没东西。**但反过来不成立**：接口在手也未必有按钮。
+    本机 Win10 22H2 (19045.6466) 上微软五笔 `{a028ae76…}` 是 `S_OK`，它那一行照样只有
+    「删除」；装上第三方输入法后连微软拼音的「选项」都会空白。⇒ 这个页面只对微软自家
+    IME 的专门设置页画按钮，**第三方 TIP 无论怎么实现都没有**。教训：从「接口有/无」
+    推到「界面会显示」，中间隔着一层微软自己的白名单；凡是「系统帮我们画 UI」的功能，
+    验证必须落到**真实界面上**（截图或人眼），探针只能证明接口在。
+    两个附带结论：
+    - 「按钮不见」这种问题只能靠探针复现系统那一次调用
+      （`tools/probe/probe_fnconfigure.py`），截图与读代码都得不出结论。
+    - `Show` 不要等窗口关闭。文档写「对话框关闭前不要返回」，那是给模态对话框的；
+      我们的窗口是独立顶层窗口，阻塞会挂住 SystemSettings 的 UI 线程。
 
 50. **同一段字符串写在 DLL 和 GUI 两边，就一定会漂。** 设置窗口的类名
     （`FindWindowW` 与 `RegisterClassW` 两边都要）与 exe 文件名（DLL 找它、安装器放它）

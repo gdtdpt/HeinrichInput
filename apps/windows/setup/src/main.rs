@@ -55,6 +55,7 @@ fn main() {
         "install" => install(),
         "uninstall" | "remove" => uninstall(),
         "status" | "check" => status(),
+        "shortcut" | "lnk" => shortcut_only(),
         "" | "help" | "h" => {
             usage();
             0
@@ -73,6 +74,7 @@ fn usage() {
     println!("  heinrich-setup install     注册输入法（会请求管理员权限）");
     println!("  heinrich-setup uninstall   反注册（会请求管理员权限）");
     println!("  heinrich-setup status      检查注册状态（不需要管理员）");
+    println!("  heinrich-setup shortcut    只建当前用户的开始菜单快捷方式（不需要管理员）");
     println!(
         "\n注意：本程序必须与 {} 放在同一目录。",
         heinrich_tip_id::DLL_FILE_NAME
@@ -647,6 +649,46 @@ fn com_init() -> Result<(), String> {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED)
             .ok()
             .map_err(|e| format!("CoInitializeEx：{e}"))
+    }
+}
+
+/// 只建「当前用户」开始菜单快捷方式，**不提权**。
+///
+/// `install` 那步建的是公共开始菜单（正统、所有用户可见），代价是要 UAC；
+/// 开发态下 DLL 直接注册 dist 目录、从没跑过 `install`，这时想有个「Win 搜得到」
+/// 的入口就只能写用户级。系统设置页那个「选项」按钮指望不上——它只给微软自家
+/// 输入法画（见 `shortcut.rs` 顶部注释）。
+fn shortcut_only() -> i32 {
+    let exe = std::env::current_exe().map_err(|e| format!("定位自身路径失败：{e}"));
+    let settings = exe.ok().and_then(|p| {
+        p.parent()
+            .map(|d| d.join(heinrich_tip_id::SETTINGS_EXE_NAME))
+    });
+    let settings = match settings {
+        Some(p) if p.is_file() => p,
+        Some(p) => {
+            eprintln!("✗ 找不到设置程序 {}", p.display());
+            return 1;
+        }
+        None => {
+            eprintln!("✗ 定位不到安装目录");
+            return 1;
+        }
+    };
+    if let Err(e) = com_init() {
+        eprintln!("✗ COM 初始化失败：{e}");
+        return 1;
+    }
+    match shortcut::create_for_current_user(&settings) {
+        Ok(lnk) => {
+            println!("✓ 已创建 {}", lnk.display());
+            println!("  按 Win 键输入「亨利」即可搜到（已打开的搜索要先关掉再开）。");
+            0
+        }
+        Err(e) => {
+            eprintln!("✗ {e}");
+            1
+        }
     }
 }
 
