@@ -1416,7 +1416,7 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 子控件集，没有「单独截某一页」的办法。加了这个开关，`win-ui-selfscreenshot` 那套
 （起进程 → 截图 → 看 → 改）就能逐页跑。
 
-### 4.22 设置窗口的视觉层与自绘边界（M4b-UI / D79）
+### 4.22 设置窗口的视觉层与自绘边界（M4b-UI / D79、D80）
 
 **颜色与字体只有一个入口**：`src/theme.rs`。
 
@@ -1448,8 +1448,21 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
   贴了块灰补丁」。`fill_rect(rectItem, colors.card)` 一句的事。
 - **禁用按钮要留轮廓**：底色 `#F0F0F0` 与页面底 `#F3F3F3` 只差 3 级，不给描边时整排按钮凭空
   消失，用户看不出「这里本来有按钮、只是不能点」。
-- **最后一列要吃掉剩余宽度**（`fit_last_column`）：列宽写死后窗口一拉宽，右上角多出一块空白
-  和一条竖线，用户会以为多了一列。
+
+**文字摆位（D80，v1.56）——三条规矩，全是为「看起来歪」服务的**：
+
+| 规矩 | 为什么 |
+|---|---|
+| 居中/右对齐前先 `text_width()`（`GetTextExtentPoint32W`）量宽，**左端点自己算**，不传 `DT_CENTER`/`DT_RIGHT` | `DT_END_ELLIPSIS` 会无条件在右侧预留省略号宽度（文字没超宽也预留），居中的文字因此整体左偏 7–8px。这个量没有文档、随字体变，只能自己算 |
+| 页签矩形 = 实测文字宽 + 左右各 4dp，文字居中画、下划线**就是**这个矩形 | 「矩形 24dp 余量 + 文字靠左画」等于下划线比文字宽一倍还偏右；4dp 余量一半给 hover 底、一半喂给 GDI「笔画超出」的判定（刚好等宽时最后一个字会变「…」） |
+| 第一个页签整体前移 4dp | 文字居中意味着左右各 4dp 空白；不前移，页签文字就比下面页标题右 4dp——两个「通用」一上一下，扫一眼就看出来 |
+
+- **原生单行 Edit 不做垂直居中**：控件比一行字高时，文字贴上半边（32dp 框里数字偏高 7dp，
+  量出来 13px）。治法是把 Edit 高度收到 `s(22)`、在框里居中、再下移 `s(3)` 补字体上沿——
+  框的描边本来就画在父窗口上，控件不用铺满。
+- **列表对齐跟着内容走**（`LVCF_FMT`）：数字列右对齐、短标记列居中、文字列左对齐。列宽用
+  `fit_columns` 按权重分配；只让「最后一列吃掉剩余」的话，窗口一拉宽，`提示`/`档位` 这种
+  短内容列会被撑成一块白板。
 
 **comctl32 v6 清单**：`apps/windows/settings/app.manifest` + `build.rs`，用链接器的
 `/MANIFEST:EMBED` + `/MANIFESTINPUT:<绝对路径>` + `/MANIFESTUAC:NO`，**不引 `embed-resource` /
@@ -1860,7 +1873,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
 | M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
-| M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23，D79，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6） |
+| M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23，D79 + D80，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |

@@ -29,20 +29,23 @@ use heinrich_core::RankingConfig;
 use heinrich_scheme::user::UserWord;
 use heinrich_scheme::HintMode;
 use windows::core::{w, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, InvalidateRect, LineTo, MoveToEx, RoundRect, ScreenToClient, SelectObject, SetBkMode,
-    SetTextColor, SetWindowRgn, HBRUSH, HDC, HFONT, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect,
+    ScreenToClient, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, HBRUSH, HDC, HFONT,
+    PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, LVCOLUMNW, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
-    LVM_DELETEITEM, LVM_ENSUREVISIBLE, LVM_GETCOLUMNWIDTH, LVM_GETITEMCOUNT, LVM_GETNEXTITEM,
-    LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE,
-    LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
+    DRAWITEMSTRUCT, LVCFMT_CENTER, LVCFMT_LEFT, LVCFMT_RIGHT, LVCOLUMNW, LVIS_FOCUSED,
+    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM, LVM_ENSUREVISIBLE,
+    LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -115,6 +118,9 @@ const LVIF_TEXT: u32 = 0x0001;
 const LVIF_PARAM: u32 = 0x0004;
 const LVCF_WIDTH: u32 = 0x0002;
 const LVCF_TEXT: u32 = 0x0004;
+/// `LVCF_FMT`：列的对齐方式。不加这一位的列宽/文字照常生效，**但对齐默认左**，
+/// 于是「上屏次数」「学习分」这种数字列会顶着列头左端排，一列数字参差不齐。
+const LVCF_FMT: u32 = 0x0001;
 /// ListView 背景与文字色（`LVM_FIRST = 0x1000`）。
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_SETTEXTCOLOR: u32 = 0x1024;
@@ -133,7 +139,9 @@ const ODS_HOTLIGHT: u32 = 0x0040;
 /// （路径里有 `&` 的概率不为零，把它当普通字符）。
 const DT_SINGLELINE: u32 = 0x0020;
 const DT_VCENTER: u32 = 0x0004;
+const DT_LEFT: u32 = 0x0000;
 const DT_CENTER: u32 = 0x0001;
+const DT_RIGHT: u32 = 0x0002;
 const DT_END_ELLIPSIS: u32 = 0x8000;
 const DT_NOPREFIX: u32 = 0x0800;
 
@@ -384,12 +392,14 @@ impl App {
                 LPARAM(LVS_EX_FULLROWSELECT as isize),
             );
         }
-        for (i, (title, width)) in [
-            ("词", 140),
-            ("拼音", 190),
-            ("码", 90),
-            ("权重", 110),
-            ("提示", 250),
+        for (i, (title, width, fmt)) in [
+            ("词", 140, LVCFMT_LEFT),
+            ("拼音", 190, LVCFMT_LEFT),
+            ("码", 90, LVCFMT_LEFT),
+            // 权重是「数字 + *」：左对齐时一位数与两位数左端齐、右端不齐，
+            // 一列看下来像随手打的。居中后整列有轴线。
+            ("权重", 110, LVCFMT_CENTER),
+            ("提示", 250, LVCFMT_LEFT),
         ]
         .into_iter()
         .enumerate()
@@ -397,7 +407,10 @@ impl App {
             let mut text = vec![0u16; 32];
             put_utf16(&mut text, title);
             let mut col = LVCOLUMNW {
-                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(LVCF_WIDTH | LVCF_TEXT),
+                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(
+                    LVCF_FMT | LVCF_WIDTH | LVCF_TEXT,
+                ),
+                fmt,
                 cx: self.s(width),
                 pszText: PWSTR(text.as_mut_ptr()),
                 ..Default::default()
@@ -554,12 +567,15 @@ impl App {
             ID_LEARN_LIST,
             self.font,
         )?;
-        for (i, (title, width)) in [
-            ("词", 160),
-            ("上屏次数", 90),
-            ("上次使用", 120),
-            ("学习分", 90),
-            ("档位", 80),
+        // 数字列右对齐、文字列左对齐、短标记居中：**列头跟着内容走**，
+        // 这是表格排版的老规矩。全都左对齐时，一列 3 位小数看着像长短不一的
+        // 标签，扫不下去（99% 的人第一眼就是看「学习分」这一列）。
+        for (i, (title, width, fmt)) in [
+            ("词", 110, LVCFMT_LEFT),
+            ("上屏次数", 90, LVCFMT_RIGHT),
+            ("上次使用", 120, LVCFMT_CENTER),
+            ("学习分", 90, LVCFMT_RIGHT),
+            ("档位", 80, LVCFMT_CENTER),
         ]
         .into_iter()
         .enumerate()
@@ -567,7 +583,10 @@ impl App {
             let mut text = vec![0u16; 32];
             put_utf16(&mut text, title);
             let mut col = LVCOLUMNW {
-                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(LVCF_WIDTH | LVCF_TEXT),
+                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(
+                    LVCF_FMT | LVCF_WIDTH | LVCF_TEXT,
+                ),
+                fmt,
                 cx: self.s(width),
                 pszText: PWSTR(text.as_mut_ptr()),
                 ..Default::default()
@@ -673,6 +692,30 @@ impl App {
         }
     }
 
+    /// 把一个单行 Edit 摆到容器框的正中。
+    ///
+    /// **原生单行 Edit 不做垂直居中**：控件比一行字高时，文字按「顶边 + 字体
+    /// 上沿」定位，于是 32dp 的框里数字会偏高 7dp（截图量出来就是 13px）。想让
+    /// 文字在框里居中，只能把控件高度收到一行字左右、再整体居中摆放——框本身
+    /// 由父窗口画描边，所以控件不用铺满，露出来的白底就是卡片色，看不出接缝。
+    fn center_in_box(&self, edit: HWND, box_r: RECT) {
+        // 22dp ≈ 14dp 字的两行内边距：Edit 自己还要吃掉几个像素的上下留白
+        let h = self.s(22).min(box_r.bottom - box_r.top);
+        // 再往下 3dp：Edit 的绘制起点是「顶边 + 字体上沿」，字身比行高矮，
+        // 光把控件居中会让文字偏高 2–3dp（截图量出来 5–6px），补这一下才真居中
+        let top = box_r.top + (box_r.bottom - box_r.top - h) / 2 + self.s(3);
+        move_rect(
+            edit,
+            RECT {
+                left: box_r.left + self.s(1),
+                top,
+                right: box_r.right - self.s(1),
+                bottom: top + h,
+            },
+            true,
+        );
+    }
+
     /// 整窗布局。Win11 设置的节奏：页签 44 → 页标题 → 分组标题 → 卡片 → 按钮行。
     /// 所有数字都是 96 DPI 逻辑像素，落屏前过 `s()`。
     fn layout(&mut self) {
@@ -685,13 +728,27 @@ impl App {
         let tab_h = self.s(44);
         let status_h = self.s(26);
 
-        // 页签：从左排，宽 = 文字宽 + 24。文字宽度量需要 DC，粗略按每字 15 逻辑像素估，
-        // 估宽只影响点击区域（画的时候按同一条公式画），差一两个像素无感。
-        let mut tx = m;
+        // 页签：`geo.tabs[i]` 就是**文字本身**的矩形（宽度实测），不是「点击区域」。
+        // 命中测试再横向外扩（`tab_at`），这样画出来的下划线正好与文字同宽、居中。
+        // 上一版按「每字 15dp + 24dp 余量」估宽、文字却按左端画，结果下划线比
+        // 文字长一倍、还整体偏右——一眼就能看出「没对齐」的地方就是这里。
+        //
+        // 起点往前挪 4dp：矩形左右各留 4dp 给 hover 底和省略号余量，文字是**居中**
+        // 画的，所以第一个页签的文字要落在 -4dp 起步的位置上，才与下面页标题的
+        // 左边缘（`m`）严格对齐。两个「通用」一上一下差 4dp，扫一眼就能看出来。
+        let mut tx = m - self.s(4);
+        let hdc = unsafe { GetDC(Some(self.hwnd)) };
         for (i, title) in PAGE_TITLES.iter().enumerate() {
-            let w = self.s((title.chars().count() as i32) * 15 + 24);
+            // 左右各留 4dp：`DT_END_ELLIPSIS` 的判定比「文字宽 ≤ 矩形宽」严一点
+            // （GDI 会算上笔画的右侧超出部分），刚好等宽时会把最后一个字换成「…」。
+            // 文字居中画，多出来的余量左右平分，不影响下划线居中。
+            let w = text_width(hdc, self.fonts.body_strong, title).max(self.s(20)) + self.s(8);
             self.geo.tabs[i] = Self::rect(tx, 0, w, tab_h);
-            tx += w + self.s(4);
+            // 间距扣掉两侧内衬：文字之间实际隔 20dp
+            tx += w + self.s(12);
+        }
+        if !hdc.0.is_null() {
+            unsafe { ReleaseDC(Some(self.hwnd), hdc) };
         }
 
         let content_top = tab_h + self.s(16);
@@ -815,8 +872,9 @@ impl App {
         }
 
         // 数字框：Edit 内缩 1px，描边画在框上（`paint_general`）
-        move_rect(self.e_gain, Self::inset(self.geo.gain_box, self.s(1)), true);
-        move_rect(self.e_half, Self::inset(self.geo.half_box, self.s(1)), true);
+        // 两个数字框：Edit 只占一行字高、在框里垂直居中（见 `center_in_box`）
+        self.center_in_box(self.e_gain, self.geo.gain_box);
+        self.center_in_box(self.e_half, self.geo.half_box);
 
         // 窗口太矮时卡片底部至少要在状态栏之上（MIN_H 已保证，这里只兜底）
         let _ = bottom;
@@ -842,49 +900,41 @@ impl App {
             // 列表内缩 1px：描边画在卡片上，别跟列表自带边框叠
             // 缩 8 的理由同学习页：列头是直角，缩 1 会把卡片圆角啃掉。
             move_rect(self.list, Self::inset(card, self.s(8)), true);
-            let _ = MoveWindow(
-                self.note,
-                cx + self.s(4),
-                note_y + self.s(2),
-                cw2 - self.s(8),
-                note_h,
-                true,
-            );
+            // 说明行是原生 Static：它自己会往里缩 1px，所以控件左缘要给 `cx`
+            // 而不是 `cx + 4`——否则文字比上面的卡片左缘右 4dp，扫一眼就是歪的
+            let _ = MoveWindow(self.note, cx, note_y + self.s(2), cw2, note_h, true);
         }
 
         let panel = Self::rect(cx, panel_y, cw2, panel_h);
         self.geo.panel_card = panel;
-        // 一行四组：label + box（文字在 draw_words 里画）。按权重铺满整行，不写死
-        // 像素：写死时窗口一拉宽，右半屏全是空白，四个框挤在左边像没排完版。
-        let weights = [30, 30, 18, 22];
-        // 标签宽按字宽算；多出来的 8px 是描边余量，靠**右对齐**吃掉——
-        // 这样文字永远贴着它自己的输入框，与前一个框之间才留出真正的分组间距。
-        let label_ws = [
-            self.s(14 * 2 + 8),
-            self.s(14 * 2 + 8),
-            self.s(14 + 8),
-            self.s(14 * 2 + 8),
-        ];
+        // 一行四组：标签 + 输入框。三个「恒定」同时成立才算排齐：
+        //   ① 标签到自己的框恒 8dp（标签右对齐，所以文字右端永远贴着框）
+        //   ② 上一组的框到下一组的标签恒 20dp（组间距）
+        //   ③ **四个框等宽**——这条最要紧：框是这条视觉带上最重的元素，
+        //      宽窄不一时眼睛先看到的是「四个框长短不一」，而不是间距。
+        //
+        // 做法是先扣掉「标签宽 + 8dp + 20dp」这些不可动的部分，剩下的宽度除以 4
+        // 得到框宽。标签宽按各自字数算（「码」14dp、「拼音」28dp），组宽因此不同，
+        // 但框一样宽、两处间距一样大。上一版把「组等宽」当目标，结果四个框宽度
+        // 差出一整个字，看着像没画完。
+        let label_ws: [i32; 4] = [self.s(14), self.s(14 * 2), self.s(14), self.s(14 * 2)];
         let label_to_box = self.s(8);
-        let group_gap = self.s(16);
-        let inner_left = panel.left + self.s(16);
-        let fixed = label_ws.iter().sum::<i32>() + label_to_box * 4 + group_gap * 3;
-        let box_total = (panel.right - self.s(16) - inner_left - fixed).max(self.s(320));
-        let mut x = inner_left;
-        let mut used = 0;
+        let group_gap = self.s(20);
+        let row_left = panel.left + self.s(16);
+        let row_right = panel.right - self.s(16);
+        // 4 个「标签→框」+ 3 个组间距是固定开销（组间距只有 3 个，4 个就会把
+        // 最后一组压窄 20dp，四个框又不一样宽了）
+        let fixed: i32 = label_ws.iter().sum::<i32>() + label_to_box * 4 + group_gap * 3;
+        let box_w = ((row_right - row_left - fixed) / 4).max(self.s(60));
         let mid = panel.top + self.s(14);
-        for i in 0..4 {
-            self.geo.panel_labels[i] = Self::rect(x, mid, label_ws[i], row);
-            x += label_ws[i] + label_to_box;
-            // 最后一个吃掉取整余数，右侧才不会飘出半像素的缝
-            let bw = if i == 3 {
-                box_total - used
-            } else {
-                box_total * weights[i] / 100
-            };
-            used += bw;
-            self.geo.panel_boxes[i] = Self::rect(x, mid, bw, row);
-            x += bw + group_gap;
+        let mut x = row_left;
+        for (i, &label_w) in label_ws.iter().enumerate() {
+            self.geo.panel_labels[i] = Self::rect(x, mid, label_w, row);
+            let box_x = x + label_w + label_to_box;
+            // 最后一组吃掉取整余数，右侧才不会飘出半像素的缝
+            let w = if i == 3 { row_right - box_x } else { box_w };
+            self.geo.panel_boxes[i] = Self::rect(box_x, mid, w, row);
+            x += label_w + label_to_box + w + group_gap;
         }
         let boxes = self.geo.panel_boxes;
         for (&box_r, &h) in
@@ -892,7 +942,7 @@ impl App {
                 .iter()
                 .zip(&[self.e_word, self.e_pinyin, self.e_code, self.e_weight])
         {
-            move_rect(h, Self::inset(box_r, self.s(1)), true);
+            self.center_in_box(h, box_r);
         }
 
         // 按钮行：主操作靠左，文件级操作跟后，「清空」靠右
@@ -920,24 +970,39 @@ impl App {
                 true,
             );
         }
-        self.fit_last_column(self.list, 4);
+        // 权重：词、拼音、码、权重、提示（提示最宽，它放的是「拼音/码从哪来」）
+        self.fit_columns(self.list, &[16, 22, 12, 12, 38]);
     }
 
-    /// 最后一列吃掉剩余宽度。列宽是按逻辑像素写死的，窗口拉宽后右上角会多出
-    /// 一块空白 + 一条莫名其妙的竖线（用户会以为多出一列）。留 `s(2)` 余量，
-    /// 不然列宽加上边框刚好撑出水平滚动条。
-    fn fit_last_column(&self, list: HWND, last: usize) {
+    /// 按权重分配列宽（总宽 = 列表客户区）。
+    ///
+    /// 原来只有「最后一列吃掉剩余宽度」：窗口一拉宽，词、拼音、码都不动，
+    /// 剩下的全砸给最后一列——于是「提示」「档位」这种短内容被撑成一块
+    /// 白板，列头孤零零飘在中间。按权重一起长，才是表格该有的样子。
+    fn fit_columns(&self, list: HWND, weights: &[i32]) {
+        let sum: i32 = weights.iter().sum();
+        if sum <= 0 {
+            return;
+        }
         unsafe {
             let mut r = RECT::default();
             if GetClientRect(list, &mut r).is_err() {
                 return;
             }
+            // 留 `s(2)` 余量：列宽加起来正好等于客户区时，边框会把水平滚动条挤出来
+            let total = r.right - r.left - self.s(2);
+            let min = self.s(40);
             let mut used = 0;
-            for i in 0..last {
-                used += send(list, LVM_GETCOLUMNWIDTH, WPARAM(i), LPARAM(0)).0 as i32;
+            for (i, w) in weights.iter().enumerate() {
+                let last = i + 1 == weights.len();
+                let cw = if last {
+                    (total - used).max(min)
+                } else {
+                    (total * w / sum).max(min)
+                };
+                used += cw;
+                send(list, LVM_SETCOLUMNWIDTH, WPARAM(i), LPARAM(cw as isize));
             }
-            let w = (r.right - r.left - used - self.s(2)).max(self.s(80));
-            send(list, LVM_SETCOLUMNWIDTH, WPARAM(last), LPARAM(w as isize));
         }
     }
 
@@ -953,12 +1018,11 @@ impl App {
         self.geo.learn_card = card;
         self.geo.learn_search_box = Self::rect(cx + self.s(40), search_y, self.s(320), btn_h);
 
+        // 搜索框里的字同样要垂直居中；内衬必须过 `s()`，写死的 1 在 DPI 2.0 下
+        // 只有 0.5dp，Edit 白底会盖住描边的内半边
+        self.center_in_box(self.e_search, self.geo.learn_search_box);
+
         unsafe {
-            move_rect(
-                self.e_search,
-                Self::inset(self.geo.learn_search_box, 1),
-                true,
-            );
             let _ = MoveWindow(
                 self.b_search,
                 self.geo.learn_search_box.right + self.s(8),
@@ -979,16 +1043,12 @@ impl App {
             // 列表内缩 8：卡片描边与列表之间留出呼吸位。缩 1 时列头（直角、带自己的
             // 背景）正好压在卡片圆角上，四个角全被削成方的，看着像「卡片没画圆」。
             move_rect(self.learn_list, Self::inset(card, self.s(8)), true);
-            let _ = MoveWindow(
-                self.n_learn,
-                cx + self.s(4),
-                note_y + self.s(2),
-                cw2 - self.s(8),
-                note_h,
-                true,
-            );
+            // 同词组页：Static 自己缩 1px，控件左缘对齐 `cx` 才与卡片左缘齐
+            let _ = MoveWindow(self.n_learn, cx, note_y + self.s(2), cw2, note_h, true);
         }
-        self.fit_last_column(self.learn_list, 4);
+        // 权重：词、上屏次数、上次使用、学习分、档位。数字列给足宽度，
+        // 右对齐的数字才有「小数点成列」的效果
+        self.fit_columns(self.learn_list, &[20, 18, 20, 18, 24]);
     }
 
     /// 重算推导列并重填 ListView（保留当前选中项）。
@@ -1859,15 +1919,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 /// 页签 / 三段选择器 / 「打开位置」链接的命中与切换。
 impl App {
+    /// 页签命中。`geo.tabs` 存的是**文字**矩形（用于画下划线），点击区域要往外扩：
+    /// 没人会精确点「通用」那两个字。两侧各 10dp，页签间距 28dp，相邻区域之间
+    /// 还留 8dp 空隙，不会误点。
+    fn tab_at(&self, pt: POINT) -> Option<usize> {
+        if pt.y < 0 || pt.y >= self.s(44) {
+            return None;
+        }
+        let pad = self.s(10);
+        self.geo
+            .tabs
+            .iter()
+            .position(|r| pt.x >= r.left - pad && pt.x < r.right + pad)
+    }
+
     fn on_click(&mut self, pt: POINT) {
         // 页签
-        for (i, &r) in self.geo.tabs.iter().enumerate() {
-            if pt_in(pt, r) {
-                if self.page != i {
-                    self.switch_to(i);
-                }
-                return;
+        if let Some(i) = self.tab_at(pt) {
+            if self.page != i {
+                self.switch_to(i);
             }
+            return;
         }
         // 三段选择器（只在通用页响应）
         if self.page == PAGE_GENERAL && pt_in(pt, self.geo.seg) {
@@ -1878,13 +1950,7 @@ impl App {
     }
 
     fn on_mouse_move(&mut self, pt: POINT) {
-        let tab = self
-            .geo
-            .tabs
-            .iter()
-            .position(|&r| pt_in(pt, r))
-            .map(|i| i as i32)
-            .unwrap_or(-1);
+        let tab = self.tab_at(pt).map(|i| i as i32).unwrap_or(-1);
         let seg = if pt_in(pt, self.geo.seg) {
             let seg_w = (self.geo.seg.right - self.geo.seg.left) / 3;
             ((pt.x - self.geo.seg.left) / seg_w.max(1)).clamp(0, 2)
@@ -2001,14 +2067,41 @@ impl App {
         for (i, title) in PAGE_TITLES.iter().enumerate() {
             let r = self.geo.tabs[i];
             let selected = i == self.page;
-            let color = if selected || i as i32 == self.tab_hot {
+            let hot = i as i32 == self.tab_hot;
+            let color = if selected || hot {
                 self.colors.text1
             } else {
                 self.colors.text2
             };
-            draw_text(hdc, title, r, self.fonts.body, color);
+            // 选中的重一档（WinUI 的导航项就是这样）：浅色底上 #1A1A1A 与
+            // #5D5D5D 的差别在小字号下不够分明，加粗才看得出「当前在哪一页」。
+            let font = if selected {
+                self.fonts.body_strong
+            } else {
+                self.fonts.body
+            };
+            // hover 反馈：非选中页签在文字外加一层淡底（WinUI 的导航项就这样）。
+            // 只改文字颜色太弱——鼠标划过时几乎看不出「这里能点」。
+            if hot && !selected {
+                let pill = Self::rect(
+                    r.left - self.s(10),
+                    r.top + self.s(7),
+                    (r.right - r.left) + self.s(20),
+                    (r.bottom - r.top) - self.s(7) - self.s(10),
+                );
+                round_rect_w(
+                    hdc,
+                    pill,
+                    self.colors.btn_hover,
+                    self.colors.btn_hover,
+                    self.s(4),
+                    1,
+                );
+            }
+            draw_text_center(hdc, title, r, font, color);
             if selected {
-                // 指示条：文字区域全宽、贴着分隔线
+                // 指示条 = 文字宽（`geo.tabs` 本身就是实测的文字矩形），
+                // 所以它必然与文字左右齐平、视觉居中，不会再拖出半个身位。
                 let bar = Self::rect(r.left, tab_h - self.s(3), r.right - r.left, self.s(3));
                 fill_rect(hdc, bar, self.colors.accent);
             }
@@ -2125,7 +2218,9 @@ impl App {
             } else {
                 self.colors.text3
             };
-            draw_text(hdc, name, r, self.fonts.caption, color);
+            // 每段文字在**自己那一格**里居中。左对齐时「总是」贴着白块左缘、
+            // 「首次」贴着分隔线，三段各自偏左，整排看着像没排进去。
+            draw_text_center(hdc, name, r, self.fonts.caption, color);
         }
 
         // 行 1/2 的数字框：1px 描边（焦点时强调色）+ 左侧默认值提示
@@ -2254,7 +2349,9 @@ impl App {
             self.s(4),
             self.s(1),
         );
-        draw_text(
+        // 「搜索」是个标签，不是按钮，但它只两个字，左对齐会在 32dp 的矩形里
+        // 靠左半个字宽——跟右边输入框之间显得忽远忽近。居中放，与框的距离就恒定。
+        draw_text_center(
             hdc,
             "搜索",
             Self::rect(
@@ -2419,81 +2516,89 @@ fn round_rect_w(hdc: HDC, r: RECT, fill: COLORREF, border: COLORREF, radius: i32
     }
 }
 
-/// 单行文字，可选右对齐（数字框左侧那两句「默认 0.35」用它贴框）。
-fn draw_text_align(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, right: bool) {
-    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+/// 量一段文字在指定字体下的像素宽度。
+///
+/// 页签矩形、下划线长度都得靠它。**不能按「每个字 15dp」估**：中文 14dp 实际
+/// 14px 宽，英文数字只有 7–8px，估出来的矩形必然一头紧一头松；而文字是按矩形
+/// 左端画的，于是右边空出一大块，下划线跟着矩形走，看着就像「文字在条子外面」。
+fn text_width(hdc: HDC, font: HFONT, s: &str) -> i32 {
+    if hdc.0.is_null() || s.is_empty() {
+        return 0;
+    }
+    let wide: Vec<u16> = s.encode_utf16().collect();
+    unsafe {
+        let old = SelectObject(hdc, font.into());
+        let mut size = SIZE::default();
+        let ok = GetTextExtentPoint32W(hdc, &wide, &mut size).as_bool();
+        SelectObject(hdc, old);
+        if ok {
+            size.cx
+        } else {
+            0
+        }
+    }
+}
+
+/// 单行文字的唯一实现：`align` 是 `DT_LEFT` / `DT_CENTER` / `DT_RIGHT` 之一。
+///
+/// **水平位置自己算，不用 `DrawTextW` 的对齐位**。两个坑叠在一起：
+/// ① `DT_END_ELLIPSIS` 会在右侧预留省略号的宽度（哪怕文字远没超宽），居中/
+///    右对齐因此整体偏左 7–8px；② 这个偏移量没有任何文档，随字体和字号变。
+/// 而我们已经用 `text_width` 量出真实宽度了，直接算左端点最稳——量多少放多少，
+/// 居中就是几何意义上的居中（页签下划线、按钮文字、三段选择器都靠这一步对齐）。
+fn draw_text_flags(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, align: u32) {
+    let mut wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    let avail = r.right - r.left;
+    let w = text_width(hdc, font, s);
+    let extra = if w > avail { DT_END_ELLIPSIS } else { 0 };
+    let left = match align {
+        DT_CENTER => r.left + (avail - w).max(0) / 2,
+        DT_RIGHT => (r.right - w).max(r.left),
+        _ => r.left,
+    };
     unsafe {
         let old = SelectObject(hdc, font.into());
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, color);
+        let mut rc = RECT {
+            left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+        };
         let _ = DrawTextW(
             hdc,
-            &mut { wide },
-            &mut RECT {
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-            },
+            &mut wide,
+            &mut rc,
             windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
-                DT_SINGLELINE
-                    | DT_VCENTER
-                    | DT_END_ELLIPSIS
-                    | DT_NOPREFIX
-                    | if right { 0x0002 } else { 0x0000 }, // DT_RIGHT
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | extra,
             ),
         );
         SelectObject(hdc, old);
     }
 }
 
-/// 单行文字（垂直居中，超宽省略）。
+/// 单行文字，可选右对齐（数字框左侧那两句「默认 0.35」用它贴框）。
+fn draw_text_align(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, right: bool) {
+    draw_text_flags(
+        hdc,
+        s,
+        r,
+        font,
+        color,
+        if right { DT_RIGHT } else { DT_LEFT },
+    );
+}
+
+/// 单行文字（左对齐，垂直居中，超宽省略）。
 fn draw_text(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
-    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        let old = SelectObject(hdc, font.into());
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, color);
-        let _ = DrawTextW(
-            hdc,
-            &mut { wide },
-            &mut RECT {
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-            },
-            windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
-                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-            ),
-        );
-        SelectObject(hdc, old);
-    }
+    draw_text_flags(hdc, s, r, font, color, DT_LEFT);
 }
 
 /// 按钮文字：水平居中。左对齐放在按钮里，一个字宽的「搜」会贴着左边框，
 /// 看着像没排进去。
 fn draw_text_center(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
-    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        let old = SelectObject(hdc, font.into());
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, color);
-        let _ = DrawTextW(
-            hdc,
-            &mut { wide },
-            &mut RECT {
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-            },
-            windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
-                DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-            ),
-        );
-        SelectObject(hdc, old);
-    }
+    draw_text_flags(hdc, s, r, font, color, DT_CENTER);
 }
 
 /// 通用页一行：标题（左上）+ 描述（标题下方，可红）。

@@ -150,6 +150,9 @@ pub struct Fonts {
     pub section: HFONT,
     /// 正文与设置行标题 14px / 400
     pub body: HFONT,
+    /// 正文加粗 14px / 600：选中页签用。WinUI 里选中的导航项比未选重一档，
+    /// 光靠颜色区分（#1A1A1A vs #5D5D5D）在浅色底上不够明显。
+    pub body_strong: HFONT,
     /// 说明文字 12px / 400
     pub caption: HFONT,
 }
@@ -180,6 +183,7 @@ impl Fonts {
             title: make(20.0, 600),
             section: make(13.0, 600),
             body: make(14.0, 400),
+            body_strong: make(14.0, 600),
             caption: make(12.0, 400),
         }
     }
@@ -191,6 +195,7 @@ impl Drop for Fonts {
             let _ = DeleteObject(self.title.into());
             let _ = DeleteObject(self.section.into());
             let _ = DeleteObject(self.body.into());
+            let _ = DeleteObject(self.body_strong.into());
             let _ = DeleteObject(self.caption.into());
         }
     }
