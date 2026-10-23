@@ -52,12 +52,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfDocumentMgr,
-    ITfEditSession, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl, ITfKeyEventSink,
-    ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfSource,
-    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
-    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
+    ITfCompartmentMgr, ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
+    ITfDocumentMgr, ITfEditSession, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl,
+    ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItemButton,
+    ITfLangBarItemMgr, ITfSource, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
+    ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ,
+    TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
 
 use crate::cand;
@@ -241,9 +242,12 @@ impl Core {
     }
 
     /// 语言栏按钮还在就通知它重取图标（模式变了）。
+    ///
+    /// 只报 `TF_LBI_ICON`：状态位没变，带 `TF_LBI_STATUS` 会让系统整条重建
+    /// （见 `langbar::LangBarButton::notify_icon` 的注释）。
     fn notify_langbar(&self) {
         if let Some(obj) = &*self.langbar.borrow() {
-            obj.notify();
+            obj.notify_icon();
         }
     }
 
@@ -749,6 +753,19 @@ impl TextService_Impl {
     fn activate_inner(&self, ptim: Ref<ITfThreadMgr>, tid: u32) -> Result<()> {
         self.tid.set(tid);
 
+        // 幂等：TSF 可能先走 `Activate` 再走 `ActivateEx`（后者转调前者）。
+        // 重复初始化会重复挂 sink，并把语言栏条目 `AddItem` 两次——两个同 GUID
+        // 条目并存时，一次点击翻两次模式（看起来"点了没反应"），图标也会被系统
+        // 在两条之间来回顶掉。
+        if self.thread_mgr_cookie.get() != TF_INVALID_COOKIE {
+            tsf_debug!(
+                "#{} 重复 Activate（cookie={}），跳过初始化",
+                self.seq,
+                self.thread_mgr_cookie.get()
+            );
+            return Ok(());
+        }
+
         unsafe {
             let thread_mgr = ptim.ok()?;
             // 每一步失败都标注阶段名：宿主里「激活了却没功能」只有这份日志可查。
@@ -795,11 +812,17 @@ impl TextService_Impl {
         // 几百毫秒，冷启动 server 与首次握手正好挤在这段空隙里完成。
         ipc::warm_up();
         if let Some(chinese) = ipc::current_mode() {
-            self.mode.set(if chinese {
+            let next = if chinese {
                 Mode::Chinese
             } else {
                 Mode::English
-            });
+            };
+            if next != self.mode.get() {
+                self.mode.set(next);
+                // server 上的全局模式优先：图标与系统 compartment 都得跟着改，
+                // 否则角标还停在旧模式的字样上，要按一下 Shift 才纠正。
+                self.notify_langbar();
+            }
         }
 
         tsf_info!(
@@ -825,11 +848,53 @@ impl TextService_Impl {
     fn init_langbar(&self, tim: &ITfThreadMgr) -> Result<()> {
         unsafe {
             let mgr: ITfLangBarItemMgr = tim.cast()?;
+
+            // 防双条目：同一个 GUID 在语言栏里只能有一条。若之前那条还在
+            // （`Activate` 与 `ActivateEx` 都进来过、或上次 Deactivate 没摘干净），
+            // 先摘掉——两个同 GUID 条目并存时，一次点击会翻两次模式（点了没反应），
+            // 图标也会被系统在两条之间来回顶。
+            if let Some(old) = self.langbar.borrow_mut().take() {
+                tsf_error!(
+                    "#{} 语言栏：发现残留的旧条目，先摘除（重复 Activate？）",
+                    self.seq
+                );
+                let old_item: ITfLangBarItemButton = old.to_interface();
+                if let Err(e) = mgr.RemoveItem(&old_item) {
+                    tsf_error!("#{} 语言栏：摘除旧条目失败：{e}", self.seq);
+                }
+            }
+
             let obj = windows::core::ComObject::new(langbar::LangBarButton::new(self.mode.clone()));
+
+            // 输入模式 compartment：Windows 靠它判断「当前是中文还是英文」。
+            // 不同步的话系统托盘指示器会按旧值重画角标格，把我们的图标顶掉
+            // （真机表现：按几下 Shift 图标消失）。缺了只记日志——它不该
+            // 挡住整个语言栏按钮的挂载。
+            match tim.cast::<ITfCompartmentMgr>() {
+                Ok(cm) => {
+                    match cm.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) {
+                        Ok(compartment) => obj.set_compartment(compartment),
+                        Err(e) => {
+                            tsf_error!("#{} 取输入模式 compartment 失败：{e}", self.seq)
+                        }
+                    }
+                }
+                Err(e) => tsf_error!("#{} 拿不到 ITfCompartmentMgr：{e}", self.seq),
+            }
+
             let item: ITfLangBarItemButton = obj.to_interface();
             mgr.AddItem(&item)?;
+            tsf_info!(
+                "#{} 语言栏：AddItem 成功；该格当前持有者 {}",
+                self.seq,
+                langbar::describe_guid_owner(&mgr)
+            );
             // 与小狼毫一致：挂上后明确声明「要显示」，把 HIDDEN 位清掉。
+            // 这一步顺带把当前模式写进 compartment（`notify` 里做）。
             obj.set_shown(true);
+            // 初始对齐：`set_shown` 在状态没变时不会发通知，而 compartment 里
+            // 可能还留着上一个宿主的模式，这里显式同步一次。
+            obj.notify();
             *self.langbar.borrow_mut() = Some(obj);
         }
         Ok(())
@@ -849,6 +914,8 @@ impl TextService_Impl {
                         let item: ITfLangBarItemButton = obj.to_interface();
                         if let Err(e) = mgr.RemoveItem(&item) {
                             tsf_error!("#{} RemoveItem 失败：{e}", self.seq);
+                        } else {
+                            tsf_info!("#{} 语言栏：RemoveItem 成功", self.seq);
                         }
                     }
                     Err(e) => tsf_error!("#{} 取 ITfLangBarItemMgr 失败：{e}", self.seq),

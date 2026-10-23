@@ -1171,14 +1171,14 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
 截图必须在同一次调用里「启动 → 睡 2 秒 → 截」。
 
-### 4.19 设置窗口怎么被打开（M4a7 / D69、D70、D71）
+### 4.19 设置窗口怎么被打开（M4a7 / D69、D70、D71、D73）
 
 **先记住结论：开始菜单是主入口；任务栏角标的语言栏按钮是第二入口（M4a8）；系统设置的
 「选项」按钮指望不上。**
 
 | 入口 | 触发 | 代码 | 可用性 |
 |---|---|---|---|
-| 任务栏角标「亨/英」图标 | 左键切中英；右键 → 设置 / 打开词库文件夹 | `tsf/src/langbar.rs` | **待真机验收**（端到端测试已过） |
+| 任务栏角标「亨/英」图标 | 左键切中英；右键 → 设置 / 打开词库文件夹 | `tsf/src/langbar.rs` | **真机通过**（切换 / 左键 / 右键菜单均验；见踩坑 52 的句柄纪律） |
 | 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs` | **主路**，写两处位置 |
 | 系统设置 → 语言选项 → 键盘 → 亨利五笔 → 选项 | `CoCreateInstance(IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs` + `tsf/src/launch.rs` | 接口在，但 Win10 22H2 **不画按钮** |
 
@@ -1225,6 +1225,11 @@ cd dist; .\heinrich-setup.exe install                                    # 把 I
 GDI 画（白「亨」/「英」）；**输入法列表**读注册表 `IconFile`（`dist\heinrich.ico`，
 D72）；**设置窗口标题栏**是 Windows 默认图标（没有 exe 资源，M4e 与安装器一起做）。
 
+改 `draw_icon` 时特别注意 `GetIcon` 的**句柄纪律**：每次调用都要交**新句柄**，最近 16 个
+不销毁（`IconSlot::fresh`）。这条被写反过一次，四个症状一起出现（图标不刷新 / 点击失灵 /
+Alt+Tab 消失 / 第二次切换起不动），详见踩坑 52 与单测
+`every_get_icon_call_hands_out_a_fresh_handle`。
+
 **为什么「选项」指望不上（D70）**：两次推断都被实测推翻——v1.43「取不到接口就不画按钮」
 （微软五笔/拼音的 CLSID 连 `InprocServer32` 都没有、`CoCreateInstance` 直接
 `REGDB_E_CLASSNOTREG`，却照样有按钮）；v1.44「只给微软自家画」（我们 `S_OK` 没按钮，
@@ -1269,7 +1274,12 @@ print(p2.returncode, out.decode("utf-8", "replace"))   # 0 已有设置窗口（
 ```
 python tools/probe/probe_fnconfigure.py            # 完整：接口 + 显示名 + Show + 复用
 python tools/probe/probe_fnconfigure.py --no-show   # 只验接口存在性（反向验证用）
+python tools/probe/tray_shot.py target\tray.png 4   # 截任务栏通知区并放大（判「那格是谁画的」）
 ```
+
+`tray_shot.py` 是排查语言栏问题的关键工具：它把通知区从屏幕 DC 抓下来放大 4~6 倍，
+一眼能分辨角标上是**我们自己 GDI 画的图标**还是**系统输入指示器画的 profile 图标**
+（对照本机微软五笔：带细框的「五」＝系统画的）。比让人盯着 16×16 的图标猜可靠得多。
 
 输出应形如：
 
@@ -1585,12 +1595,17 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     profile 时 clsid 为零 = 原来是普通键盘布局，要用 `TF_PROFILETYPE_KEYBOARDLAYOUT`
     恢复——类型选错同样是 `E_INVALIDARG`，与 flag 问题叠加时更难分辨。
 
-52. **`GetIcon` 交出去的 HICON 不归你销毁。** 语言栏拿句柄去绘制是异步的，画的次数
-    也不由你决定。我们把图标缓存在按钮对象上、`Drop` 里 `DestroyIcon`，结果每次
-    `Deactivate`（Alt+Tab、切窗口）都会把句柄废掉 → 任务栏角标的图标变空白，而且
-    「切中英后图标不再出现」也是它（切模式时销毁旧图标、换新的，旧的那个还在被画）。
-    正确做法是**进程级缓存 + 永不销毁**：每模式一个 `IconSlot`（尺寸 + 句柄，尺寸变了
-    重画一个、旧的故意留着）。小狼毫的 `LoadImage(..., LR_SHARED)` 是同一个道理。
+52. **`GetIcon` 既不能复用句柄、也不能立刻销毁句柄。** 两条都踩过，方向还相反：
+    - **复用**（按模式缓存一个句柄反复交）：Win10 输入指示器按 **HICON 句柄**缓存位图，
+      同一句柄第二次交上去它认为「这个图标我已经有了」——既不重画那一格，也不再往那格
+      派点击。真机表现：第一次切换能变，第二次起图标不动、点击全部失灵（`OnClick` 一条
+      都没有）、Alt+Tab 后消失。这四条其实是**同一个成因**。
+    - **立刻销毁**（对象 `Drop` 里 `DestroyIcon`）：系统绘制时还拿着那个句柄，界面直接
+      变空白。
+    正确做法：**每次现画一个新 HICON 交出去，只保留最近 N 个不销毁**（我们取 16，约
+    几十 KB），更早的才释放。单测 `every_get_icon_call_hands_out_a_fresh_handle` 钉的是
+    「连续两次必须不同句柄」——这条极容易被「省内存」优化回去，注释里写了原因也照踩，
+    所以一定要有测试。
     同类陷阱：任何「系统会异步使用」的句柄（HICON / HBITMAP / HMENU）都别在回调返回后
     立刻销毁，除非文档明确说「调用方负责」。
 
@@ -1609,6 +1624,15 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     没了，所以用 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`：
     release 是 GUI，debug 留控制台给 `--selftest`。验证方法（不用点开窗口）：读 PE
     头 `e_lfanew + 92` 的 `Subsystem` 字段，2 = GUI、3 = console。
+
+55. **同一个子系统里的「两个症状」很可能是一个成因，别分别开药。** 「Alt+Tab 后图标消失」
+    和「第二次切换起图标不动」我当成两件事：前者判成句柄生命周期、后者判成注册表里的
+    `IconFile`，于是 v1.48 同时改了两处，结果一个没修好、还让点击全部失灵。真机 A/B
+    （把 `IconFile` 指回没有图标资源的 DLL，症状不变）才把后者排除掉。
+    判据其实一直在手上：**用户说的「上一版是好的」**。那一版每次 `GetIcon` 都新建句柄，
+    是天然的对照组，一看就能定位到「唯一不同的是句柄复用」。以后遇到「某功能一半好
+    一半坏」，先问「上次好的那版在这处代码上有什么不同」，比按症状逐个猜成因快得多；
+    另外，**一次只改一个变量**，否则 A/B 会变成猜谜。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```

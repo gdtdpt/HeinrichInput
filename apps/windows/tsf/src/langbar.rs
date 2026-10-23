@@ -18,7 +18,17 @@
 //! - `ITfSource`（再 2 个）：**sink 的挂/摘走这里**——语言栏管理器拿到条目后按
 //!   `ITfSource::AdviseSink(IID_ITfLangBarItemSink)` 订状态更新（小狼毫的
 //!   `QueryInterface` 同样把这个接口挂在自己身上）。模式一变就
-//!   `OnUpdate(TF_LBI_STATUS | TF_LBI_ICON)` 让系统重取图标。
+//!   `OnUpdate(TF_LBI_ICON)` 让系统重取图标；**只有显隐真的变了**才带
+//!   `TF_LBI_STATUS`（带上会让系统整条重建托盘格，见 `notify_icon`）。
+//!
+//! ## 图标句柄（踩过的坑，别再「优化」回去）
+//!
+//! 每次 `GetIcon` 都现画一个新 HICON 交出去，只保留最近 `ICON_KEEP` 个不销毁。
+//! Win10 的输入指示器按 **HICON 句柄**缓存位图：同一个句柄第二次交上去，它认为
+//! 「这个图标我已经有了」——既不重画那一格，也不再往那格派点击。v1.48 曾为省
+//! 内存改成「按模式复用句柄」，真机表现就是「第一次切换能变、第二次起图标不动、
+//! 点击全部失灵、Alt+Tab 后消失」。反过来，交出去的句柄立刻销毁又会画面空白
+//! （系统绘制时还拿着它），所以才有「保留最近 N 个」这个折中。
 //!
 //! ## 交互约定
 //!
@@ -37,7 +47,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicI32, AtomicIsize, Ordering};
+use std::sync::Mutex;
 
 use windows::core::{implement, w, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID};
 use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
@@ -48,14 +58,16 @@ use windows::Win32::Graphics::Gdi::{
     DEFAULT_CHARSET, DEFAULT_PITCH, FW_BOLD, HBITMAP, HGDIOBJ, OUT_DEFAULT_PRECIS, PS_NULL,
     TRANSPARENT,
 };
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::TextServices::{
-    ITfLangBarItemButton, ITfLangBarItemButton_Impl, ITfLangBarItemSink, ITfLangBarItem_Impl,
-    ITfMenu, ITfSource, ITfSource_Impl, TfLBIClick, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
-    TF_LBI_CLK_LEFT, TF_LBI_CLK_RIGHT, TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN,
-    TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_BTN_MENU, TF_LBI_STYLE_SHOWNINTRAY, TF_LBMENUF_SEPARATOR,
+    ITfCompartment, ITfLangBarItemButton, ITfLangBarItemButton_Impl, ITfLangBarItemMgr,
+    ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource, ITfSource_Impl, TfLBIClick,
+    GUID_LBI_INPUTMODE, TF_CONVERSIONMODE_NATIVE, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT,
+    TF_LBI_CLK_RIGHT, TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON,
+    TF_LBI_STYLE_BTN_MENU, TF_LBI_STYLE_SHOWNINTRAY, TF_LBMENUF_SEPARATOR,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetForegroundWindow, GetSystemMetrics,
+    AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetForegroundWindow, GetSystemMetrics,
     TrackPopupMenuEx, HICON, ICONINFO, MF_SEPARATOR, MF_STRING, SM_CXSMICON, TPM_NONOTIFY,
     TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
@@ -88,6 +100,10 @@ pub struct LangBarButton {
     status: Cell<u32>,
     /// 语言栏管理器挂上来的更新 sink。
     sink: RefCell<Option<ITfLangBarItemSink>>,
+    /// 输入模式 compartment（`GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`）。
+    /// 切换模式时必须同步它：这是 Windows 用来判断「当前是中文还是英文」的
+    /// 正式通道，不同步的话系统托盘指示器会按旧值重画，把我们的图标顶掉。
+    compartment: RefCell<Option<ITfCompartment>>,
 }
 
 impl LangBarButton {
@@ -96,49 +112,63 @@ impl LangBarButton {
             mode,
             status: Cell::new(0),
             sink: RefCell::new(None),
+            compartment: RefCell::new(None),
         }
+    }
+
+    /// 挂上输入模式 compartment（`Activate` 时从 thread mgr 取）。
+    pub fn set_compartment(&self, compartment: ITfCompartment) {
+        *self.compartment.borrow_mut() = Some(compartment);
     }
 }
 
 // ---------------------------------------------------------------------------
-// 图标缓存：进程级、永不销毁
+// 图标：每次 `GetIcon` 都交一个新句柄，最近若干个不销毁
 // ---------------------------------------------------------------------------
 //
-// **句柄的生命周期不能跟着按钮对象走。** 语言栏拿到 `GetIcon` 的 HICON 之后
-// 在什么时候绘制、绘制几次都不由我们决定；`Deactivate` 时按钮对象被丢掉、
-// 若顺手 `DestroyIcon`，界面上的图标就变成空白——真机上表现为「Alt+Tab 切走
-// 再切回，图标没了」与「切中英后图标不再出现」。小狼毫用
-// `LoadImage(..., LR_SHARED)` 拿到同样效果：句柄活到进程退出。
+// **Win10 的输入指示器按 HICON 句柄缓存位图。** 同一个句柄第二次交上去，它认为
+// 「这个图标我已经有了」，于是不重画那一格。真机日志是干净的证据：
 //
-// 缓存键带尺寸：DPI 变了（宿主进程 PerMonitorV2）就重画一个，旧的故意不销毁。
+//   16:21:36.893  GetIcon(英文) → 0x589505e7   ← 新句柄，托盘跟着变
+//   16:21:37.941  GetIcon(中文) → 0x3cdb02fb   ← 激活时用过的句柄，不动
+//   16:21:39.120  GetIcon(英文) → 0x589505e7   ← 重复，不动
+//
+// v1.47 每次调用都新建句柄（顺带销毁旧的），中英切换一切正常；v1.48 为修「Alt+Tab
+// 后图标空白」改成按模式缓存、句柄复用，正好踩中这个缓存——第一次切换能变、第二次
+// 起就不动。所以正确做法是**每次都给新句柄**。
+//
+// 但句柄也不能立刻销毁：v1.47 在 `Deactivate`（对象 Drop）时就 `DestroyIcon`，
+// 而系统仍拿着它绘制，界面直接变空白。折中是保留最近 `ICON_KEEP` 个不销毁
+// （正在显示的一定是其中最新那个），更早的才释放。16×16 图标一个约 1~2KB。
 
-/// 一种模式的图标槽：上次画的尺寸 + 句柄。
+/// 每种模式保留多少个历史句柄不销毁。
+const ICON_KEEP: usize = 16;
+
+/// 一种模式的图标槽：交出去过、还没释放的句柄（旧的在前）。
 struct IconSlot {
-    size: AtomicI32,
-    handle: AtomicIsize,
+    live: Mutex<Vec<isize>>,
 }
 
 impl IconSlot {
     const fn new() -> Self {
         Self {
-            size: AtomicI32::new(0),
-            handle: AtomicIsize::new(0),
+            live: Mutex::new(Vec::new()),
         }
     }
 
-    /// 取（必要时先画）该模式的图标。`None` = 画不出来（`GetIcon` 返 E_FAIL）。
-    fn get(&self, mode: Mode) -> Option<HICON> {
-        let want = unsafe { GetSystemMetrics(SM_CXSMICON) };
-        let have = self.size.load(Ordering::Acquire);
-        let cached = self.handle.load(Ordering::Acquire);
-        if cached != 0 && have == want {
-            return Some(HICON(cached as *mut _));
+    /// 画一个新图标交出去。`None` = 画不出来（`GetIcon` 要返 E_FAIL）。
+    fn fresh(&self, mode: Mode) -> Option<HICON> {
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
+        let icon = draw_icon(mode, size)?;
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        live.push(icon.0 as isize);
+        while live.len() > ICON_KEEP {
+            let old = live.remove(0);
+            // 只释放「很久以前」的；最新的那些系统可能正在绘制，绝对不能碰。
+            unsafe {
+                let _ = DestroyIcon(HICON(old as *mut _));
+            }
         }
-        let icon = draw_icon(mode, want)?;
-        // 两个线程同时首次调用时会各画一个：后写的留下，另一个泄漏一次
-        // （16×16 图标，几百字节）。换成加锁不值得——GetIcon 在 UI 线程上。
-        self.size.store(want, Ordering::Release);
-        self.handle.store(icon.0 as isize, Ordering::Release);
         Some(icon)
     }
 }
@@ -146,12 +176,57 @@ impl IconSlot {
 static ICON_ZH: IconSlot = IconSlot::new();
 static ICON_EN: IconSlot = IconSlot::new();
 
+/// 日志友好名（`Mode` 本身不带 Display）。
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Chinese => "中文",
+        Mode::English => "英文",
+    }
+}
+
+/// 查「输入模式」那一格现在由谁占着——`GetItem(GUID_LBI_INPUTMODE)` 只认一条。
+///
+/// 真机上「图标不见了」有两种完全不同的成因：我们自己没画出来（`GetIcon` 有日志），
+/// 或者那一格被别的条目（系统的输入模式条目、我们上一次的残留对象）顶掉了。
+/// 只有这个查询能分辨，所以挂载时记一笔。
+pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
+    unsafe {
+        let Ok(item) = mgr.GetItem(&GUID_LBI_INPUTMODE) else {
+            return "GetItem 失败（该 GUID 当前无条目）".to_string();
+        };
+        let mut info: TF_LANGBARITEMINFO = std::mem::zeroed();
+        match item.GetInfo(&mut info) {
+            Ok(()) => {
+                let desc = String::from_utf16_lossy(
+                    info.szDescription
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                );
+                let ours = info.clsidService == GUID::from_u128(heinrich_tip_id::TIP_CLSID);
+                format!(
+                    "clsid={:?} 描述={desc:?} {}",
+                    info.clsidService,
+                    if ours {
+                        "（是我们的）"
+                    } else {
+                        "（不是我们的）"
+                    }
+                )
+            }
+            Err(e) => format!("GetInfo 失败：{e}"),
+        }
+    }
+}
+
 fn icon_for(mode: Mode) -> Result<HICON> {
     let slot = match mode {
         Mode::Chinese => &ICON_ZH,
         Mode::English => &ICON_EN,
     };
-    let icon = slot.get(mode).ok_or_else(|| {
+    let icon = slot.fresh(mode).ok_or_else(|| {
         windows::core::Error::from_hresult(windows::core::HRESULT(
             0x8000_4005u32 as i32, // E_FAIL
         ))
@@ -182,28 +257,100 @@ impl LangBarButton_Impl {
                 "英文"
             }
         );
-        self.notify();
+        self.notify_icon();
     }
 
-    /// 状态变了（模式切换、显隐），让语言栏管理器重取图标与状态。
+    /// **只报图标变化**（模式切换走这条）。
+    ///
+    /// `OnUpdate(dwflags)` 的 `dwflags` 是「哪些部分变了」，不是「重画整条」的开关。
+    /// 早先一律带 `TF_LBI_STATUS`，日志里看得很清楚：每切一次模式，系统就来一遍
+    /// `GetStatus → GetInfo（重建这一条）→ GetIcon`——状态没变却按整条重建处理，
+    /// 托盘格里那条被拆了重搭。真机上「点第二下没反应 / 切回某个窗口图标就没了」
+    /// 就出现在这一类重建的缝里。状态（显隐）真变时走 `notify()`。
+    ///
+    /// **顺序不能反**：先把中英模式写进系统 compartment，再 `OnUpdate`。
+    /// 系统收到通知后会去读输入模式状态；如果此时 compartment 还是旧值，
+    /// 它按旧模式画一遍，我们刚刷的新图标立刻被顶掉。
+    pub fn notify_icon(&self) {
+        self.sync_conversion();
+        self.update(TF_LBI_ICON);
+    }
+
+    /// 状态与图标都可能变了（`Show` 引起显隐变化时走这条）。
     pub fn notify(&self) {
-        if let Some(sink) = &*self.sink.borrow() {
-            unsafe {
-                let _ = sink.OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
+        self.sync_conversion();
+        self.update(TF_LBI_STATUS | TF_LBI_ICON);
+    }
+
+    fn update(&self, flags: u32) {
+        // 这两行是排障的关键分界：**有 sink 且 OnUpdate 成功**说明请求已发出，
+        // 图标没变就是系统侧没重画；**没有 sink** 说明管理器把订阅摘了（我们这边
+        // 的通知全部石沉大海）——两种情况修法完全不同，日志必须能分开。
+        let sink = self.sink.borrow().clone();
+        let Some(sink) = sink else {
+            tsf_error!("语言栏：没有 sink，{flags:#x} 通知发不出去");
+            return;
+        };
+        unsafe {
+            match sink.OnUpdate(flags) {
+                Ok(()) => tsf_debug!("语言栏：已通知 OnUpdate({flags:#x})"),
+                Err(e) => tsf_error!("语言栏：通知管理器失败：{e}"),
             }
         }
     }
 
-    /// 显隐（`Show` 的实现体）。`fshow = true` 表示系统要它显示。
-    pub fn set_shown(&self, fshow: bool) {
-        let old = self.status.get();
-        let status = if fshow {
-            old & !TF_LBI_STATUS_HIDDEN
-        } else {
-            old | TF_LBI_STATUS_HIDDEN
+    /// 把当前模式写进 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` 的
+    /// `TF_CONVERSIONMODE_NATIVE` 位（中文 = 置位，英文 = 清位）。
+    ///
+    /// 这是小狼毫 `_UpdateLanguageBar` 里的同一动作。读-改-写是为了保留其他位
+    /// （全角等将来可能用到的），读失败就按 0 起算。
+    fn sync_conversion(&self) {
+        // 先克隆出来再动，避免 `SetValue` 触发的系统回调重入本函数时借用冲突。
+        let Some(compartment) = self.compartment.borrow().clone() else {
+            return;
         };
+        let native = self.mode.get() == Mode::Chinese;
+        unsafe {
+            let current = compartment
+                .GetValue()
+                .ok()
+                .and_then(|v| i32::try_from(&v).ok())
+                .unwrap_or(0);
+            let bit = TF_CONVERSIONMODE_NATIVE as i32;
+            let want = if native {
+                current | bit
+            } else {
+                current & !bit
+            };
+            if want == current {
+                return;
+            }
+            if let Err(e) = compartment.SetValue(0, &VARIANT::from(want)) {
+                tsf_error!("语言栏：写输入模式 compartment 失败：{e}");
+            }
+        }
+    }
+
+    /// 显隐（`Show` 的实现体）。
+    ///
+    /// **`Show(false)` 不能当成「置 HIDDEN」来执行。** Win10 的托盘会发
+    /// `Show(false)`（日志实证：`15:44:05`、`15:44:49` 各一次），但**从不补发
+    /// `Show(true)`**——上位把隐藏位置上就等于永久隐身，真机上表现为「按几下
+    /// Shift / Alt+Tab 之后图标没了，再也回不来」。
+    ///
+    /// 所以：`Show(true)` 照旧清隐藏位（幂等），`Show(false)` 只记日志不改状态，
+    /// 图标保持常显。这条是有意与文档「按 fShow 更新状态」相反的选择——对方只
+    /// 说了一半的话（hide 了不说 show），照办就是单向陷阱。
+    pub fn set_shown(&self, fshow: bool) {
+        if !fshow {
+            tsf_info!("语言栏：Show(false) → 忽略（保持常显）");
+            return;
+        }
+        let old = self.status.get();
+        let status = old & !TF_LBI_STATUS_HIDDEN;
         if status != old {
             self.status.set(status);
+            tsf_info!("语言栏：Show(true) → status={status:#x}");
             self.notify();
         }
     }
@@ -327,6 +474,7 @@ fn draw_icon(mode: Mode, size: i32) -> Option<HICON> {
         let mem = CreateCompatibleDC(Some(hdc_screen));
         let color = CreateCompatibleBitmap(hdc_screen, size, size);
         let old_bmp: HGDIOBJ = SelectObject(mem, color.into());
+        // 深灰底：与 heinrich.ico（语言列表图标）同一套观感，托盘和列表看起来是一个东西。
         let brush = CreateSolidBrush(COLORREF(0x0030_3030)); // BGR：深灰
         let old_brush: HGDIOBJ = SelectObject(mem, brush.into());
         let pen = CreatePen(PS_NULL, 0, COLORREF(0));
@@ -398,6 +546,7 @@ fn draw_icon(mode: Mode, size: i32) -> Option<HICON> {
 
 impl ITfLangBarItem_Impl for LangBarButton_Impl {
     fn GetInfo(&self, pinfo: *mut TF_LANGBARITEMINFO) -> Result<()> {
+        tsf_debug!("语言栏：GetInfo（系统在重建这一条）");
         unsafe {
             *pinfo = item_info();
         }
@@ -405,7 +554,9 @@ impl ITfLangBarItem_Impl for LangBarButton_Impl {
     }
 
     fn GetStatus(&self) -> Result<u32> {
-        Ok(self.status.get())
+        let status = self.status.get();
+        tsf_debug!("语言栏：GetStatus → {status:#x}");
+        Ok(status)
     }
 
     fn Show(&self, fshow: BOOL) -> Result<()> {
@@ -420,6 +571,17 @@ impl ITfLangBarItem_Impl for LangBarButton_Impl {
 
 impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
     fn OnClick(&self, click: TfLBIClick, pt: &POINT, _prcarea: *const RECT) -> Result<()> {
+        // 记下每一次点击：真机上「点一下没反应」与「系统重复发点击」在日志里
+        // 长得完全一样（两次切换），只有这个计数能分辨。
+        tsf_info!(
+            "语言栏：OnClick click={} 当前={}",
+            match click {
+                TF_LBI_CLK_LEFT => "左",
+                TF_LBI_CLK_RIGHT => "右",
+                _ => "其它",
+            },
+            mode_name(self.mode.get())
+        );
         if click == TF_LBI_CLK_LEFT {
             self.toggle_mode();
         } else if click == TF_LBI_CLK_RIGHT {
@@ -469,7 +631,13 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
-        icon_for(self.mode.get())
+        let mode = self.mode.get();
+        let icon = icon_for(mode);
+        match &icon {
+            Ok(h) => tsf_debug!("语言栏：GetIcon({}) → {:#x}", mode_name(mode), h.0 as isize),
+            Err(e) => tsf_error!("语言栏：GetIcon({}) 失败：{e}", mode_name(mode)),
+        }
+        icon
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -578,10 +746,22 @@ mod tests {
         let sink_unk2: IUnknown = sink_obj2.to_interface();
         assert!(unsafe { src.AdviseSink(&ITfLangBarItemSink::IID, &sink_unk2) }.is_err());
 
-        // 模式切换 → sink 收到 STATUS|ICON。
+        // 模式切换 → sink 只收到 ICON。**不能带 STATUS**：状态位没变，
+        // 带上去系统会整条重建托盘格（日志里表现为 GetStatus→GetInfo→GetIcon）。
         obj.toggle_mode();
         assert_eq!(obj.mode.get(), Mode::English);
-        assert_eq!(sink_obj.updates.get(), TF_LBI_STATUS | TF_LBI_ICON);
+        assert_eq!(sink_obj.updates.get(), TF_LBI_ICON);
+
+        // `Show(false)` 是单向陷阱：Win10 会发 hide、从不补 show，照办就永久隐身。
+        // 所以它必须**不改变状态、不发通知**。
+        sink_obj.updates.set(0);
+        obj.set_shown(false);
+        assert_eq!(sink_obj.updates.get(), 0, "Show(false) 不该改状态");
+        assert_eq!(obj.status.get() & TF_LBI_STATUS_HIDDEN, 0, "不该置隐藏位");
+
+        // `Show(true)` 只清隐藏位（本就干净 → 什么都不发）。
+        obj.set_shown(true);
+        assert_eq!(sink_obj.updates.get(), 0);
 
         // 错 cookie 摘不掉；对 cookie 摘掉后不再通知。
         assert!(unsafe { src.UnadviseSink(0) }.is_err());
@@ -593,18 +773,29 @@ mod tests {
     }
 
     /// 图标：两种模式都能画出来、句柄有效，且第二次取到的是同一个句柄
-    /// （进程级缓存）。**故意不销毁**——句柄可能还在语言栏手里。
+    /// 图标：两种模式都画得出来，且**每次调用都必须是新句柄**。
+    ///
+    /// 这是这条路上最容易「优化错」的地方：Win10 输入指示器按句柄缓存位图，句柄
+    /// 一复用它就认为图标没变、不再重画那一格（真机表现：第一次切换能变，第二次
+    /// 起就不动）。所以这里断言的是「不复用」，不是「缓存命中」。
     #[test]
-    fn draws_icons_for_both_modes() {
-        for mode in [Mode::Chinese, Mode::English] {
-            let first = icon_for(mode).expect("GDI 画图标应成功");
-            assert!(!first.is_invalid());
-            let again = icon_for(mode).expect("缓存命中");
-            assert_eq!(first.0, again.0, "同一模式的图标应复用同一个句柄");
+    fn every_get_icon_call_hands_out_a_fresh_handle() {
+        let zh1 = icon_for(Mode::Chinese).expect("GDI 画图标应成功");
+        let zh2 = icon_for(Mode::Chinese).expect("GDI 画图标应成功");
+        let en1 = icon_for(Mode::English).expect("GDI 画图标应成功");
+        assert!(!zh1.is_invalid() && !zh2.is_invalid() && !en1.is_invalid());
+        assert_ne!(zh1.0, zh2.0, "同一模式连续两次也必须给新句柄");
+        assert_ne!(zh1.0, en1.0, "两种模式不能共用一张图");
+
+        // 池子有上限：老的会被释放，不会随切换次数无限涨。
+        for _ in 0..(ICON_KEEP * 3) {
+            let _ = icon_for(Mode::Chinese);
         }
-        let zh = icon_for(Mode::Chinese).unwrap();
-        let en = icon_for(Mode::English).unwrap();
-        assert_ne!(zh.0, en.0, "两种模式不能共用一张图");
+        let live = ICON_ZH.live.lock().unwrap().len();
+        assert!(
+            live <= ICON_KEEP,
+            "存活句柄应收敛到 {ICON_KEEP}，实际 {live}"
+        );
     }
 
     /// 菜单 id 与动作的对应关系钉住：设置=1、词库文件夹=2。

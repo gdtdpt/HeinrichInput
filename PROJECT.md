@@ -1,6 +1,6 @@
 # 亨利输入法 HeinrichInput — 项目规范（PROJECT.md）
 
-> **版本**：v1.48
+> **版本**：v1.49
 > **状态**：M0a（数据装配）+ M0b（引擎）+ M1.0（TSF 壳）+ M1.1（缓冲 + 上屏 + 中英切换）+ M1.2（组合串）+ M1.3（接 server + 中文标点 + 全局中英模式）**均已验收**；**M2 拆为 M2.1–M2.4（D35–D43）、M3 拆为 M3.1–M3.5（D46/D47）：M2.1（几何）与 M2.2（窗口 + 预览器）已验收，M2.3（接进 TSF）已自测通过（记事本 / Notepad++ / Chrome）、M2.4（学习落库）代码完成且自测通过，真实库与日志已核（175 词 / 累计 377 次），其后按真机日志两次修正学习算法——D54 改绝对分差、D58 直接废除门槛（第一次上屏不计分），连打期缓存时机由 D57 修正 D55 的判据，**M2.4 学习算法已真机验收**（2026-10-22 三轮日志：连打不跳位 / 换码后回来升位 / 原首位上屏一次不夺回；抖动区边界由 D59 记录）**；M3.1（拼音数据）+ M3.2（混输裁决）已验收，M3.3（接进 TSF，含 D47 协议 v3、D48 五笔优先 + `'` 强制拼音、D49 `-`/`=` 翻页与组合态内吞字符键）**已验收**；M3.4a（码提示 chip，D51 协议 v4，含 D52 撤销 `Ctrl+Shift+/`、D53 Tab 改为组合态内吞掉）**已验收**；M3.4b（码位键位图，D50，含 D60 协议 v5 下发字根表、D61 触发键改 `Ctrl+Alt`）**已验收**；M3.5（`z` 末位通配 + 段级多段标记，D62；多段组合经 D64 收紧为只出词典真词、chip 改词中提示）**已验收（2026-10-23）**；M3.6（自定义词组，D65：`%APPDATA%\Heinrich\words.tsv` + 取码规则 + 1 秒热重载）**代码与自测完成，待你真机验收**；**M4 拆为 M4a–M4e（D66）：M4a（设置窗口 + 词组页）代码与自测完成、待你真机验收，M4b（通用页 + 学习数据页）、M4c（emoji 引擎，协议 v7）、M4d（emoji 改绑页 + `config_version`）、M4e（安装包 + 全量回归）依次排布；M5 整体后移**；外链查询已降为 M5 可选**
 > **本文档地位**：单一事实源。凡与本文冲突的代码、文档、口头结论，以本文为准；修改必须显式升版本号。
 > **项目名**：中文「**亨利输入法**」/ 英文「**HeinrichInput**」（D20）。品牌短名「亨利」，ASCII 前缀 `heinrich`，目录 `C:\Users\richard\Develop\Heinrich`
@@ -885,11 +885,13 @@ v1.44「只给微软自家 IME 画」（把未展开的截图读成了「只有�
 - 图标运行时 GDI 绘制（深灰圆角底 + 白字「亨」/「英」，按 `SM_CXSMICON`），不落资源文件；
   左键 = 切中英（翻转 + `ipc::set_mode` + sink `OnUpdate`，不 flush 缓冲），
   右键 = 菜单「设置」「打开词库文件夹」。
-- **图标句柄永不销毁**（F50）：缓存放在**进程级**（`IconSlot`，每模式一个），不跟按钮对象
-  走。`GetIcon` 交出去的 HICON 由系统在何时绘制、绘制几次都不由我们决定；对象
-  `Drop` 时 `DestroyIcon` 会让图标变空白——真机表现是「Alt+Tab 切走再切回，图标没了」
-  与「切中英后图标不再出现」。小狼毫用 `LoadImage(..., LR_SHARED)` 拿到同样效果。
-  缓存键带尺寸：DPI 变了就重画一个，旧的故意不销毁。
+- **每次 `GetIcon` 都交一个新句柄**（D73）：Win10 的输入指示器按 **HICON 句柄**缓存位图——
+  同一个句柄第二次交上去，它认为「这个图标我已经有了」，既不重画那一格、也不再往那格派点击。
+  真机日志是干净证据：第一次切换拿到新句柄（图标变了），第 2~4 次交回用过的句柄（图标不动、
+  `OnClick` 一条都没有）。v1.48 为省内存改成「按模式缓存、句柄复用」，正好踩中这个缓存，
+  于是「第一次能变、第二次起不动、点击失灵、Alt+Tab 后消失」四个症状同时出现。
+  现做法：`IconSlot::fresh()` 每次现画一个交出去，只保留最近 `ICON_KEEP = 16` 个不销毁，
+  更早的才释放——既不撞缓存，也不重演「交出去就被销毁→画面空白」（系统绘制时还拿着它）。
 - 挂载失败只记日志不拖死输入法（与候选窗同一条纪律）；每步带阶段标注（M4a8 起
   `Activate` 内部失败不再吞错）。
 - 端到端测试（`#[ignore]`，走 `ITfInputProcessorProfileMgr::ActivateProfile` 真激活路径）钉住
@@ -1092,6 +1094,7 @@ ranking.half_life_days = 45
 | 42 | **放弃系统设置「选项」入口**（D70）：判定条件未找到（两次推断均被实测推翻），搜狗五笔也没有该按钮，第三方 IME 在这条路上拿不到可见性。入口以**开始菜单为主**，写两处位置（提权写公共、否则用户级），并加 `heinrich-setup shortcut` 子命令（不提权、只写用户级）供开发态使用。`ITfFnConfigure` 的实现保留但不再当卖点。**下一个候选入口参考横向调研**：小狼毫走 TSF 语言栏按钮（`ITfLangBarItemButton`，任务栏角标的「中/A」点击弹菜单）、搜狗走自绘悬浮状态栏 |
 | 43 | **语言栏按钮作为第二入口**（D71，M4a8）：TIP 在 `Activate` 时经 `ITfLangBarItemMgr::AddItem` 往语言栏挂一个 `ITfLangBarItemButton`（Win10 画在任务栏角标），左键切中英、右键菜单开设置 / 词库文件夹。采用小狼毫同款路径（`WeaselTSF/LanguageBar.cpp` 证实可行且免 `ITfFunctionProvider`）；搜狗的自绘状态栏备选未采纳（要自己管理悬浮窗生命周期与 Explorer 重启重挂，成本远高于系统代画） |
 | 44 | **输入法列表的图标用独立 `.ico` 文件**（D72，M4a9）：注册表 `IconFile` 指向 `dist\heinrich.ico`（`tools\make-icon.ps1` 生成、build 复制），`IconIndex = 0`。不给 DLL 嵌图标资源——那要引入 `build.rs` + `.rc`/`winres`，为一张 32×32 图换整条构建链不划算；也不做 runtime 生成（注册表里的路径必须在安装时就存在） |
+| 45 | **语言栏 `GetIcon` 每次返回新 HICON**（D73）：Win10 输入指示器按句柄缓存位图，句柄复用 = 不重画 + 不派点击。代价是每次切换多画一次 16×16 图（微秒级），只保留最近 16 个句柄（约几十 KB）。**不要「优化」成按模式缓存**——单测 `every_get_icon_call_hands_out_a_fresh_handle` 就是钉这条的 |
 
 ### 11.2 仍待确认
 
@@ -1166,4 +1169,5 @@ ranking.half_life_days = 45
 | v1.46 | 2026-10-23 | **撤回 D70 两次错误推断并放弃「选项」入口**：用户指出上一版结论「微软五笔那行也只有删除」查无实据（原始截图里该行未展开，无任何按钮）；同日用户实测搜狗五笔也没有该按钮。更正 §6.10 与踩坑 49 为实测事实：微软五笔/拼音（CImeServerChs）无 `InprocServer32`、`CoCreateInstance` → `REGDB_E_CLASSNOTREG` 却仍有「选项」；我们 `S_OK` 无按钮；`SystemSettings.exe` 渲染列表时不加载任何 TIP DLL（模块表 + tsf.log 零调用）。判定条件未查明，不再追。新增横向调研记录：小狼毫入口 = TSF 语言栏按钮（`ITfLangBarItemButton`，`WeaselTSF/LanguageBar.cpp`）+ 开始菜单；搜狗五笔入口 = 自绘悬浮状态栏右键【设置属性】+ 工具箱 + 开始菜单——业界无一家依赖系统设置页。README 的「选项」说明同步更正 |
 | v1.47 | 2026-10-23 | **M4a8 语言栏按钮（D71）代码完成**：新增 `apps/windows/tsf/src/langbar.rs`（`LangBarButton`：`ITfLangBarItemButton` + `ITfSource`，GDI 运行时图标「亨/英」，右键菜单 设置 / 打开词库文件夹，中英模式经 `Rc<Cell<Mode>>` 与 `Core` 共享；单测 4 个）；`Core.mode` 从 `Cell` 改 `Rc<Cell>`，`activate_inner` 挂语言栏（QI `ITfLangBarItemMgr → AddItem`，失败只记日志）、`deactivate_inner` 摘除，`sync_shift` 与按钮互发 `OnUpdate`；`Activate` 内部失败不再吞错、逐阶段标注；`HeinrichTsfAbiVersion` 6→7。端到端测试（`#[ignore]`，`ActivateProfile` 真激活 → 枚举断言 → 恢复原 profile → 断言条目摘除）已修通，钉住三个坑：dwflags 必须带 `TF_IPP_FLAG_ACTIVE(1)`（传 0 恒 E_INVALIDARG）、hkl 可传 0、普通键盘布局要用 `TF_PROFILETYPE_KEYBOARDLAYOUT` 恢复。51 单测 + `check.ps1` 全绿，dist 更新；待真机验收（任务栏角标图标 / 左键切换 / 右键菜单） |
 | v1.48 | 2026-10-23 | **M4a8 真机验收后的三处修复（F48/F49/F50、D72）**：① **F48 设置窗口弹黑框**——`apps/windows/settings` 没声明子系统，cargo 默认 console，从输入法 / 开始菜单拉起来时背后多一个命令行窗口；改 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`（release 是 GUI，debug 留控制台给 `--selftest`）。② **F49 输入法列表没有图标**——注册表 `IconFile` 指到 `heinrich_win.dll`，但 DLL 里没有图标资源，列表里是空白；新增 `tools\make-icon.ps1`（GDI+ 画深灰圆角底 + 白「亨」，手写 ICONDIR + DIB，16/20/24/32/48 五尺寸）产出 `data\icon\heinrich.ico`，`build.ps1` 复制到 dist，`install` 写进 `IconFile`（`ICON_FILE_NAME` 常量，缺文件退回 DLL）。③ **F50 Alt+Tab 后任务栏图标消失**——图标 HICON 缓存在按钮对象上、`Drop` 里 `DestroyIcon`，而语言栏可能仍在用那个句柄；改成进程级 `IconSlot`（每模式一个、按尺寸失效重画、旧句柄永不销毁），与 Weasel 的 `LR_SHARED` 同语义。`check.ps1` 全绿（50 + 1 ignored 等全过），dist 更新 |
+| v1.49 | 2026-10-23 | **修复语言栏图标「第二次切换起不动、点击全失灵、Alt+Tab 消失」（D73）**：根因是 v1.48 的图标缓存——Win10 输入指示器按 **HICON 句柄**缓存位图，同一句柄再交上去既不重画也不派点击；v1.47 每次现画新句柄所以一直正常，为修「Alt+Tab 后空白」改成复用句柄后同时引入了这四个症状。改为 `IconSlot::fresh()`：每次 `GetIcon` 都现画一个新 HICON，只保留最近 `ICON_KEEP = 16` 个不销毁（旧的才释放，避免重演「交出去就被销毁→空白」）。单测从「缓存命中」反转为「连续两次必须不同句柄 + 池子收敛到 16」。**撤回 F50 的错误归因**：Alt+Tab 消失不是「对象 Drop 时销毁句柄」造成的，是同一处缓存；**撤回 D72 的因果推断**：真机 A/B（把 `IconFile` 指回无图标资源的 DLL）后症状不变，说明「列表没图标」与「托盘不可用」不是一回事。真机验收：红/蓝诊断配色下中英切换正常、三次左键 + 一次右键全部到达 `OnClick`（此前整份日志 `OnClick` 恒为 0）。`check.ps1` 全绿（heinrich-win 50 + 1 ignored，其余各 crate 全过） |
 
