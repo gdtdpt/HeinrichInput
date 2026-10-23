@@ -19,7 +19,7 @@ mod scheme;
 pub mod user;
 
 pub use code::{pack, prefix_bounds, Code, MAX_CODE_LEN};
-pub use config::{Config, HintMode, CONFIG_VERSION};
+pub use config::{edit_file as edit_config_file, Config, HintMode, CONFIG_VERSION};
 pub use hash::sha256_hex;
 pub use manifest::{Manifest, ManifestError};
 pub use pinyin::{PinyinEntry, PinyinLexicon, PinyinUserEntry};

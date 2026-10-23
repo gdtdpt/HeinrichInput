@@ -1,14 +1,16 @@
-//! 亨利输入法设置窗口（M4a：词组页）。
+//! 亨利输入法设置窗口（M4b：通用 / 词组 / 学习数据三页）。
 //!
 //! ```text
-//! heinrich-settings.exe                           # 编辑 %APPDATA%\Heinrich\words.tsv
-//! heinrich-settings.exe --words out\t.tsv --data dist\data\wubi86
+//! heinrich-settings.exe                           # 打开在通用页
+//! heinrich-settings.exe --words t.tsv --config c.toml --db learn.db --page 1
 //! heinrich-settings.exe --selftest                # 无界面自测（数据层）
-//! heinrich-settings.exe --selftest-ui             # 窗口层自测（z 序 + 命中测试）
+//! heinrich-settings.exe --selftest-ui             # 窗口层自测（三页 z 序 / 命中 / 写盘）
 //! ```
 //!
-//! 它只做一件事：读写 `words.tsv`。生效靠 server 那每秒一次的 mtime 检查，
-//! 所以这里**不需要**管道、不需要协议、不需要重启任何东西（D65）。
+//! 它碰三个文件：`words.tsv`（读写）、`config.toml`（定向改写三行）、
+//! `learn.db`（只读 + 清零某词的学习分）。三者都不经过管道、不需要协议：
+//! server 每秒 stat 一次前两个、每次查询直接读第三个（D65），所以改完不用重启
+//! 任何东西。`--page` 是给截图验收用的（`PrintWindow` 只能截当前可见的那一页）。
 
 #![cfg(windows)]
 // `--selftest` 要把结果打到 stdout，所以 debug 构建保留控制台；release 打成
@@ -16,6 +18,8 @@
 // 命令行窗口，看起来像程序没退干净（真机反馈就是这个）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod general;
+mod learn;
 mod lex;
 mod model;
 mod ui;
@@ -25,6 +29,10 @@ use std::path::PathBuf;
 struct Args {
     data: Option<PathBuf>,
     words: Option<PathBuf>,
+    config: Option<PathBuf>,
+    db: Option<PathBuf>,
+    /// 启动时停在哪一页（0 通用 / 1 词组 / 2 学习数据）。截图验收要能直接打开某一页。
+    page: usize,
     selftest: bool,
     selftest_ui: bool,
 }
@@ -33,6 +41,9 @@ fn parse_args() -> Args {
     let mut args = Args {
         data: None,
         words: None,
+        config: None,
+        db: None,
+        page: 0,
         selftest: false,
         selftest_ui: false,
     };
@@ -41,12 +52,15 @@ fn parse_args() -> Args {
         match a.as_str() {
             "--data" => args.data = it.next().map(PathBuf::from),
             "--words" => args.words = it.next().map(PathBuf::from),
+            "--config" => args.config = it.next().map(PathBuf::from),
+            "--db" => args.db = it.next().map(PathBuf::from),
+            "--page" => args.page = it.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0),
             "--selftest" => args.selftest = true,
             "--selftest-ui" => args.selftest_ui = true,
             other => {
                 if other == "--help" || other == "-h" {
                     println!(
-                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n  heinrich-settings --selftest[|-ui]"
+                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n                   [--config <config.toml>] [--db <learn.db>] [--page 0|1|2]\n  heinrich-settings --selftest[|-ui]"
                     );
                     std::process::exit(0);
                 }
@@ -78,9 +92,11 @@ fn main() -> std::process::ExitCode {
     }
 
     if args.selftest_ui {
+        // 自测一律在临时目录里跑，绝不碰 %APPDATA% / %LOCALAPPDATA%——
+        // 拿用户的真配置和真学习库来自测，出错就是改别人的数据。
         return match ui::selftest_ui(args.data) {
             Ok(()) => {
-                println!("设置窗口自测通过（z 序 + 命中 + 字段名样式 + 面板保存/连加/改名）");
+                println!("设置窗口自测通过（三页 z 序/命中 + 通用页写盘与恢复默认 + 学习页列表/搜索 + 词组页面板）");
                 std::process::ExitCode::SUCCESS
             }
             Err(e) => {
@@ -98,14 +114,17 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
-    match ui::App::new(args.data, args.words) {
-        Ok(app) => match ui::run(Box::new(app)) {
-            Ok(_) => std::process::ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("启动失败：{e}");
-                std::process::ExitCode::FAILURE
+    match ui::App::new(args.data, args.words, args.config, args.db) {
+        Ok(mut app) => {
+            app.set_initial_page(args.page);
+            match ui::run(Box::new(app)) {
+                Ok(_) => std::process::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("启动失败：{e}");
+                    std::process::ExitCode::FAILURE
+                }
             }
-        },
+        }
         Err(e) => {
             eprintln!("启动失败：{e}");
             std::process::ExitCode::FAILURE

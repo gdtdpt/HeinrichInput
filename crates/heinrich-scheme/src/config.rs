@@ -223,6 +223,168 @@ impl Config {
     }
 }
 
+// ---------------------------------------------------------------- 写回
+
+/// 定向改写配置文件的若干键，其余内容（注释、顺序、不认识的键）原样保留。
+///
+/// `edits` 里 `Some(值)` = 写成这个值，`None` = 删掉这一行。
+///
+/// **值必须是已经格式化好的 TOML 标量**（字符串要自己带引号：`"\"off\""`）。
+/// 由调用方决定类型，这里不猜——把 `0.35` 写成字符串在 TOML 里是两回事。
+///
+/// ## 为什么不是「读出来改完整体重写」
+///
+/// 这个文件是给人手写的。整体重写会丢掉注释、打乱顺序、把用户自己加的段挤到
+/// 一起；改一次「码提示」就把人家整份注释抹掉，等于逼人以后只敢用界面改。
+///
+/// ## 为什么保留原来的写法（点号键 / 段头两种）
+///
+/// `hint.mode = "off"` 与 `[hint]` + `mode = "off"` 在这个解析器里等价。改写时
+/// 只在**原地**换掉值，不搬家——搬家的后果是同一个键在两处出现，人就不知道
+/// 哪行算了。
+pub fn edit_file(path: &Path, edits: &[(&str, Option<&str>)]) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    // 删掉最后那条「因文件以换行结尾而多出来的空行」：不删的话每次改写都会多一行空行
+    if text.ends_with('\n') && lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    for (key, value) in edits {
+        edit_one(&mut lines, key, *value);
+    }
+    let mut out = lines.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    write_atomic(path, &out)
+}
+
+/// 一行 `k = v` 的定位信息（只用来找位置，不做语义校验）。
+struct Entry {
+    idx: usize,
+    section: String,
+    local: String,
+    full: String,
+}
+
+fn collect(lines: &[String]) -> (Vec<Entry>, Vec<(String, usize)>) {
+    let mut section = String::new();
+    let mut entries = Vec::new();
+    let mut headers: Vec<(String, usize)> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            if let Some(rest) = rest.strip_suffix(']') {
+                section = rest.trim_start_matches('[').trim().to_string();
+                headers.push((section.clone(), idx));
+            }
+            continue;
+        }
+        let Some((k, _)) = line.split_once('=') else {
+            continue;
+        };
+        let local = k.trim().to_string();
+        if local.is_empty() {
+            continue;
+        }
+        let full = if section.is_empty() {
+            local.clone()
+        } else {
+            format!("{section}.{local}")
+        };
+        entries.push(Entry {
+            idx,
+            section: section.clone(),
+            local,
+            full,
+        });
+    }
+    (entries, headers)
+}
+
+fn edit_one(lines: &mut Vec<String>, full: &str, value: Option<&str>) {
+    let (section, local) = match full.rsplit_once('.') {
+        Some((s, l)) => (s.to_string(), l.to_string()),
+        None => (String::new(), full.to_string()),
+    };
+    let (entries, headers) = collect(lines);
+    let hits: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.full == full)
+        .map(|e| e.idx)
+        .collect();
+
+    if !hits.is_empty() {
+        // 重复写过的键只留第一条（解析器「以后写的为准」，不改的话用户会看到
+        // 「我明明在界面上改了，文件里还留着旧值」）
+        let first = hits[0];
+        let mut out = Vec::with_capacity(lines.len());
+        for (idx, line) in lines.iter().enumerate() {
+            if !hits.contains(&idx) {
+                out.push(line.clone());
+                continue;
+            }
+            if idx != first {
+                continue;
+            }
+            if let Some(v) = value {
+                let entry = entries.iter().find(|e| e.idx == idx).expect("命中的行");
+                let indent = &line[..line.len() - line.trim_start().len()];
+                out.push(format!("{indent}{} = {v}", entry.local));
+            }
+        }
+        *lines = out;
+        return;
+    }
+
+    // 本来就没有这一行：删它等于什么都不做（正是「恢复默认」想要的）
+    let Some(v) = value else {
+        return;
+    };
+
+    if let Some((_, hidx)) = headers.iter().rev().find(|(name, _)| *name == section) {
+        // 段已存在：接在该段最后一个键的后面；空段就紧跟段头
+        let last = entries
+            .iter()
+            .rev()
+            .find(|e| e.section == section && e.idx > *hidx)
+            .map(|e| e.idx);
+        let at = last.map(|i| i + 1).unwrap_or(hidx + 1);
+        lines.insert(at, format!("{local} = {v}"));
+        return;
+    }
+    if section.is_empty() {
+        // 顶层键：放在第一个段头之前——写在文件末尾会落进最后一段，键名就变了
+        let at = headers.first().map(|(_, i)| *i).unwrap_or(lines.len());
+        lines.insert(at, format!("{local} = {v}"));
+        return;
+    }
+    if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+        lines.push(String::new());
+    }
+    lines.push(format!("[{section}]"));
+    lines.push(format!("{local} = {v}"));
+}
+
+/// 临时文件 + 改名：server 每秒 stat 一次这个文件，不能让它读到半个写好的。
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// 去掉行尾注释：`#` 之后丢弃，但引号内的 `#` 是内容。
 fn strip_comment(line: &str) -> &str {
     let mut quote: Option<char> = None;
@@ -405,5 +567,145 @@ mod tests {
                 cfg.warnings()
             );
         }
+    }
+
+    // ------------------------------------------------------------ 写回
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("heinrich-cfg-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.toml")
+    }
+
+    /// 改写**只动目标那几行**：注释、顺序、别人加的键都得原样在。
+    /// 这条是「界面改一次就把手写注释冲掉」的回归测试。
+    #[test]
+    fn 改写保留注释与顺序() {
+        let path = tmp("keep-comments");
+        std::fs::write(
+            &path,
+            "# 我自己的笔记\n\
+             config_version = 1\n\
+             \n\
+             # 提示相关\n\
+             hint.mode = \"mixed\"   # 行尾注释\n\
+             mixed.prefer = \"pinyin\"\n",
+        )
+        .unwrap();
+
+        edit_file(&path, &[("hint.mode", Some("\"off\""))]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# 我自己的笔记"), "整行注释被冲掉了：{text}");
+        assert!(
+            text.contains("mixed.prefer = \"pinyin\""),
+            "别的键被删了：{text}"
+        );
+        assert!(text.contains("hint.mode = \"off\""), "目标行没改：{text}");
+        // 行尾注释跟着旧值一起走：只换值会留下「off   # 先按 mixed」这种自相矛盾的行
+        assert!(
+            !text.contains("行尾注释"),
+            "旧值后面的行尾注释应当一并换掉：{text}"
+        );
+        assert_eq!(Config::parse(&text).hint_mode(), HintMode::Off);
+    }
+
+    /// 段内写的键不能搬到顶层去——搬了以后 `[hint]` 段里那份还在，等于同一键两处，
+    /// 人分不清哪行算。
+    #[test]
+    fn 段内写法原地改() {
+        let path = tmp("in-section");
+        std::fs::write(
+            &path,
+            "[hint]\nmode = \"mixed\"\n\n[ranking]\nhalf_life_days = 45\n",
+        )
+        .unwrap();
+        edit_file(&path, &[("hint.mode", Some("\"first_time\""))]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[hint]\nmode = \"first_time\""), "{text}");
+        assert!(!text.contains("hint.mode ="), "不该另起一行点号键：{text}");
+        assert_eq!(Config::parse(&text).hint_mode(), HintMode::FirstTime);
+    }
+
+    /// 文件里根本没有这个键：段存在就补在段里，段不存在就在末尾新建一段。
+    #[test]
+    fn 缺失时补在正确的位置() {
+        let path = tmp("missing");
+        std::fs::write(&path, "[ranking]\nhalf_life_days = 30\n").unwrap();
+        edit_file(
+            &path,
+            &[
+                ("ranking.learning_gain", Some("0.5")),
+                ("hint.mode", Some("\"off\"")),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let cfg = Config::parse(&text);
+        assert_eq!(cfg.ranking_gain(), Some(0.5), "{text}");
+        assert_eq!(
+            cfg.ranking_half_life_days(),
+            Some(30.0),
+            "原有值被弄坏了：{text}"
+        );
+        assert_eq!(cfg.hint_mode(), HintMode::Off, "{text}");
+        // 段头不能重复（重复表头是非法的 TOML），每个键只出现一次
+        assert_eq!(text.matches("[ranking]").count(), 1, "{text}");
+        assert_eq!(text.matches("learning_gain").count(), 1, "{text}");
+        assert_eq!(text.matches("half_life_days").count(), 1, "{text}");
+    }
+
+    /// 「恢复默认」= 删行，不是写当前默认值。写死数值会让将来调默认值时老用户不跟。
+    #[test]
+    fn 删除即为恢复默认() {
+        let path = tmp("restore");
+        std::fs::write(
+            &path,
+            "hint.mode = \"off\"\n# 保留我\n[ranking]\nlearning_gain = 0.9\nhalf_life_days = 90\n",
+        )
+        .unwrap();
+        edit_file(
+            &path,
+            &[
+                ("hint.mode", None),
+                ("ranking.learning_gain", None),
+                ("ranking.half_life_days", None),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("hint.mode"), "{text}");
+        assert!(!text.contains("learning_gain"), "{text}");
+        assert!(!text.contains("half_life_days"), "{text}");
+        assert!(text.contains("# 保留我"), "删键不该顺手删掉注释：{text}");
+        let cfg = Config::parse(&text);
+        assert_eq!(cfg.hint_mode(), HintMode::Mixed);
+        assert_eq!(cfg.ranking_gain(), None, "删干净了才叫「没写」");
+    }
+
+    /// 同一个键被手写过两遍：改写后只留一条，否则界面上改了、文件里还留着旧值。
+    #[test]
+    fn 重复键收敛成一条() {
+        let path = tmp("dup");
+        std::fs::write(&path, "hint.mode = \"off\"\nhint.mode = \"mixed\"\n").unwrap();
+        edit_file(&path, &[("hint.mode", Some("\"first_time\""))]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("hint.mode").count(), 1, "{text}");
+        assert_eq!(Config::parse(&text).hint_mode(), HintMode::FirstTime);
+    }
+
+    /// 空文件（从没用过配置）也要能写：不能因为「没什么可改的」就失败。
+    #[test]
+    fn 空文件也能写() {
+        let path = tmp("empty");
+        edit_file(&path, &[("hint.mode", Some("\"off\""))]).unwrap();
+        assert_eq!(
+            Config::parse(&std::fs::read_to_string(&path).unwrap()).hint_mode(),
+            HintMode::Off
+        );
+        assert!(
+            !path.with_extension("toml.tmp").exists(),
+            "不该留下临时文件"
+        );
     }
 }

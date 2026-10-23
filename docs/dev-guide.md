@@ -1373,6 +1373,49 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 单测在 `crates/heinrich-log/src/lib.rs` 的 `tests`：级别排序与解析、`Spec` 能被
 `const` 声明为 `static`、当天路径的形状（`<stem>-*.log`）。
 
+### 4.21 设置窗口的三页（M4b / D78）
+
+三页都是**主窗口的子控件，靠显隐切换**（原生 `SysTabControl32` 没有「页」这个对象）。
+`App.pages: [Vec<HWND>; 3]` 是唯一真相，切页只 `ShowWindow(SW_SHOW/SW_HIDE)`——
+重建控件会让编辑中的内容、列表滚动位置全丢。
+
+| 页 | 控件 | 数据去向 |
+|---|---|---|
+| 通用（默认） | `hint.mode` 下拉 + `learning_gain` / `half_life_days` 两个 Edit + `应用` / `恢复默认` + 只读的路径与 `config_version` | `%APPDATA%\Heinrich\config.toml` |
+| 词组 | M4a 原样 | `words.tsv` |
+| 学习数据 | 搜索 Edit + `搜` + ListView（词 / 上屏次数 / 上次使用 / 学习分 / 档位）+ `清除选中词的学习分` | `%LOCALAPPDATA%\Heinrich\learn.db`（只读 + 清零） |
+
+**写配置只用 `heinrich-scheme::edit_config_file`（定向改写）**，不整份重写：那个文件是给人
+手写的，整份重写会冲掉注释、打乱顺序、把陌生键挪位置——改一次「码提示」就毁一次笔记，
+以后没人敢用界面。实现是一个小的行级编辑器（`collect` 建「行号 → 段 + 键」索引，
+`edit_one` 在原行原地换值 / 删行 / 缺位时插到同段的最后一个键之后 / 段不存在才新建段头）。
+6 条单测钉住：保留注释、段内写法不搬家、缺失补位不产生重复段头、删行即默认、重复键收敛、
+空文件也能写。
+
+**「恢复默认」= 删掉这三行**，不是写回当前默认数值。写死数值等于把会变的默认值钉在用户
+文件里：将来调默认值，老用户永远停在旧值上，而且文件里看不出「这是默认」。
+
+**数字框在界面层就校验**（`general::parse_number`，区间取 `RankingConfig::sanitized` 的
+实际范围 7–365 / 0–10），非法值把「应用」灰掉并把原因写在该行右边。理由：写一个会被
+`sanitized` 静默夹掉的数，用户只会看到「改了没生效」。
+
+**学习页的「清除」是 `UPDATE usage SET n = 0, last_used_at = 0`，不是删行**：`usage` 同一
+行里还存着 `tier`（0 学习 / 1 置顶 / 2 抑制），整行删掉会顺手把用户固顶的词降级——那是
+另一个语义。清零后 server 下次查询就直接读到（它每次查询读库、不缓存），DLL 侧还有最坏
+3 秒的候选缓存（D67），所以位次最多 3 秒回落。
+
+**学习分复用 `heinrich-core::learning_score`**，g / H 从 `config.toml` 现场读——界面上显示
+的分数与 server 排的序是同一个公式，改完 g 再回这页，分数立刻变。
+
+**自测（`--selftest-ui`）扩到三页**：逐页 `check_z_order`（Tab 在 z 序底 + 命中测试），
+通用页走一遍「非法值 → 按钮灰 → 合法 → 点应用 → 文件里有值且注释还在 → 点恢复默认 → 行没了」，
+学习页断言行数 / 排序 / 档位 / 搜索 / 「选中才亮清除」。**注意**：隐藏页的控件做命中测试必然
+失败（`RealChildWindowFromPoint` 不认隐藏窗口），所以要 `switch_page` 切过去再查。
+
+**截图验收用 `--page 0|1|2`**：`PrintWindow` 只截当前可见的那一页，而三个 Tab 是自绘在
+Tab 控件里的，没有「单独截某一页」的办法。加了这个开关，`win-ui-selfscreenshot` 那套
+（起进程 → 截图 → 看 → 改）就能逐页跑。
+
 ## 5. 数据管线
 
 ```
@@ -1712,8 +1755,24 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
        日志只负责让它可见，修它要重启宿主 / 重装。banner 就是为「下次一眼看出哪个 pid
        是哪版」加的。
 
-## 7. 排序参数（`heinrich-core/src/rank.rs`）
-```
+57. **跨进程 `SendMessage` 带指针等于带垃圾。** `WM_NOTIFY` 的 `lParam` 是结构体指针，
+    系统只对少数消息做跨进程封送（`WM_COPYDATA` 之类），`WM_NOTIFY` 不在其中：脚本往
+    另一个进程的窗口发它，对方读到的是**自己地址空间里的随机内容**，于是「发过了、
+    脚本也打印成功、界面一动不动」。踩法是写了个切页截图的小脚本，`cursel=1` 打印得
+    漂漂亮亮，三张截图的哈希却几乎一样。正解是给程序加一个开关（`--page`），别想着从
+    外面驱动它——这也是「UI 验收要能程序化打开目标窗口」那条经验的另一半。
+    同一个坑的第二个入口：**ctypes 不声明 `restype` 时 `HWND` 会被当成 C `int` 截成
+    32 位**，`SendMessage` 静默打到一个不存在的句柄上，同样一声不响。
+
+58. **多页窗口里「同一类控件有两个」时，消息必须按 `hwndFrom` / `id` 分派。**
+    三页共存意味着主窗口下同时有两个 ListView、五个 Edit。`WM_NOTIFY` 只判
+    `hdr.code == LVN_ITEMCHANGED` 会让学习页的选中去驱动词组页的「保存」按钮；
+    `WM_COMMAND` 里 `code == EN_CHANGE` 一律调 `update_buttons()` 会拿两个数字框的
+    内容去判「词填了没」，结果按钮永远亮着。分派写细一点，比事后再加一堆 `if` 便宜。
+    同理，**z 序 / 命中自测要按页做**：隐藏页的控件命中测试必然失败，不切页就断言
+    只会得到一个假失败（`PrintWindow` 也只看得到当前可见的那一页）。
+
+## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
   g : 0.35        单次使用约挪一位；g=1 时一次误选会跨 4–6 位

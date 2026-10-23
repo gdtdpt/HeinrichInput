@@ -144,8 +144,10 @@ dependencies = [
 name = "heinrich-settings"
 version = "0.1.0"
 dependencies = [
+ "heinrich-core",
  "heinrich-scheme",
  "heinrich-tip-id",
+ "rusqlite",
  "windows",
  "windows-core",
 ]

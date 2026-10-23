@@ -12,8 +12,13 @@ path = "src/main.rs"
 
 [dependencies]
 heinrich-scheme = { workspace = true }
+# 学习数据页要读 learn.db；学习分公式与 server 共用一份，不在这里抄第二遍
+heinrich-core = { workspace = true }
 # 窗口类名与设置程序文件名放在这个零依赖的常量 crate 里，DLL 侧用的是同一份。
 heinrich-tip-id = { workspace = true }
+# bundled：编进 exe，不依赖系统里的 sqlite3.dll（内网机不一定有）。代价是 exe 从
+# 约 400 KB 涨到 1.5 MB 左右，换「单文件拷贝即用」，与其余产物一致。
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dependencies.windows-core]
 version = "0.62"

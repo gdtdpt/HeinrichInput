@@ -1,8 +1,9 @@
-//! 设置窗口：主窗口 + Tab + 词组页（ListView + 编辑面板）。
+//! 设置窗口：主窗口 + Tab（通用 / 词组 / 学习数据）。
 //!
-//! 只写 `%APPDATA%\Heinrich\words.tsv`，写完全靠 server 的 mtime 热重载生效——
-//! 不需要任何进程间通信（D65 的第二个红利）。所以这个 exe 可以随时开、随时关，
-//! 关掉之后加的词照样在。
+//! 词组页写 `%APPDATA%\Heinrich\words.tsv`，通用页写同目录的 `config.toml`，
+//! 学习数据页只读（外加清零）`%LOCALAPPDATA%\Heinrich\learn.db`。三者都**不经过
+//! 任何进程间通信**：server 每秒 stat 一次前两个、每次查询直接读第三个（D65），
+//! 所以这个 exe 可以随时开、随时关，改完不用重启任何东西。
 //!
 //! 为什么用原生控件而不是复用 `heinrich-win-ui` 的自绘：编辑框要能**用亨利自己
 //! 打中文**（单字都在词库里），自绘就得连光标、选区、IME 组合串一起实现；而这张
@@ -12,10 +13,16 @@
 //! 时会把自己抬到最上层，而它的矩形正好覆盖整个内容区——一旦抬上来，它就把下面
 //! 所有按钮和编辑框整片盖住，鼠标点哪儿都被它吃掉。界面看起来完全正常，只是所有
 //! 点击都石沉大海（F44：验收时「新增/保存点了没反应、词也没真加上」就是这个）。
+//!
+//! 多页的代价：三页的控件都是主窗口的子窗口，靠显隐切换（原生 Tab 没有「页」这个
+//! 对象）。所以每条 WM_COMMAND / WM_NOTIFY 都要看清是谁发的——两个 ListView 同时
+//! 存在，只按消息类型分派会把学习数据的行当成词组去改。
 
 use std::path::PathBuf;
 
+use heinrich_core::RankingConfig;
 use heinrich_scheme::user::UserWord;
+use heinrich_scheme::HintMode;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -39,11 +46,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, TranslateMessage,
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE,
-    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE,
-    WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN,
-    WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC,
-    WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING,
+    MB_OK, MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS,
+    WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -76,6 +84,36 @@ const ID_B_UNDO: usize = 135;
 const ID_NOTE: usize = 140;
 const ID_STATUS: usize = 141;
 
+// 通用页
+const ID_L_HINT: usize = 200;
+const ID_C_HINT: usize = 201;
+const ID_N_HINTDESC: usize = 202;
+const ID_L_GAIN: usize = 203;
+const ID_E_GAIN: usize = 204;
+const ID_N_GAINDESC: usize = 205;
+const ID_L_HALF: usize = 206;
+const ID_E_HALF: usize = 207;
+const ID_N_HALFDESC: usize = 208;
+const ID_B_APPLY: usize = 209;
+const ID_B_DEFAULT: usize = 210;
+const ID_N_CONFIG: usize = 211;
+const ID_N_TIPS: usize = 212;
+
+// 学习数据页
+const ID_L_SEARCH: usize = 300;
+const ID_E_SEARCH: usize = 301;
+const ID_B_SEARCH: usize = 302;
+const ID_LEARN_LIST: usize = 303;
+const ID_B_FORGET: usize = 304;
+const ID_N_LEARN: usize = 305;
+
+/// 页序号。**与 Tab 里的顺序、`pages` 数组的下标三者必须一致**。
+const PAGE_GENERAL: usize = 0;
+const PAGE_WORDS: usize = 1;
+const PAGE_LEARN: usize = 2;
+const PAGE_COUNT: usize = 3;
+const PAGE_TITLES: [&str; PAGE_COUNT] = ["通用", "词组", "学习数据"];
+
 // ListView 的几条消息/样式常量。`windows` crate 把它们定义成裸 u32，这里直接引用
 // 会让整段代码被 `as` 淹没，所以只挑用得到的几个，写清来历。
 const LVS_REPORT: u32 = 0x0001;
@@ -88,6 +126,17 @@ const LVCF_WIDTH: u32 = 0x0002;
 const LVCF_TEXT: u32 = 0x0004;
 /// `TCN_SELCHANGE = TCN_FIRST - 1`，`TCN_FIRST = -550`。
 const TCN_SELCHANGE: u32 = 0xFFFF_FDD9;
+/// `CBN_SELCHANGE = 1`：下拉框换了选项，走的是 `WM_COMMAND` 的通知码。
+const CBN_SELCHANGE: u32 = 1;
+/// `CBS_DROPDOWNLIST`：只能选、不能输入——这三个值是封闭集合，让人敲字只会敲出
+/// 一个解析不了的值。
+const CBS_DROPDOWNLIST: u32 = 0x0003;
+const CB_ADDSTRING: u32 = 0x0143;
+const CB_GETCURSEL: u32 = 0x0147;
+const CB_SETCURSEL: u32 = 0x014E;
+/// `TCM_SETCURSEL` / `TCM_GETCURSEL`：切页是程序驱动的（启动时选第一页）。
+const TCM_GETCURSEL: u32 = 0x130B;
+const TCM_SETCURSEL: u32 = 0x130C;
 
 /// 窗口内容的最小尺寸（96 DPI 下的逻辑像素），窄于这个就压缩不动了。
 const MIN_W: i32 = 720;
@@ -116,6 +165,36 @@ pub struct App {
     note: HWND,
     status: HWND,
 
+    // 通用页
+    c_hint: HWND,
+    l_hint: HWND,
+    n_hint_desc: HWND,
+    l_gain: HWND,
+    e_gain: HWND,
+    n_gain_desc: HWND,
+    l_half: HWND,
+    e_half: HWND,
+    n_half_desc: HWND,
+    b_apply: HWND,
+    b_default: HWND,
+    n_config: HWND,
+    n_tips: HWND,
+
+    // 学习数据页
+    l_search: HWND,
+    e_search: HWND,
+    b_search: HWND,
+    learn_list: HWND,
+    b_forget: HWND,
+    n_learn: HWND,
+
+    /// 每页的控件，按下标显隐。**建完就固定**，切页只动可见性。
+    pages: [Vec<HWND>; PAGE_COUNT],
+    /// 当前页（启动时是通用页）。
+    page: usize,
+    /// 启动时停在哪一页。只给 `--page` 用（截图验收要能直接打开某一页）。
+    initial_page: usize,
+
     model: Model,
     lex: Option<Lexicons>,
     lex_note: Option<String>,
@@ -124,10 +203,22 @@ pub struct App {
     editing: Option<usize>,
     /// 上一次删除的 (原位置, 词条)，给「撤销删除」用
     undo: Option<(usize, UserWord)>,
+
+    /// `config.toml`（通用页读写）
+    config_path: PathBuf,
+    /// `learn.db`（学习数据页只读）
+    db_path: PathBuf,
+    /// 学习数据页当前列出的行（下标即 ListView 行号）
+    learn_rows: Vec<crate::learn::Row>,
 }
 
 impl App {
-    pub fn new(data: Option<PathBuf>, words: Option<PathBuf>) -> Result<Self, String> {
+    pub fn new(
+        data: Option<PathBuf>,
+        words: Option<PathBuf>,
+        config: Option<PathBuf>,
+        db: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let path = words
             .or_else(crate::lex::default_words_path)
             .ok_or("取不到 %APPDATA%，请用 --words 指定词库文件")?;
@@ -162,6 +253,14 @@ impl App {
                 w!("Microsoft YaHei UI"),
             )
         };
+        let config_path = config
+            .or_else(crate::general::default_path)
+            .ok_or("取不到 %APPDATA%，请用 --config 指定配置文件")?;
+        // 学习库路径**允许取不到**：页面降级成一句「找不到学习库」，
+        // 但词组页与通用页不该因此打不开。
+        let db_path = db
+            .or_else(crate::learn::default_path)
+            .unwrap_or_else(|| PathBuf::from("learn.db"));
         Ok(Self {
             hwnd: HWND::default(),
             dpi,
@@ -184,13 +283,43 @@ impl App {
             b_undo: HWND::default(),
             note: HWND::default(),
             status: HWND::default(),
+            c_hint: HWND::default(),
+            l_hint: HWND::default(),
+            n_hint_desc: HWND::default(),
+            l_gain: HWND::default(),
+            e_gain: HWND::default(),
+            n_gain_desc: HWND::default(),
+            l_half: HWND::default(),
+            e_half: HWND::default(),
+            n_half_desc: HWND::default(),
+            b_apply: HWND::default(),
+            b_default: HWND::default(),
+            n_config: HWND::default(),
+            n_tips: HWND::default(),
+            l_search: HWND::default(),
+            e_search: HWND::default(),
+            b_search: HWND::default(),
+            learn_list: HWND::default(),
+            b_forget: HWND::default(),
+            n_learn: HWND::default(),
+            pages: [Vec::new(), Vec::new(), Vec::new()],
+            page: PAGE_GENERAL,
+            initial_page: PAGE_GENERAL,
             model,
             lex,
             lex_note,
             rows: Vec::new(),
             editing: None,
             undo: None,
+            config_path,
+            db_path,
+            learn_rows: Vec::new(),
         })
+    }
+
+    /// 启动时停在第几页（`--page`）。越界一律收到最后一页。
+    pub fn set_initial_page(&mut self, page: usize) {
+        self.initial_page = page.min(PAGE_COUNT - 1);
     }
 
     /// 逻辑像素 → 物理像素。窗口按 96 DPI 设计，乘上系统缩放即可。
@@ -213,23 +342,35 @@ impl App {
         unsafe {
             let _ = SetWindowSubclass(self.tab, Some(tab_proc), 1, 0);
         }
-        // 页码与 `refresh` 里的顺序一致；以后加页只在这里追加一行
-        let mut item = vec![0u16; 32];
-        put_utf16(&mut item, "词组");
-        let mut tc = windows::Win32::UI::Controls::TCITEMW {
-            mask: windows::Win32::UI::Controls::TCITEMHEADERA_MASK(0x0001), // TCIF_TEXT
-            pszText: PWSTR(item.as_mut_ptr()),
-            ..Default::default()
-        };
-        unsafe {
-            send(
-                self.tab,
-                windows::Win32::UI::Controls::TCM_INSERTITEMW,
-                WPARAM(0),
-                LPARAM(&mut tc as *mut _ as isize),
-            );
+        // 页签顺序 = `PAGE_*` 常量的顺序 = `pages` 的下标，三者错一个就会「点通用
+        // 出来的是词组」。启动默认选第一个（通用）——见 `show_page` 的调用点。
+        for (i, title) in PAGE_TITLES.iter().enumerate() {
+            let mut item = vec![0u16; 32];
+            put_utf16(&mut item, title);
+            let mut tc = windows::Win32::UI::Controls::TCITEMW {
+                mask: windows::Win32::UI::Controls::TCITEMHEADERA_MASK(0x0001), // TCIF_TEXT
+                pszText: PWSTR(item.as_mut_ptr()),
+                ..Default::default()
+            };
+            unsafe {
+                send(
+                    self.tab,
+                    windows::Win32::UI::Controls::TCM_INSERTITEMW,
+                    WPARAM(i),
+                    LPARAM(&mut tc as *mut _ as isize),
+                );
+            }
         }
 
+        self.create_words_page()?;
+        self.create_general_page()?;
+        self.create_learn_page()?;
+        Ok(())
+    }
+
+    /// 词组页：列表 + 编辑面板 + 文件级操作。
+    fn create_words_page(&mut self) -> windows::core::Result<()> {
+        let hwnd = self.hwnd;
         self.list = child(
             hwnd,
             w!("SysListView32"),
@@ -367,6 +508,7 @@ impl App {
             ID_NOTE,
             self.font,
         )?;
+        // 状态栏三页共用：它是「刚刚发生了什么」的唯一出口，切页时不跟着变。
         self.status = child(
             hwnd,
             w!("Static"),
@@ -375,7 +517,260 @@ impl App {
             ID_STATUS,
             self.font,
         )?;
+
+        self.pages[PAGE_WORDS] = vec![
+            self.list,
+            self.l_word,
+            self.l_pinyin,
+            self.l_code,
+            self.l_weight,
+            self.e_word,
+            self.e_pinyin,
+            self.e_code,
+            self.e_weight,
+            self.b_save,
+            self.b_del,
+            self.b_import,
+            self.b_open,
+            self.b_undo,
+            self.b_clear,
+            self.note,
+        ];
         Ok(())
+    }
+
+    /// 通用页：码提示时机 + 排序两参数 + 应用/恢复默认。
+    ///
+    /// 这一页**没有**「即时生效」：三个框都可能处于半输入状态（`0.` 还没打完），
+    /// 边打边写盘会把中间态写进配置。所以统一走「应用」，Enter 也等于应用。
+    fn create_general_page(&mut self) -> windows::core::Result<()> {
+        let hwnd = self.hwnd;
+        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
+        let plain = WINDOW_STYLE(0);
+        let edit_style =
+            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080); // ES_AUTOHSCROLL
+
+        self.l_hint = child(
+            hwnd,
+            w!("Static"),
+            "码提示时机",
+            label_style,
+            ID_L_HINT,
+            self.font,
+        )?;
+        self.c_hint = child(
+            hwnd,
+            w!("ComboBox"),
+            "",
+            WINDOW_STYLE(WS_TABSTOP.0 | CBS_DROPDOWNLIST),
+            ID_C_HINT,
+            self.font,
+        )?;
+        for label in [
+            "总是显示（mixed）",
+            "只在第一次（first_time）",
+            "不显示（off）",
+        ] {
+            let text = wide(label);
+            unsafe {
+                send(
+                    self.c_hint,
+                    CB_ADDSTRING,
+                    WPARAM(0),
+                    LPARAM(text.as_ptr() as isize),
+                );
+            }
+        }
+        self.n_hint_desc = child(hwnd, w!("Static"), "", plain, ID_N_HINTDESC, self.font)?;
+
+        self.l_gain = child(
+            hwnd,
+            w!("Static"),
+            "学习增益 g",
+            label_style,
+            ID_L_GAIN,
+            self.font,
+        )?;
+        self.e_gain = child(hwnd, w!("Edit"), "", edit_style, ID_E_GAIN, self.font)?;
+        self.n_gain_desc = child(hwnd, w!("Static"), "", plain, ID_N_GAINDESC, self.font)?;
+
+        self.l_half = child(
+            hwnd,
+            w!("Static"),
+            "半衰期 H（天）",
+            label_style,
+            ID_L_HALF,
+            self.font,
+        )?;
+        self.e_half = child(hwnd, w!("Edit"), "", edit_style, ID_E_HALF, self.font)?;
+        self.n_half_desc = child(hwnd, w!("Static"), "", plain, ID_N_HALFDESC, self.font)?;
+
+        self.b_apply = child(
+            hwnd,
+            w!("Button"),
+            "应用",
+            WS_TABSTOP,
+            ID_B_APPLY,
+            self.font,
+        )?;
+        self.b_default = child(
+            hwnd,
+            w!("Button"),
+            "恢复默认",
+            WS_TABSTOP,
+            ID_B_DEFAULT,
+            self.font,
+        )?;
+        self.n_config = child(hwnd, w!("Static"), "", plain, ID_N_CONFIG, self.font)?;
+        self.n_tips = child(
+            hwnd,
+            w!("Static"),
+            "这三项写在 config.toml 里，点「应用」后 1 秒内生效，不用重启任何东西。\n\
+             「恢复默认」是把这三行删掉，不是写死数值——将来默认值调整时，你的文件会跟着变。",
+            plain,
+            ID_N_TIPS,
+            self.font,
+        )?;
+
+        // 两个数字框里按回车 = 点「应用」；不打这个补丁，回车只会「叮」一声
+        unsafe {
+            for &h in &[self.e_gain, self.e_half] {
+                let _ = SetWindowSubclass(h, Some(enter_proc), 2, ID_B_APPLY);
+            }
+        }
+
+        self.pages[PAGE_GENERAL] = vec![
+            self.l_hint,
+            self.c_hint,
+            self.n_hint_desc,
+            self.l_gain,
+            self.e_gain,
+            self.n_gain_desc,
+            self.l_half,
+            self.e_half,
+            self.n_half_desc,
+            self.b_apply,
+            self.b_default,
+            self.n_config,
+            self.n_tips,
+        ];
+        Ok(())
+    }
+
+    /// 学习数据页：搜索 + 只读列表 + 「清除选中词的学习分」。
+    fn create_learn_page(&mut self) -> windows::core::Result<()> {
+        let hwnd = self.hwnd;
+        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
+        let edit_style =
+            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080);
+
+        self.l_search = child(
+            hwnd,
+            w!("Static"),
+            "搜索",
+            label_style,
+            ID_L_SEARCH,
+            self.font,
+        )?;
+        self.e_search = child(hwnd, w!("Edit"), "", edit_style, ID_E_SEARCH, self.font)?;
+        self.b_search = child(hwnd, w!("Button"), "搜", WS_TABSTOP, ID_B_SEARCH, self.font)?;
+        self.b_forget = child(
+            hwnd,
+            w!("Button"),
+            "清除选中词的学习分",
+            WS_TABSTOP,
+            ID_B_FORGET,
+            self.font,
+        )?;
+        self.learn_list = child(
+            hwnd,
+            w!("SysListView32"),
+            "",
+            WINDOW_STYLE(
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_BORDER.0
+                    | WS_TABSTOP.0
+                    | LVS_REPORT
+                    | LVS_SINGLESEL
+                    | LVS_SHOWSELALWAYS,
+            ),
+            ID_LEARN_LIST,
+            self.font,
+        )?;
+        unsafe {
+            send(
+                self.learn_list,
+                LVM_SETEXTENDEDLISTVIEWSTYLE,
+                WPARAM(LVS_EX_FULLROWSELECT),
+                LPARAM(LVS_EX_FULLROWSELECT as isize),
+            );
+        }
+        for (i, (title, width)) in [
+            ("词", 160),
+            ("上屏次数", 90),
+            ("上次使用", 120),
+            ("学习分", 90),
+            ("档位", 80),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut text = vec![0u16; 32];
+            put_utf16(&mut text, title);
+            let mut col = LVCOLUMNW {
+                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(LVCF_WIDTH | LVCF_TEXT),
+                cx: self.s(width),
+                pszText: PWSTR(text.as_mut_ptr()),
+                ..Default::default()
+            };
+            unsafe {
+                send(
+                    self.learn_list,
+                    LVM_INSERTCOLUMNW,
+                    WPARAM(i),
+                    LPARAM(&mut col as *mut _ as isize),
+                );
+            }
+        }
+        self.n_learn = child(
+            hwnd,
+            w!("Static"),
+            "",
+            WINDOW_STYLE(0),
+            ID_N_LEARN,
+            self.font,
+        )?;
+
+        unsafe {
+            let _ = SetWindowSubclass(self.e_search, Some(enter_proc), 2, ID_B_SEARCH);
+        }
+
+        self.pages[PAGE_LEARN] = vec![
+            self.l_search,
+            self.e_search,
+            self.b_search,
+            self.b_forget,
+            self.learn_list,
+            self.n_learn,
+        ];
+        Ok(())
+    }
+
+    /// 切页：只动可见性，不重建控件（重建会让编辑中的内容、滚动位置全丢）。
+    fn show_page(&mut self, page: usize) {
+        let page = page.min(PAGE_COUNT - 1);
+        self.page = page;
+        for (i, list) in self.pages.iter().enumerate() {
+            for &h in list {
+                unsafe {
+                    let _ = ShowWindow(h, if i == page { SW_SHOW } else { SW_HIDE });
+                }
+            }
+        }
+        // Tab 只在内容区外面画页签，页控件都在它上面；但切页后它会重画自己，
+        // 顺手再压一次底，免得某些情况下浮上来盖住新页（F44 的另一条路径）
+        lower_tab(self.tab);
     }
 
     fn layout(&self) {
@@ -396,6 +791,18 @@ impl App {
         let cw2 = cw - m * 2 - self.s(20);
         let ch2 = tab_h - self.s(38);
 
+        self.layout_words(cx, cy, cw2, ch2);
+        self.layout_general(cx, cy, cw2, ch2);
+        self.layout_learn(cx, cy, cw2, ch2);
+
+        unsafe {
+            let _ = MoveWindow(self.status, m, ch - status_h, cw - m * 2, self.s(20), true);
+        }
+        // 排在最后：Tab 是背景板，必须待在所有页控件下面（F44）
+        lower_tab(self.tab);
+    }
+
+    fn layout_words(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
         let row = self.s(26);
         let gap = self.s(8);
         let panel_h = row * 2 + gap * 2 + self.s(20);
@@ -447,10 +854,107 @@ impl App {
         let ny = by + row + self.s(4);
         unsafe {
             let _ = MoveWindow(self.note, cx, ny, cw2, self.s(20), true);
-            let _ = MoveWindow(self.status, m, ch - status_h, cw - m * 2, self.s(20), true);
         }
-        // 排在最后：Tab 是背景板，必须待在所有页控件下面（F44）
-        lower_tab(self.tab);
+    }
+
+    /// 通用页：三行「标签 + 输入 + 一句说明」，下面一行按钮，最底下一行只读的配置信息。
+    ///
+    /// 说明文字跟在**各自那一行右边**而不是统一堆在底部：改 g 的时候眼睛在那一行，
+    /// 说明跑到底部就得来回跳。
+    fn layout_general(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
+        let row = self.s(26);
+        let gap = self.s(10);
+        let label_w = self.s(110);
+        let field_w = self.s(150);
+        let mut y = cy + self.s(4);
+
+        let line = |label: HWND, field: HWND, field_h: i32, desc: HWND, y: &mut i32| {
+            unsafe {
+                let _ = MoveWindow(label, cx, *y, label_w, row, true);
+                let _ = MoveWindow(field, cx + label_w + gap, *y, field_w, field_h, true);
+                let _ = MoveWindow(
+                    desc,
+                    cx + label_w + gap + field_w + self.s(16),
+                    *y,
+                    cw2 - label_w - gap - field_w - self.s(20),
+                    row,
+                    true,
+                );
+            }
+            *y += row + self.s(18);
+        };
+        // 下拉框的高度是「展开后」的高度，收起来只有一行高
+        line(
+            self.l_hint,
+            self.c_hint,
+            self.s(160),
+            self.n_hint_desc,
+            &mut y,
+        );
+        line(self.l_gain, self.e_gain, row, self.n_gain_desc, &mut y);
+        line(self.l_half, self.e_half, row, self.n_half_desc, &mut y);
+
+        y += self.s(6);
+        unsafe {
+            let _ = MoveWindow(self.b_apply, cx, y, self.s(80), row, true);
+            let _ = MoveWindow(self.b_default, cx + self.s(88), y, self.s(96), row, true);
+        }
+        // 两行说明：高度按两行给足，Static 不会自己长高（AutoSize 在这里没有）
+        unsafe {
+            let _ = MoveWindow(self.n_tips, cx, y + row + self.s(16), cw2, self.s(44), true);
+        }
+        // 配置文件的路径贴在页面底部：它只在排障时有用，平时不该抢注意力
+        unsafe {
+            let _ = MoveWindow(
+                self.n_config,
+                cx,
+                cy + ch2 - self.s(24),
+                cw2,
+                self.s(20),
+                true,
+            );
+        }
+    }
+
+    fn layout_learn(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
+        let row = self.s(26);
+        let gap = self.s(8);
+        let label_w = self.s(44);
+        let mut x = cx;
+        let place = |h: HWND, w: i32, hh: i32, y: i32, x: &mut i32| {
+            unsafe {
+                let _ = MoveWindow(h, *x, y, w, hh, true);
+            }
+            *x += w + gap;
+        };
+        place(self.l_search, label_w, row, cy, &mut x);
+        place(self.e_search, self.s(220), row, cy, &mut x);
+        place(self.b_search, self.s(56), row, cy, &mut x);
+        unsafe {
+            // 「清除」是破坏性动作，靠右单独放，别挨着搜索框（F46 的同一条理由）
+            let _ = MoveWindow(
+                self.b_forget,
+                cx + cw2 - self.s(160),
+                cy,
+                self.s(160),
+                row,
+                true,
+            );
+        }
+
+        let list_y = cy + row + gap;
+        let list_h = (ch2 - row - gap - self.s(28)).max(self.s(80));
+        unsafe {
+            let _ = MoveWindow(self.learn_list, cx, list_y, cw2, list_h, true);
+            let _ = MoveWindow(
+                self.n_learn,
+                cx,
+                list_y + list_h + self.s(4),
+                cw2,
+                self.s(20),
+                true,
+            );
+        }
     }
 
     /// 重算推导列并重填 ListView（保留当前选中项）。
@@ -775,6 +1279,241 @@ impl App {
             );
         }
     }
+
+    // ------------------------------------------------------------ 通用页
+
+    /// 从磁盘重读三项并刷进控件。打开窗口、点「应用」、点「恢复默认」之后各一次。
+    ///
+    /// **刷新一定从文件读**，不从界面读：界面只是文件的投影，照界面回填会把
+    /// 「文件里本来写的是 500、被界面夹成 365」这种差异永久抹平。
+    fn refresh_general(&mut self) {
+        let g = crate::general::General::load(&self.config_path);
+        unsafe {
+            send(
+                self.c_hint,
+                CB_SETCURSEL,
+                WPARAM(hint_index(g.hint)),
+                LPARAM(0),
+            );
+        }
+        set_text(self.e_gain, &crate::general::fmt_number(g.gain));
+        set_text(self.e_half, &crate::general::fmt_number(g.half_life));
+        self.update_hint_desc(g.hint);
+        self.update_general_fields();
+
+        let mut info = format!("{} · {}", self.config_path.display(), g.version);
+        if !g.found {
+            info.push_str(" · 文件还不存在，点「应用」时会建");
+        }
+        for w in g.warnings.iter().take(1) {
+            info.push_str(&format!(" · {w}"));
+        }
+        set_text(self.n_config, &info);
+    }
+
+    fn selected_hint(&self) -> HintMode {
+        match unsafe { send(self.c_hint, CB_GETCURSEL, WPARAM(0), LPARAM(0)) }.0 {
+            1 => HintMode::FirstTime,
+            2 => HintMode::Off,
+            _ => HintMode::Mixed,
+        }
+    }
+
+    /// 下拉框右边那句说明。选完立刻变——选完还要滚到别处看说明，等于没说明。
+    fn update_hint_desc(&self, mode: HintMode) {
+        let text = match mode {
+            HintMode::Mixed => "拼音候选旁边总是显示这个词的五笔码",
+            HintMode::FirstTime => "只在这个词还没上过屏时显示一次（学会就不打扰）",
+            HintMode::Off => "一律不显示五笔码",
+        };
+        set_text(self.n_hint_desc, text);
+    }
+
+    /// 两个数字框的即时校验：合法就亮「应用」，非法就把原因写在该行右边。
+    ///
+    /// 界面层拦住非法值，是为了不让人写进一个会被 `sanitized` 静默夹掉的数——
+    /// 那种「写了 500、跑起来是 365、界面上还显示 500」最费时间。
+    fn update_general_fields(&self) {
+        let gain =
+            crate::general::parse_number(&get_text(self.e_gain), crate::general::GAIN_RANGE, "");
+        let half =
+            crate::general::parse_number(&get_text(self.e_half), crate::general::HALF_RANGE, " 天");
+        let gain_text = match &gain {
+            Ok(_) => "越大越容易把常用的词往前提；0 = 不学习；默认 0.35".to_string(),
+            Err(e) => format!("输入有误：{e}"),
+        };
+        let half_text = match &half {
+            Ok(_) => "多少天不用，分数减半；默认 45".to_string(),
+            Err(e) => format!("输入有误：{e}"),
+        };
+        set_text(self.n_gain_desc, &gain_text);
+        set_text(self.n_half_desc, &half_text);
+        enable_window(self.b_apply, gain.is_ok() && half.is_ok());
+    }
+
+    fn on_apply(&mut self) {
+        let gain = match crate::general::parse_number(
+            &get_text(self.e_gain),
+            crate::general::GAIN_RANGE,
+            "",
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                self.set_status(&format!("学习增益没法用：{e}"));
+                return;
+            }
+        };
+        let half = match crate::general::parse_number(
+            &get_text(self.e_half),
+            crate::general::HALF_RANGE,
+            " 天",
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                self.set_status(&format!("半衰期没法用：{e}"));
+                return;
+            }
+        };
+        let hint = self.selected_hint();
+        match crate::general::save(&self.config_path, hint, gain, half) {
+            Ok(()) => {
+                self.refresh_general();
+                self.set_status("已写入配置文件，1 秒内生效（不用重启任何东西）");
+            }
+            Err(e) => message(
+                self.hwnd,
+                "保存失败",
+                &format!("{}：{e}", self.config_path.display()),
+            ),
+        }
+    }
+
+    fn on_restore_defaults(&mut self) {
+        match crate::general::restore_defaults(&self.config_path) {
+            Ok(()) => {
+                self.refresh_general();
+                self.set_status(
+                    "已恢复默认：三行从配置文件里删掉了（不写死数值，将来默认值变了也会跟着走）",
+                );
+            }
+            Err(e) => message(
+                self.hwnd,
+                "恢复默认失败",
+                &format!("{}：{e}", self.config_path.display()),
+            ),
+        }
+    }
+
+    // -------------------------------------------------------- 学习数据页
+
+    /// 学习分用当前生效的 g / H 现场算，所以先按配置合成一份 `RankingConfig`。
+    fn ranking_config(&self) -> RankingConfig {
+        let g = crate::general::General::load(&self.config_path);
+        RankingConfig {
+            learning_gain: g.gain,
+            half_life_days: g.half_life,
+        }
+        .sanitized()
+    }
+
+    fn refresh_learn(&mut self) {
+        let cfg = self.ranking_config();
+        let needle = get_text(self.e_search);
+        match crate::learn::load(&self.db_path, &cfg, &needle) {
+            Ok(rep) => {
+                self.learn_rows = rep.rows;
+                unsafe {
+                    send(self.learn_list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
+                }
+                for (i, r) in self.learn_rows.iter().enumerate() {
+                    insert_learn_row(self.learn_list, i, r);
+                }
+                let shown = self.learn_rows.len();
+                let mut note = if rep.total > shown {
+                    format!(
+                        "显示 {shown} 条（共 {} 条用过的词，按学习分取前 {shown}）",
+                        rep.total
+                    )
+                } else {
+                    format!("{shown} 条用过的词")
+                };
+                if shown == 0 && !needle.trim().is_empty() {
+                    note.push_str(" · 没有匹配的词");
+                }
+                note.push_str(" · 学习分 = ln(次数) × 衰减；第一次上屏不计分");
+                set_text(self.n_learn, &note);
+            }
+            Err(e) => {
+                self.learn_rows.clear();
+                unsafe {
+                    send(self.learn_list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
+                }
+                set_text(self.n_learn, &e);
+            }
+        }
+        self.update_learn_buttons();
+    }
+
+    fn selected_learn(&self) -> Option<usize> {
+        let r = unsafe {
+            send(
+                self.learn_list,
+                LVM_GETNEXTITEM,
+                WPARAM(usize::MAX),
+                LPARAM(LVNI_SELECTED as isize),
+            )
+        };
+        (r.0 >= 0).then_some(r.0 as usize)
+    }
+
+    fn update_learn_buttons(&self) {
+        let has = self
+            .selected_learn()
+            .and_then(|i| self.learn_rows.get(i))
+            .is_some();
+        enable_window(self.b_forget, has);
+    }
+
+    fn on_forget(&mut self) {
+        let Some(idx) = self.selected_learn() else {
+            return;
+        };
+        let Some(row) = self.learn_rows.get(idx) else {
+            return;
+        };
+        let word = row.word.clone();
+        let detail = format!(
+            "「{word}」上屏 {} 次，上次 {}。\n\n清零后它的位次会回到按码表排的位置，\
+             最多 3 秒生效。次数与时间找不回来；置顶/抑制档位会保留。",
+            row.n,
+            row.ago(crate::learn::now_unix()),
+        );
+        if !confirm(self.hwnd, "清除这个词的学习分？", &detail) {
+            return;
+        }
+        match crate::learn::clear(&self.db_path, &word) {
+            Ok(0) => self.set_status(&format!("「{word}」本来就没有学习记录")),
+            Ok(_) => {
+                self.refresh_learn();
+                self.set_status(&format!("已清除「{word}」的学习分，位次最多 3 秒后回落"));
+            }
+            Err(e) => message(
+                self.hwnd,
+                "清除失败",
+                &format!("{e}\n\n可能是 server 正在写库，稍后再试"),
+            ),
+        }
+    }
+
+    fn on_search(&mut self) {
+        self.refresh_learn();
+        let needle = get_text(self.e_search);
+        if needle.trim().is_empty() {
+            self.set_status("已列出全部用过的词");
+        } else {
+            self.set_status(&format!("按「{}」过滤", needle.trim()));
+        }
+    }
 }
 
 fn insert_row(list: HWND, idx: usize, r: &Row) {
@@ -823,6 +1562,48 @@ fn insert_row(list: HWND, idx: usize, r: &Row) {
     }
 }
 
+/// 下拉框里 mixed / first_time / off 的位置，与 [`App::update_hint_desc`] 的顺序一致。
+fn hint_index(mode: HintMode) -> usize {
+    match mode {
+        HintMode::Mixed => 0,
+        HintMode::FirstTime => 1,
+        HintMode::Off => 2,
+    }
+}
+
+/// 学习数据页的一行。列序：词 / 次数 / 上次使用 / 学习分 / 档位。
+fn insert_learn_row(list: HWND, idx: usize, r: &crate::learn::Row) {
+    let now = crate::learn::now_unix();
+    let cells = [
+        r.word.clone(),
+        r.n.to_string(),
+        r.ago(now),
+        format!("{:.3}", r.score),
+        r.tier_label().to_string(),
+    ];
+    for (k, cell) in cells.iter().enumerate() {
+        let mut text = wide(cell);
+        let mut item = LVITEMW {
+            mask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_FLAGS(
+                LVIF_TEXT | if k == 0 { LVIF_PARAM } else { 0 },
+            ),
+            iItem: idx as i32,
+            iSubItem: k as i32,
+            pszText: PWSTR(text.as_mut_ptr()),
+            lParam: LPARAM(idx as isize),
+            ..Default::default()
+        };
+        let msg = if k == 0 {
+            LVM_INSERTITEMW
+        } else {
+            LVM_SETITEMW
+        };
+        unsafe {
+            send(list, msg, WPARAM(0), LPARAM(&mut item as *mut _ as isize));
+        }
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_NCCREATE => {
@@ -838,9 +1619,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 app.hwnd = hwnd;
                 if app.create_children().is_ok() {
                     app.layout();
+                    // 默认停在第一页（通用）。先显页再刷数据：刷的时候要读文件的，
+                    // 读失败的信息得写在已经可见的控件上。
+                    let page = app.initial_page;
+                    app.show_page(page);
+                    unsafe {
+                        send(app.tab, TCM_SETCURSEL, WPARAM(page), LPARAM(0));
+                    }
+                    app.refresh_general();
+                    app.refresh_learn();
                     app.refresh();
                     // 刻意**不**自动选中第一行：面板是给「新词」用的，一开窗就
                     // 躺着上次的词会让人以为已经选中了它，改完点保存就把那条词改了。
+                    app.set_status("");
                 }
             }
             LRESULT(0)
@@ -857,18 +1648,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if let Some(app) = unsafe { app_of(hwnd) } {
                 // EN_CHANGE = 0x0300：编辑框内容变了，按钮该亮该灰要跟着走。
                 // 不做这一步，「保存」就只能一直亮着（空词点下去只得到一句抱怨）。
-                if code == 0x0300 {
-                    app.update_buttons();
-                } else if code == 0 {
-                    match id {
-                        ID_B_CLEAR => app.on_clear(),
-                        ID_B_SAVE => app.on_save(),
-                        ID_B_DEL => app.on_delete(),
-                        ID_B_UNDO => app.on_undo(),
-                        ID_B_IMPORT => app.on_import(),
-                        ID_B_OPEN => app.on_open(),
-                        _ => {}
+                // 三个编辑框的判据各不相同，按 id 分派——一律走 `update_buttons`
+                // 会拿两个数字框的内容去判「词填了没」，结果永远是亮的。
+                match (code, id) {
+                    (0x0300, ID_E_GAIN | ID_E_HALF) => app.update_general_fields(),
+                    (0x0300, ID_E_WORD | ID_E_PINYIN | ID_E_CODE | ID_E_WEIGHT) => {
+                        app.update_buttons()
                     }
+                    (CBN_SELCHANGE, ID_C_HINT) => app.update_hint_desc(app.selected_hint()),
+                    (0, ID_B_CLEAR) => app.on_clear(),
+                    (0, ID_B_SAVE) => app.on_save(),
+                    (0, ID_B_DEL) => app.on_delete(),
+                    (0, ID_B_UNDO) => app.on_undo(),
+                    (0, ID_B_IMPORT) => app.on_import(),
+                    (0, ID_B_OPEN) => app.on_open(),
+                    (0, ID_B_APPLY) => app.on_apply(),
+                    (0, ID_B_DEFAULT) => app.on_restore_defaults(),
+                    (0, ID_B_SEARCH) => app.on_search(),
+                    (0, ID_B_FORGET) => app.on_forget(),
+                    _ => {}
                 }
             }
             LRESULT(0)
@@ -886,8 +1684,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             app.update_buttons();
                         }
                     }
+                } else if hdr.code == LVN_ITEMCHANGED && hdr.hwndFrom == app.learn_list {
+                    // 两个 ListView 同时存在，「有没有选中」要各问各的：
+                    // 拿词语列表的选中项去判「能不能清除学习分」会指错行
+                    app.update_learn_buttons();
                 } else if hdr.code == TCN_SELCHANGE && hdr.hwndFrom == app.tab {
-                    // 只有一页，暂时没有可切的东西（M4b 在这里按页显示/隐藏）
+                    let page = send(app.tab, TCM_GETCURSEL, WPARAM(0), LPARAM(0)).0;
+                    app.show_page(page.max(0) as usize);
                 }
             }
             LRESULT(0)
@@ -920,6 +1723,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = RemoveWindowSubclass(app.tab, Some(tab_proc), 1);
                     for &h in &[app.e_word, app.e_pinyin, app.e_code, app.e_weight] {
                         let _ = RemoveWindowSubclass(h, Some(edit_proc), 1);
+                    }
+                    for &h in &[app.e_gain, app.e_half, app.e_search] {
+                        let _ = RemoveWindowSubclass(h, Some(enter_proc), 2);
                     }
                 }
             }
@@ -991,6 +1797,26 @@ unsafe extern "system" fn edit_proc(
             return LRESULT(0);
         }
         _ => {}
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// 通用页 / 学习页的编辑框里按回车 = 点它对应的那个按钮。
+///
+/// 目标按钮的 id 走子类化的 `data` 参数，所以一个过程能服务「应用」和「搜」
+/// 两个不同的按钮——不必为每个框写一遍同样的代码（也就不会漏掉某一个）。
+unsafe extern "system" fn enter_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    if msg == WM_CHAR && wparam.0 == 0x0d {
+        let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+        send(parent, WM_COMMAND, WPARAM(data), LPARAM(0));
+        return LRESULT(0);
     }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
@@ -1136,6 +1962,22 @@ fn message(owner: HWND, title: &str, text: &str) {
             MB_OK | MB_ICONINFORMATION,
         );
     }
+}
+
+/// 是/否确认。用在**不能撤销**的地方（清学习分），其余一律直接做——多一次点击
+/// 也会训练出「不看内容就按是」的习惯。
+fn confirm(owner: HWND, title: &str, text: &str) -> bool {
+    let t = wide(title);
+    let m = wide(text);
+    let r = unsafe {
+        MessageBoxW(
+            Some(owner),
+            PCWSTR(m.as_ptr()),
+            PCWSTR(t.as_ptr()),
+            MB_YESNO | MB_ICONWARNING,
+        )
+    };
+    r == IDYES
 }
 
 fn pick_file(owner: HWND) -> Option<PathBuf> {
@@ -1409,7 +2251,37 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
     let path = dir.join("words.tsv");
     std::fs::write(&path, "好吃\t\t\n").map_err(|e| format!("造词库失败：{e}"))?;
 
-    let app = Box::new(App::new(data, Some(path.clone()))?);
+    // 通用页与学习页也要有自己的临时文件：自测改用户的真配置是不可接受的副作用
+    let cfg_path = dir.join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        "# 自测造的文件\nconfig_version = 1\nhint.mode = \"mixed\"\n[ranking]\nhalf_life_days = 45\n",
+    )
+    .map_err(|e| format!("造配置失败：{e}"))?;
+    let db_path = dir.join("learn.db");
+    {
+        use rusqlite::{params, Connection};
+        let conn = Connection::open(&db_path).map_err(|e| format!("造学习库失败：{e}"))?;
+        conn.execute_batch(
+            "CREATE TABLE usage (key TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0,
+                                 last_used_at INTEGER NOT NULL DEFAULT 0,
+                                 tier INTEGER NOT NULL DEFAULT 0);",
+        )
+        .map_err(|e| format!("建表失败：{e}"))?;
+        let now = crate::learn::now_unix();
+        conn.execute(
+            "INSERT INTO usage VALUES ('好吃', 4, ?1, 0), ('的', 7, ?1, 1), ('嗯', 1, ?1, 2)",
+            params![now],
+        )
+        .map_err(|e| format!("写学习记录失败：{e}"))?;
+    }
+
+    let app = Box::new(App::new(
+        data,
+        Some(path.clone()),
+        Some(cfg_path.clone()),
+        Some(db_path.clone()),
+    )?);
     let hwnd = create_window(&app)?;
     // 不抢焦点地显示一下：真实路径里窗口是可见的，z 序表现才一致
     unsafe {
@@ -1418,15 +2290,27 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
     drain_messages();
 
     let result = (|| -> Result<(), String> {
-        check_z_order(hwnd)?;
+        // 三页各查一次：z 序（Tab 在底）+ 命中（点得到）。页是显隐切换的，
+        // 隐藏页的控件命中测试必然失败，只能切过去再查。
+        check_z_order(hwnd, PAGE_GENERAL)?;
+        check_general_flow(&app, &cfg_path)?;
+
+        switch_page(&app, PAGE_WORDS);
+        check_z_order(hwnd, PAGE_WORDS)?;
         check_labels(hwnd, &app)?;
         check_panel_flow(&app, &path)?;
+
+        switch_page(&app, PAGE_LEARN);
+        check_z_order(hwnd, PAGE_LEARN)?;
+        check_learn_page(&app)?;
+
+        switch_page(&app, PAGE_GENERAL);
         // 模拟 Tab 拿到焦点（点中它、或 Tab 键走过去）：它自己会抬到最上层，
         // 我们的子类化过程必须把它压回去
         unsafe {
             send(app.tab, WM_SETFOCUS, WPARAM(0), LPARAM(0));
         }
-        check_z_order(hwnd).map_err(|e| format!("Tab 拿到焦点后：{e}"))
+        check_z_order(hwnd, PAGE_GENERAL).map_err(|e| format!("Tab 拿到焦点后：{e}"))
     })();
 
     unsafe {
@@ -1434,6 +2318,166 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
     }
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+/// 自测用：像用户点页签那样切页（走 `TCM_SETCURSEL` + 真正的 `TCN_SELCHANGE`）。
+fn switch_page(app: &App, page: usize) {
+    unsafe {
+        send(app.tab, TCM_SETCURSEL, WPARAM(page), LPARAM(0));
+        // 直接调 `show_page` 会绕开「消息 → 分派」这一段，而恰恰是那一段里
+        // 容易指错页（下标与页签顺序不一致）。
+        let mut hdr = windows::Win32::UI::Controls::NMHDR {
+            hwndFrom: app.tab,
+            idFrom: ID_TAB,
+            code: TCN_SELCHANGE,
+        };
+        send(
+            app.hwnd,
+            WM_NOTIFY,
+            WPARAM(ID_TAB),
+            LPARAM(&mut hdr as *mut _ as isize),
+        );
+    }
+    drain_messages();
+}
+
+/// 通用页：合法/非法输入的门、写盘后注释还在、恢复默认真的删行。
+fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
+    // 1. 打开时按文件里的值显示：hint.mode = "mixed" → 第 0 项
+    let sel = unsafe { send(app.c_hint, CB_GETCURSEL, WPARAM(0), LPARAM(0)) }.0;
+    if sel != 0 {
+        return Err(format!("下拉框应选中 mixed（0），实际是 {sel}"));
+    }
+    if get_text(app.e_half) != "45" {
+        return Err(format!(
+            "半衰期应显示文件里的 45，实际是 {:?}",
+            get_text(app.e_half)
+        ));
+    }
+
+    // 2. 非法输入：按钮必须灰掉，且原因写在该行右边
+    set_text(app.e_gain, "99");
+    drain_messages();
+    if is_enabled(app.b_apply) {
+        return Err("学习增益输 99（超出 0–10）时「应用」应当灰掉".into());
+    }
+    if !get_text(app.n_gain_desc).contains("输入有误") {
+        return Err(format!(
+            "非法输入没给出原因，实际是 {:?}",
+            get_text(app.n_gain_desc)
+        ));
+    }
+
+    // 3. 合法了才允许写：写盘后注释与顺序都得在，值要能被 Config::parse 读回
+    set_text(app.e_gain, "0.6");
+    set_text(app.e_half, "30");
+    drain_messages();
+    if !is_enabled(app.b_apply) {
+        return Err("合法输入时「应用」应当可点".into());
+    }
+    unsafe {
+        send(app.b_apply, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
+    }
+    drain_messages();
+    let text = std::fs::read_to_string(cfg).map_err(|e| format!("回读配置失败：{e}"))?;
+    if !text.contains("# 自测造的文件") {
+        return Err(format!("写盘把注释冲掉了：\n{text}"));
+    }
+    let parsed = heinrich_scheme::Config::parse(&text);
+    if parsed.ranking_gain() != Some(0.6) || parsed.ranking_half_life_days() != Some(30.0) {
+        return Err(format!(
+            "写进去的值读不回来：g={:?} H={:?}\n{text}",
+            parsed.ranking_gain(),
+            parsed.ranking_half_life_days()
+        ));
+    }
+    if text.matches("half_life_days").count() != 1 {
+        return Err(format!("同一个键写了两次：\n{text}"));
+    }
+
+    // 4. 恢复默认 = 删掉这三行（不是写回数值）
+    unsafe {
+        send(app.b_default, 0x00F5, WPARAM(0), LPARAM(0));
+    }
+    drain_messages();
+    let text = std::fs::read_to_string(cfg).map_err(|e| format!("回读配置失败：{e}"))?;
+    for key in ["hint.mode", "learning_gain", "half_life_days"] {
+        if text.contains(key) {
+            return Err(format!("恢复默认后 {key} 还在文件里：\n{text}"));
+        }
+    }
+    if get_text(app.e_gain) != "0.35" || get_text(app.e_half) != "45" {
+        return Err(format!(
+            "恢复默认后界面应显示内置默认值，实际 g={:?} H={:?}",
+            get_text(app.e_gain),
+            get_text(app.e_half)
+        ));
+    }
+    Ok(())
+}
+
+/// 学习页：行数、排序、档位、按词搜索、「选中才亮清除」。
+fn check_learn_page(app: &App) -> Result<(), String> {
+    let count = unsafe { send(app.learn_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 3 {
+        return Err(format!("学习页应列出 3 条用过的词，实际 {count} 条"));
+    }
+    // 分最高的在最前：n=7（置顶）> n=4 > n=1（0 分）
+    let first = cell_text(app.learn_list, 0, 0);
+    if first != "的" {
+        return Err(format!("首行应是次数最多的「的」，实际是 {first:?}"));
+    }
+    if cell_text(app.learn_list, 0, 4) != "置顶" {
+        return Err("「的」的档位列应显示「置顶」".into());
+    }
+    if is_enabled(app.b_forget) {
+        return Err("没选中任何行时「清除」应当是灰的".into());
+    }
+
+    // 搜索：过滤到 1 条
+    set_text(app.e_search, "好");
+    unsafe {
+        send(app.b_search, 0x00F5, WPARAM(0), LPARAM(0));
+    }
+    drain_messages();
+    let count = unsafe { send(app.learn_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 1 || cell_text(app.learn_list, 0, 0) != "好吃" {
+        return Err(format!("按「好」搜索应只剩 1 条「好吃」，实际 {count} 条"));
+    }
+    set_text(app.e_search, "");
+    unsafe {
+        send(app.b_search, 0x00F5, WPARAM(0), LPARAM(0));
+    }
+    drain_messages();
+
+    // 选中一行 → 「清除」才亮（这里不点它：它会弹确认框，自测没人点「是」）
+    select_item(app.learn_list, 0);
+    drain_messages();
+    if !is_enabled(app.b_forget) {
+        return Err("选中一行后「清除学习分」应当可点".into());
+    }
+    Ok(())
+}
+
+/// 读 ListView 某一格的文字（自测断言用；`LVM_GETITEMTEXTW` 要自己备缓冲）。
+fn cell_text(list: HWND, row: usize, col: usize) -> String {
+    let mut buf = vec![0u16; 256];
+    let mut item = LVITEMW {
+        iSubItem: col as i32,
+        pszText: PWSTR(buf.as_mut_ptr()),
+        cchTextMax: buf.len() as i32,
+        ..Default::default()
+    };
+    const LVM_GETITEMTEXTW: u32 = 0x1073;
+    let n = unsafe {
+        send(
+            list,
+            LVM_GETITEMTEXTW,
+            WPARAM(row),
+            LPARAM(&mut item as *mut _ as isize),
+        )
+    };
+    String::from_utf16_lossy(&buf[..n.0.max(0) as usize])
 }
 
 /// 跑掉已经排队的消息（建窗期间的布局/刷新都在 `WM_CREATE` 里同步跑完，这里再兜一遍）。
@@ -1485,10 +2529,13 @@ fn rect_of(hwnd: HWND) -> RECT {
 /// 2. **命中**：拿系统自己的 `RealChildWindowFromPoint` 在可交互控件的几个点上
 ///    做命中测试，命中的必须是它自己——这一条才真正等价于「鼠标点得到」。
 ///
+/// 只查 `page` 这一页的控件：其余页是 `SW_HIDE` 的，隐藏窗口本来就点不到，
+/// 拿它们做命中测试只会得到一个假的失败。
+///
 /// 为什么不用 `WindowFromPoint`：那是在**整个桌面**上找窗口，会被别的窗口、锁屏
 /// 界面干扰；`RealChildWindowFromPoint` 只在父窗口内部按 z 序/可见性找子窗口，
 /// 与桌面状态无关，可以放进自动化里跑。
-fn check_z_order(hwnd: HWND) -> Result<(), String> {
+fn check_z_order(hwnd: HWND, page: usize) -> Result<(), String> {
     let kids = children(hwnd);
     if kids.is_empty() {
         return Err("窗口里一个子控件都没有".into());
@@ -1501,19 +2548,23 @@ fn check_z_order(hwnd: HWND) -> Result<(), String> {
         ));
     }
 
-    const CLICKABLE: [usize; 10] = [
-        ID_LIST,
-        ID_E_WORD,
-        ID_E_PINYIN,
-        ID_E_CODE,
-        ID_E_WEIGHT,
-        ID_B_CLEAR,
-        ID_B_SAVE,
-        ID_B_DEL,
-        ID_B_IMPORT,
-        ID_B_UNDO,
-    ];
-    for id in CLICKABLE {
+    let clickable: &[usize] = match page {
+        PAGE_GENERAL => &[ID_C_HINT, ID_E_GAIN, ID_E_HALF, ID_B_APPLY, ID_B_DEFAULT],
+        PAGE_WORDS => &[
+            ID_LIST,
+            ID_E_WORD,
+            ID_E_PINYIN,
+            ID_E_CODE,
+            ID_E_WEIGHT,
+            ID_B_CLEAR,
+            ID_B_SAVE,
+            ID_B_DEL,
+            ID_B_IMPORT,
+            ID_B_UNDO,
+        ],
+        _ => &[ID_E_SEARCH, ID_B_SEARCH, ID_LEARN_LIST, ID_B_FORGET],
+    };
+    for &id in clickable {
         let Some(h) = kids.iter().copied().find(|&h| id_of(h) == id as isize) else {
             return Err(format!("找不到控件 id {id}"));
         };
@@ -1533,7 +2584,7 @@ fn check_z_order(hwnd: HWND) -> Result<(), String> {
             let hit = unsafe { RealChildWindowFromPoint(hwnd, pt) };
             if hit != h {
                 return Err(format!(
-                    "控件 id {id} 在相对位置 ({fx}, {fy}) 处命中的是 id {}（点了不会有反应）",
+                    "第 {page} 页的控件 id {id} 在相对位置 ({fx}, {fy}) 处命中的是 id {}（点了不会有反应）",
                     id_of(hit)
                 ));
             }
