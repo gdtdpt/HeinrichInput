@@ -32,6 +32,19 @@ pub const DISPLAY_NAME: &str = "亨利五笔";
 /// 避免打包时改名、或维护一层名字映射（那才是真正容易出错的地方）。
 pub const DLL_FILE_NAME: &str = "heinrich_win.dll";
 
+/// 设置程序的可执行文件名（与 [`DLL_FILE_NAME`] 放在同一目录）。
+///
+/// DLL 被系统加载在别人的进程里，它要拉起设置窗口只能靠「自己所在目录 +
+/// 这个文件名」，所以两边必须用同一份常量。
+pub const SETTINGS_EXE_NAME: &str = "heinrich-settings.exe";
+
+/// 设置窗口的窗口类名。
+///
+/// 一处定义、两处使用：设置程序用它 `RegisterClassW`，DLL 用 `FindWindowW`
+/// 找「已经开着的那一个」。两边各写一份字符串是本项目最容易犯的错误——
+/// 改了一边忘另一边，表现是「点选项开第二个窗口」，没有任何报错。
+pub const SETTINGS_CLASS: &str = "HeinrichSettings";
+
 /// `InstallLayoutOrTip` 需要的描述串：`<LANGID 十六进制>:{CLSID}{PROFILE GUID}`。
 ///
 /// 格式见 <https://learn.microsoft.com/en-us/windows/win32/tsf/installlayoutortip>。

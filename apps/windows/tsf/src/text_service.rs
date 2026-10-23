@@ -44,17 +44,20 @@ use std::rc::Rc;
 
 use heinrich_ui::{Dir, Rect};
 use heinrich_win_ui::{Event, Hit};
-use windows::core::{implement, ComObjectInterface, IUnknown, Interface, Ref, Result, BOOL, GUID};
-use windows::Win32::Foundation::{FALSE, LPARAM, TRUE, WPARAM};
+use windows::core::{
+    implement, ComObjectInterface, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID,
+};
+use windows::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfDocumentMgr,
-    ITfEditSession, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
-    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
-    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
+    ITfEditSession, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl, ITfKeyEventSink,
+    ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource, ITfTextInputProcessorEx,
+    ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
+    ITfThreadMgrEventSink_Impl, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE,
+    TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
 
 use crate::cand;
@@ -83,7 +86,8 @@ static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
     ITfTextInputProcessorEx,
     ITfKeyEventSink,
     ITfThreadMgrEventSink,
-    ITfCompositionSink
+    ITfCompositionSink,
+    ITfFnConfigure
 )]
 pub struct TextService {
     core: Rc<Core>,
@@ -1039,6 +1043,57 @@ impl ITfCompositionSink_Impl for TextService_Impl {
             // 编码」的候选，点它还会往文档里写字。
             self.clear_popups();
             tsf_info!("#{seq} 组合串被外部终止，已删除残留 {dropped:?}");
+            Ok(())
+        })
+    }
+}
+
+/// 系统设置页上那个「选项」按钮的落点。
+///
+/// ## 它决定按钮**存不存在**
+///
+/// Windows 的输入法管理界面按微软文档的约定 `CoCreateInstance(CLSID,
+/// IID_ITfFnConfigure)` 拿这个接口：**拿得到就显示「选项」，拿不到就不显示**。
+/// v1.42 之前「删除」左边那块空白不是我们漏画，是系统根本不知道我们能配置。
+/// 实测对照：微软拼音 `{B115690A…}`、微软五笔 `{a028ae76…}` 在这个 IID 上都是
+/// `S_OK`，它们都有「选项」；我们那时是 `E_NOINTERFACE`。
+///
+/// ## 为什么放在文本服务对象上，而不是单独做一个 COM 类
+///
+/// 系统要的是「同一个 CLSID 上多问一个 IID」，不是第二个类。放在这里，
+/// `DllGetClassObject` → `ClassFactory::CreateInstance` → `QueryInterface`
+/// 这条既有链路一行都不用改，也不必给注册器加一次注册。
+impl ITfFunction_Impl for TextService_Impl {
+    /// 系统若把这个函数名显示出来（旧版「文本服务和输入语言」的属性对话框会），
+    /// 用户看到的应当是「亨利五笔 设置」这样的词，而不是类名。
+    fn GetDisplayName(&self) -> Result<BSTR> {
+        Ok(BSTR::from(format!(
+            "{} · 设置",
+            heinrich_tip_id::DISPLAY_NAME
+        )))
+    }
+}
+
+/// `Show` 只做一件事：把设置窗口叫到用户面前。
+///
+/// **无论失败与否都返回 `S_OK`**。理由有两条：
+/// ① 系统这边只是「打开配置界面」，我们失败时它没有任何补救手段，弹一个
+///    错误框只是把失败转嫁给用户；
+/// ② 这个调用发生在 SystemSettings 的 UI 线程上，返回错误码可能让它显示
+///    「无法打开设置」的通用提示——而真正的失败原因（exe 不在、被拦截）
+///    只有写进 tsf.log 才查得动。
+impl ITfFnConfigure_Impl for TextService_Impl {
+    fn Show(&self, _hwndparent: HWND, langid: u16, _rguidprofile: *const GUID) -> Result<()> {
+        tsf_info!(
+            "#{} 系统设置请求打开配置窗口（langid=0x{langid:04X}）",
+            self.seq
+        );
+        guarded("ITfFnConfigure::Show", Ok(()), || {
+            // 不把父窗口传下去：设置窗是独立顶层窗口，自己管自己的 Z 序与焦点；
+            // 认成一个可能随时被销毁的 SystemSettings 子窗口反而会跟着它一起消失。
+            if let Err(e) = crate::launch::open_settings() {
+                tsf_error!("#{} 打开设置窗口失败：{e}", self.seq);
+            }
             Ok(())
         })
     }

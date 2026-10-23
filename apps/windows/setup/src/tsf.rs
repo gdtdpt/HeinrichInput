@@ -17,7 +17,7 @@ use windows::core::{IUnknown, Interface, Result, GUID};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
+    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr, ITfFnConfigure,
     ITfInputProcessorProfileMgr, ITfTextInputProcessor, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
     GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
     GUID_TFCAT_TIP_KEYBOARD,
@@ -146,6 +146,23 @@ pub fn probe_create_instance() -> Result<()> {
     unsafe {
         let unknown: IUnknown = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER)?;
         let _tsf: ITfTextInputProcessor = unknown.cast()?;
+    }
+    Ok(())
+}
+
+/// 端到端探针：系统设置页的「选项」按钮能不能出现。
+///
+/// Windows 的输入法管理界面按微软文档的做法
+/// `CoCreateInstance(CLSID, IID_ITfFnConfigure)` 拿这个接口——**拿得到才画按钮，
+/// 拿不到就静默不画**（v1.42 的截图里「删除」左边那块空白就是这么来的）。
+/// 所以这一项不是「锦上添花的功能检查」，它直接决定系统 UI 长什么样。
+///
+/// 注意与 `probe_create_instance` 的区别：那个只证明「是个能激活的文本服务」，
+/// 这个证明「是一个可配置的文本服务」。两者都过，才等于「注册完整」。
+pub fn probe_fn_configure() -> Result<()> {
+    let clsid = tip_clsid();
+    unsafe {
+        let _configure: ITfFnConfigure = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER)?;
     }
     Ok(())
 }

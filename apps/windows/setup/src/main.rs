@@ -20,6 +20,7 @@
 #![windows_subsystem = "console"]
 
 mod reg;
+mod shortcut;
 mod tsf;
 
 use std::ffi::c_void;
@@ -210,9 +211,9 @@ fn install() -> i32 {
     };
     let dll_str = dll.to_string_lossy().to_string();
 
-    // [0/5] 先把旧的 server 收掉：它和新 DLL 的协议版本对不上，留着会让新版本
+    // [0/6] 先把旧的 server 收掉：它和新 DLL 的协议版本对不上，留着会让新版本
     // 每次握手都吃一个 `Bye`，而它自己又因为「总有人来连」永远退不出去。
-    print!("[0/5] 结束旧的 server … ");
+    print!("[0/6] 结束旧的 server … ");
     let killed = proc::kill_server_in_this_session();
     if killed.is_empty() {
         println!("没有在跑的");
@@ -240,7 +241,7 @@ fn install() -> i32 {
     let cls_key = heinrich_tip_id::clsid_key();
     let inproc_key = format!("{cls_key}\\InprocServer32");
 
-    print!("[1/5] COM 类名 … ");
+    print!("[1/6] COM 类名 … ");
     if let Err(e) = reg::set_string(
         HKEY_LOCAL_MACHINE,
         &cls_key,
@@ -252,7 +253,7 @@ fn install() -> i32 {
     }
     println!("完成");
 
-    print!("[2/5] DLL 路径 … ");
+    print!("[2/6] DLL 路径 … ");
     let inproc = reg::set_string(HKEY_LOCAL_MACHINE, &inproc_key, None, &dll_str).and_then(|()| {
         // Apartment：TSF 在宿主 UI 线程（STA）上调用我们。写成 Both 会让系统
         // 在任意线程调过来，而那些线程没有输入队列，`GetKeyState` 之类全会失真。
@@ -271,7 +272,7 @@ fn install() -> i32 {
 
     // [3] 语言档
     print!(
-        "[3/5] 语言档（{} / 0x{:04X}）… ",
+        "[3/6] 语言档（{} / 0x{:04X}）… ",
         heinrich_tip_id::DISPLAY_NAME,
         heinrich_tip_id::LANGID_ZH_CN
     );
@@ -285,7 +286,7 @@ fn install() -> i32 {
     }
 
     // [4] 类别
-    print!("[4/5] 能力类别（{} 项）… ", tsf::CATEGORIES.len());
+    print!("[4/6] 能力类别（{} 项）… ", tsf::CATEGORIES.len());
     match tsf::register_categories() {
         Ok(()) => println!("完成"),
         Err(e) => {
@@ -296,9 +297,27 @@ fn install() -> i32 {
     }
 
     // [5] 挂进输入法列表。这一步无返回值，只能事后查。
-    print!("[5/5] 加入输入法列表 … ");
+    print!("[5/6] 加入输入法列表 … ");
     tsf::set_layout(true);
     println!("已提交");
+
+    // [6] 开始菜单快捷方式。
+    //
+    // 它不是注册的一部分：失败只警告，不返回非零。理由是这个入口是**便利**，
+    // 真正的「正规入口」是系统设置页的「选项」按钮（`ITfFnConfigure`），
+    // 那条路不依赖任何 .lnk。
+    print!("[6/6] 开始菜单快捷方式 … ");
+    let settings_exe = dll
+        .parent()
+        .map(|dir| dir.join(heinrich_tip_id::SETTINGS_EXE_NAME));
+    match settings_exe {
+        Some(exe) if exe.is_file() => match shortcut::create_settings_shortcut(&exe) {
+            Ok(lnk) => println!("完成\n      {}", lnk.display()),
+            Err(e) => println!("跳过（{e}）"),
+        },
+        Some(exe) => println!("跳过（找不到 {}）", exe.display()),
+        None => println!("跳过（定位不到 DLL 目录）"),
+    }
 
     println!("\n== 校验 ==");
     let mut all_ok = true;
@@ -314,6 +333,16 @@ fn install() -> i32 {
             .map(|()| Some("ok".to_string()))
             .map_err(|e| e.to_string())
     });
+    // 这一项决定系统设置页「选项」按钮存不存在：Windows 拿不到
+    // `ITfFnConfigure` 就不画那个按钮，并且**不会报任何错**。
+    all_ok &= check(
+        "ITfFnConfigure 可用（设置的「选项」按钮）",
+        || {
+            tsf::probe_fn_configure()
+                .map(|()| Some("ok".to_string()))
+                .map_err(|e| e.to_string())
+        },
+    );
 
     println!();
     if all_ok {
@@ -371,31 +400,31 @@ fn uninstall() -> i32 {
 
     // 顺序：先从输入法列表摘掉，再撤销语言档与类别，最后删 COM 键。
     // 反过来做会留下「列表里有个条目，点了报错」的中间状态。
-    print!("[1/5] 从输入法列表移除 … ");
+    print!("[1/6] 从输入法列表移除 … ");
     tsf::set_layout(false);
     println!("已提交");
     println!("      注意：如果中文下不再有任何输入法，Windows 可能把默认输入语言改成英文，");
     println!("      这是系统行为（chewing-tsf #553），需要手工切回。");
 
-    print!("[2/5] 撤销语言档 … ");
+    print!("[2/6] 撤销语言档 … ");
     match tsf::unregister_profile() {
         Ok(()) => println!("完成"),
         Err(e) => println!("跳过（{e}）"),
     }
 
-    print!("[3/5] 撤销能力类别 … ");
+    print!("[3/6] 撤销能力类别 … ");
     match tsf::unregister_categories() {
         Ok(()) => println!("完成"),
         Err(e) => println!("跳过（{e}）"),
     }
 
-    print!("[4/5] 删除 CTF\\TIP 键 … ");
+    print!("[4/6] 删除 CTF\\TIP 键 … ");
     match reg::delete_tree(HKEY_LOCAL_MACHINE, &heinrich_tip_id::ctf_tip_key()) {
         Ok(()) => println!("完成"),
         Err(e) => println!("失败（{e}）"),
     }
 
-    print!("[5/5] 删除 CLSID 键 … ");
+    print!("[5/6] 删除 CLSID 键 … ");
     let mut ok = true;
     for key in [
         heinrich_tip_id::clsid_key(),
@@ -411,6 +440,14 @@ fn uninstall() -> i32 {
         }
     }
     println!("{}", if ok { "完成" } else { "部分失败" });
+
+    // [6] 快捷方式。放在最后：它不影响任何注册状态，删不掉也只是留下一个
+    // 指向不存在文件的 .lnk（点开报错），不值得让整个卸载失败。
+    print!("[6/6] 删除开始菜单快捷方式 … ");
+    match shortcut::remove_settings_shortcut() {
+        Ok(()) => println!("完成"),
+        Err(e) => println!("跳过（{e}）"),
+    }
 
     println!("\n✓ 反注册结束。已经打开的程序里可能还留着一份已加载的 DLL，重启它们才会彻底卸载。");
     if ok {
@@ -531,6 +568,12 @@ fn status() -> i32 {
                 .map(|()| Some("ok".into()))
                 .map_err(|e| e.to_string())
         });
+        // 这一项不是「功能多了没有」，它决定系统设置页画不画「选项」按钮。
+        ok &= check("CoCreateInstance + ITfFnConfigure", || {
+            tsf::probe_fn_configure()
+                .map(|()| Some("ok".into()))
+                .map_err(|e| e.to_string())
+        });
     } else {
         println!("  ✗ COM 初始化失败，跳过探针");
         ok = false;
@@ -558,6 +601,21 @@ fn status() -> i32 {
             format!("{} （{} 字节）", log.display(), meta.len()),
         ),
         Err(_) => row('–', "日志", format!("尚未生成（{}）", log.display())),
+    }
+    // 两个「从哪儿进设置」的入口。都缺也能用（直接双击 exe），只是体验差。
+    let settings = local_dll
+        .as_ref()
+        .and_then(|d| d.parent())
+        .map(|dir| dir.join(heinrich_tip_id::SETTINGS_EXE_NAME));
+    match settings {
+        Some(p) if p.is_file() => row('✓', "设置程序", p.display().to_string()),
+        Some(p) => row('–', "设置程序", format!("缺少 {}", p.display())),
+        None => row('–', "设置程序", "定位不到 DLL 目录".into()),
+    }
+    match shortcut::shortcut_path() {
+        Ok(p) if p.is_file() => row('✓', "开始菜单入口", p.display().to_string()),
+        Ok(p) => row('–', "开始菜单入口", format!("未创建（{}）", p.display())),
+        Err(e) => row('–', "开始菜单入口", e),
     }
     row(
         '–',

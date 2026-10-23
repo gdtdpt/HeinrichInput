@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 heinrich-scheme = { workspace = true }
+# 窗口类名与设置程序文件名放在这个零依赖的常量 crate 里，DLL 侧用的是同一份。
+heinrich-tip-id = { workspace = true }
 
 [dependencies.windows-core]
 version = "0.62"

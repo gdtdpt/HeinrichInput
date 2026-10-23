@@ -1171,6 +1171,52 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
 截图必须在同一次调用里「启动 → 睡 2 秒 → 截」。
 
+### 4.19 设置窗口怎么被打开（M4a7 / D69）
+
+两条入口，都不要求用户知道 exe 在哪：
+
+| 入口 | 触发 | 代码 |
+|---|---|---|
+| 系统设置 → 语言选项 → 键盘 → 亨利五笔 → **选项** | Windows `CoCreateInstance(CLSID, IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs`（实现）+ `tsf/src/launch.rs`（拉起） |
+| 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs`（安装时写，卸载时删） |
+
+**TSF 侧**：`ITfFnConfigure` 挂在 `TextService` 上（不是另起一个 COM 类），所以
+`DllGetClassObject → ClassFactory → QueryInterface` 这条既有链路一行没改。父接口
+`ITfFunction` 只有一个 `GetDisplayName`（返回「亨利五笔 · 设置」）。
+
+`Show` 的三条约定（都不在类型系统里，只能靠代码和注释守住）：
+
+1. **立即返回**——不等窗口关闭。
+2. **已有窗口就复用**——`FindWindowW(heinrich_tip_id::SETTINGS_CLASS)` 命中就
+   `ShowWindowAsync(SW_RESTORE)` + `SetForegroundWindow`。settings 没有单实例锁。
+3. **失败也返回 `S_OK`**，原因写 `tsf.log`。
+
+**自验**（不需要点设置页）：
+
+```
+python tools/probe/probe_fnconfigure.py            # 完整：接口 + 显示名 + Show + 复用
+python tools/probe/probe_fnconfigure.py --no-show   # 只验接口存在性（反向验证用）
+```
+
+输出应形如：
+
+```
+CoCreateInstance(ITfFnConfigure) hr=0x00000000
+GetDisplayName        hr=0x00000000  显示名='亨利五笔 · 设置'
+Show #1               hr=0x00000000  耗时 10.9 ms（必须立刻返回，不能等窗口关闭）
+OK: 窗口出现，pid=30500
+Show #2               hr=0x00000000  pid=30500（同一进程，已复用）
+```
+
+**别用 `tasklist` 判断窗口在不在**：探针跑在 Bash/CI 的 job object 里，父进程一退出整棵
+进程树会被收掉，「窗口」与「进程」在那种环境下不等价。用 `FindWindowW` 判窗口、用
+`GetWindowThreadProcessId` 取 pid。
+
+**安装器侧**：快捷方式写 `FOLDERID_CommonPrograms`（机器级安装 → 公共开始菜单，避免
+`runas` 到另一个管理员账户时把 .lnk 写进看不到的用户目录）。这里有个测试上的取舍：
+公共开始菜单**只有提权进程能写**，所以 `cargo test` 里换成临时目录（`create_settings_shortcut_in`），
+验的是同一段 ShellLink 代码 + 用 `IPersistFile::Load` 读回来证明文件合法。
+
 ## 5. 数据管线
 
 ```
@@ -1414,6 +1460,29 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
       居中度用墨迹包围盒中点与控件中心的偏移（本次实测水平 +0.0 / +0.5 px、背景
       `(240,240,240)` 与窗口底一致）。自测里则直接发一次真的 `WM_CTLCOLORSTATIC`
       比对返回画刷——比读代码可靠，也比截图精确。
+
+48. **`GetModuleFileNameW(None)` 给的是宿主 exe，不是你的 DLL。** 注入型 DLL 想找
+    「自己所在目录」必须另外拿模块句柄：`GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, ...)`
+    或者干脆在 `DllMain` 里把 `hmodule` 存进一个 `static`。我们用后者——只多一条原子写，
+    不取锁、不分配，在 loader lock 下安全。写错的表现是「点选项去开了宿主目录下的
+    `heinrich-settings.exe`」：如果宿主目录碰巧有同名文件，会开起别人的程序，而你从
+    现象上完全看不出是自己找错了目录。
+
+49. **系统设置页的「选项」按钮由接口存在性决定，而且失败完全静默。** Windows 拿
+    `CoCreateInstance(CLSID, IID_ITfFnConfigure)`，拿不到就**根本不画按钮**——不报错、
+    不写事件日志、`GetLastError` 也没东西。所以「按钮不见」这种问题只能靠探针复现系统的
+    那一次调用（`tools/probe/probe_fnconfigure.py`），截图与读代码都得不出结论。
+    反向验证很便宜：把 `#[implement(...)]` 里的 `ITfFnConfigure` 去掉重新构建，探针应
+    立刻回到 `E_NOINTERFACE`；这条验证做一次就能确认「断言真的在看接口，而不是在看别的」。
+    另一个容易误判的点：**`Show` 不要等窗口关闭**。文档写「对话框关闭前不要返回」，
+    那是给模态对话框的；我们的窗口是独立顶层窗口，阻塞会挂住 SystemSettings 的 UI 线程。
+
+50. **同一段字符串写在 DLL 和 GUI 两边，就一定会漂。** 设置窗口的类名
+    （`FindWindowW` 与 `RegisterClassW` 两边都要）与 exe 文件名（DLL 找它、安装器放它）
+    都收进了 `heinrich-tip-id`（`SETTINGS_CLASS` / `SETTINGS_EXE_NAME`）。写两份的失败
+    表现是「连点两次选项开出两个设置窗口」或「点了没反应」，两者都不报错。
+    `w!` 宏只吃字面量，所以这类常量要改成运行时 `encode_utf16()` 再传 `PCWSTR`——
+    换来的是单一事实源，值得。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```

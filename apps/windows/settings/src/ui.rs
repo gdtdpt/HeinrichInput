@@ -48,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::lex::{find_data_dir, Lexicons};
 use crate::model::{Model, Row};
 
-const CLASS_NAME: PCWSTR = w!("HeinrichSettings");
+// 窗口类名不在这里写死：见 `create_window` 里对 `heinrich_tip_id::SETTINGS_CLASS` 的说明。
 
 // Static 的两个样式位（`SS_CENTER` / `SS_CENTERIMAGE`）。它们在 windows crate 的
 // `Win32_System_SystemServices` 里，那个 feature 没开、为一对常量开一整个模块不值，
@@ -1314,12 +1314,19 @@ fn create_window(app: &App) -> Result<HWND, String> {
     unsafe {
         let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+        // 类名从 `heinrich-tip-id` 取，不在这里写第二份：DLL 的
+        // `ITfFnConfigure::Show` 用同一个常量 `FindWindowW` 找「已经开着的那个」，
+        // 写两份的失败表现是「连点两次选项开出两个窗口」，没有任何报错。
+        let class: Vec<u16> = heinrich_tip_id::SETTINGS_CLASS
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: HINSTANCE(hinstance.0),
             hCursor: cursor,
-            lpszClassName: CLASS_NAME,
+            lpszClassName: PCWSTR(class.as_ptr()),
             hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(6usize as *mut core::ffi::c_void),
             ..Default::default()
         };
@@ -1331,7 +1338,7 @@ fn create_window(app: &App) -> Result<HWND, String> {
         let h = (600.0 * dpi) as i32;
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
-            CLASS_NAME,
+            PCWSTR(class.as_ptr()),
             w!("亨利五笔 · 设置"),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,

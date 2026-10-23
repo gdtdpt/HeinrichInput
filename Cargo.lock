@@ -137,6 +137,7 @@ name = "heinrich-settings"
 version = "0.1.0"
 dependencies = [
  "heinrich-scheme",
+ "heinrich-tip-id",
  "windows",
  "windows-core",
 ]

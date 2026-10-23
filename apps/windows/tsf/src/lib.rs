@@ -46,6 +46,7 @@ mod caret;
 mod ipc;
 mod keycap;
 mod keys;
+mod launch;
 mod preedit;
 mod text_service;
 
@@ -69,12 +70,15 @@ fn tip_clsid() -> GUID {
 
 /// DLL 入口。
 ///
-/// **这里只做一件事**：`DisableThreadLibraryCalls`——告诉系统「不需要给我
-/// THREAD_ATTACH/DETACH 通知」，省掉每个线程创建时的无谓回调。
+/// **这里只做两件事**：`DisableThreadLibraryCalls`——告诉系统「不需要给我
+/// THREAD_ATTACH/DETACH 通知」，省掉每个线程创建时的无谓回调；把模块句柄存进
+/// 一个 `static`——`ITfFnConfigure::Show` 要找到与 DLL 同目录的设置程序，而
+/// `GetModuleFileNameW(None)` 拿到的是**宿主**的 exe（见 `launch` 的模块文档）。
 ///
 /// 其余一概不做。`DllMain` 在 loader lock 下运行，此时加载 DLL、创建线程、
 /// 等待其它锁都可能直接死锁整个进程。日志、COM 初始化、读码表都留到 `Activate`
-/// 或首次调用时惰性完成。
+/// 或首次调用时惰性完成。存一个整数是本函数里唯一新加的写操作，它不取锁、
+/// 不分配、不调用任何 API。
 #[no_mangle]
 pub extern "system" fn DllMain(
     hmodule: *mut c_void,
@@ -82,6 +86,7 @@ pub extern "system" fn DllMain(
     _lp_reserved: *mut c_void,
 ) -> BOOL {
     if ul_reason_for_call == DLL_PROCESS_ATTACH {
+        launch::remember_module(hmodule);
         unsafe {
             let _ = DisableThreadLibraryCalls(HMODULE(hmodule));
         }
@@ -171,7 +176,8 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 pub extern "system" fn HeinrichTsfAbiVersion() -> u32 {
     // 1 = M1.0（观测按键）；2 = M1.1（缓冲 + 上屏 + 中英切换）；
     // 3 = M1.2（组合串）；4 = M1.3（接 server + 中文标点 + 全局中英模式）；
-    // 5 = M2.3（候选窗：逐键查询、光标定位、数字键与点选、翻页）。
+    // 5 = M2.3（候选窗：逐键查询、光标定位、数字键与点选、翻页）；
+    // 6 = M4a7（ITfFnConfigure：系统设置里的「选项」能打开设置窗口）。
     // 改动导出的语义时递增。
-    5
+    6
 }
