@@ -3,7 +3,8 @@
 //! ```text
 //! heinrich-settings.exe                           # 编辑 %APPDATA%\Heinrich\words.tsv
 //! heinrich-settings.exe --words out\t.tsv --data dist\data\wubi86
-//! heinrich-settings.exe --selftest                # 无界面自测（不进窗口）
+//! heinrich-settings.exe --selftest                # 无界面自测（数据层）
+//! heinrich-settings.exe --selftest-ui             # 窗口层自测（z 序 + 命中测试）
 //! ```
 //!
 //! 它只做一件事：读写 `words.tsv`。生效靠 server 那每秒一次的 mtime 检查，
@@ -21,6 +22,7 @@ struct Args {
     data: Option<PathBuf>,
     words: Option<PathBuf>,
     selftest: bool,
+    selftest_ui: bool,
 }
 
 fn parse_args() -> Args {
@@ -28,6 +30,7 @@ fn parse_args() -> Args {
         data: None,
         words: None,
         selftest: false,
+        selftest_ui: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -35,10 +38,11 @@ fn parse_args() -> Args {
             "--data" => args.data = it.next().map(PathBuf::from),
             "--words" => args.words = it.next().map(PathBuf::from),
             "--selftest" => args.selftest = true,
+            "--selftest-ui" => args.selftest_ui = true,
             other => {
                 if other == "--help" || other == "-h" {
                     println!(
-                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n  heinrich-settings --selftest"
+                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n  heinrich-settings --selftest[|-ui]"
                     );
                     std::process::exit(0);
                 }
@@ -67,6 +71,19 @@ fn main() -> std::process::ExitCode {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
+    }
+
+    if args.selftest_ui {
+        return match ui::selftest_ui(args.data) {
+            Ok(()) => {
+                println!("设置窗口自测通过（z 序 + 焦点抬升）");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("窗口自测失败：{e}");
+                std::process::ExitCode::FAILURE
+            }
+        };
     }
 
     match ui::App::new(args.data, args.words) {

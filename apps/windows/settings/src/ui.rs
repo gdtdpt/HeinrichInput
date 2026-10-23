@@ -7,13 +7,20 @@
 //! 为什么用原生控件而不是复用 `heinrich-win-ui` 的自绘：编辑框要能**用亨利自己
 //! 打中文**（单字都在词库里），自绘就得连光标、选区、IME 组合串一起实现；而这张
 //! 表的重点是把功能跑通，观感可以以后再统一（M4 之后仍可只换绘制层）。
+//!
+//! **Tab 必须永远压在 z 序最底层**（[`lower_tab`]）：`SysTabControl32` 拿到焦点
+//! 时会把自己抬到最上层，而它的矩形正好覆盖整个内容区——一旦抬上来，它就把下面
+//! 所有按钮和编辑框整片盖住，鼠标点哪儿都被它吃掉。界面看起来完全正常，只是所有
+//! 点击都石沉大海（F44：验收时「新增/保存点了没反应、词也没真加上」就是这个）。
 
 use std::path::PathBuf;
 
 use heinrich_scheme::user::UserWord;
 use windows::core::{w, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateFontW, GetSysColorBrush, SetBkMode, HFONT, TRANSPARENT};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    CreateFontW, GetSysColorBrush, ScreenToClient, SetBkMode, HFONT, TRANSPARENT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
 use windows::Win32::UI::Controls::{
@@ -22,16 +29,20 @@ use windows::Win32::UI::Controls::{
     LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Shell::{
+    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, MessageBoxW, MoveWindow,
-    PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA,
-    IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SW_SHOW, SW_SHOWNORMAL, WINDOW_STYLE, WM_CLOSE,
+    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, LoadCursorW,
+    MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW,
+    SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GW_CHILD,
+    GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CLOSE,
     WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY,
-    WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE,
+    WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -193,6 +204,11 @@ impl App {
             ID_TAB,
             self.font,
         )?;
+        // 见模块头的 F44：Tab 一拿到焦点就自己浮到最上层，把内容区全盖住。
+        // 这里挂一个子类化过程，等它自己抬完再把它压回去（顺序不能反）。
+        unsafe {
+            let _ = SetWindowSubclass(self.tab, Some(tab_proc), 1, 0);
+        }
         // 页码与 `refresh` 里的顺序一致；以后加页只在这里追加一行
         let mut item = vec![0u16; 32];
         put_utf16(&mut item, "词组");
@@ -409,6 +425,8 @@ impl App {
             let _ = MoveWindow(self.status, m, ch - status_h, cw - m * 2, self.s(20), true);
             let _ = MoveWindow(self.e_word, cx + label_w + gap, py, self.s(130), row, true);
         }
+        // 排在最后：Tab 是背景板，必须待在所有页控件下面（F44）
+        lower_tab(self.tab);
     }
 
     /// 重算推导列并重填 ListView（保留当前选中项）。
@@ -812,6 +830,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_DESTROY => {
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                unsafe {
+                    let _ = RemoveWindowSubclass(app.tab, Some(tab_proc), 1);
+                }
+            }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
@@ -829,6 +852,44 @@ unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
 }
 
 // ---------------------------------------------------------------- 小工具
+
+/// 把 Tab 压到 z 序最底层（F44）。
+///
+/// 不用 `WS_EX_TRANSPARENT` 之类的花样：Tab 只是背景板，压到底之后它照常画页签、
+/// 照常响应 `TCN_SELCHANGE`，被页控件盖住的部分不画——这正是原生 Tab 的常规用法。
+fn lower_tab(tab: HWND) {
+    if tab.0.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            tab,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Tab 的子类化过程：`SysTabControl32` 在 `WM_SETFOCUS` 里会 `SetWindowPos` 把
+/// 自己抬到最上层，所以必须**等它处理完**（先 `DefSubclassProc`）再压回去。
+unsafe extern "system" fn tab_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    if msg == WM_SETFOCUS {
+        lower_tab(hwnd);
+    }
+    result
+}
 
 /// 发一条窗口消息。
 ///
@@ -954,8 +1015,8 @@ fn pick_file(owner: HWND) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf16_lossy(&buf[..end])))
 }
 
-/// 建窗、跑消息循环。返回进程退出码。
-pub fn run(app: Box<App>) -> Result<i32, String> {
+/// 建窗（不显示、不进消息循环）。
+fn create_window(app: &App) -> Result<HWND, String> {
     unsafe {
         let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
@@ -974,7 +1035,7 @@ pub fn run(app: Box<App>) -> Result<i32, String> {
         let dpi = app.dpi;
         let w = (900.0 * dpi) as i32;
         let h = (600.0 * dpi) as i32;
-        let hwnd = CreateWindowExW(
+        CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             CLASS_NAME,
             w!("亨利五笔 · 设置"),
@@ -986,9 +1047,16 @@ pub fn run(app: Box<App>) -> Result<i32, String> {
             None,
             None,
             Some(HINSTANCE(hinstance.0)),
-            Some(&*app as *const App as *const core::ffi::c_void),
+            Some(app as *const App as *const core::ffi::c_void),
         )
-        .map_err(|e| format!("建窗失败：{e}"))?;
+        .map_err(|e| format!("建窗失败：{e}"))
+    }
+}
+
+/// 建窗、跑消息循环。返回进程退出码。
+pub fn run(app: Box<App>) -> Result<i32, String> {
+    let hwnd = create_window(&app)?;
+    unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -997,6 +1065,148 @@ pub fn run(app: Box<App>) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+/// 窗口层的自测（`--selftest-ui`）：不靠肉眼、不靠截图，直接断言 **z 序与几何**。
+///
+/// 这两样正是 F44 的病根——Tab 盖住页控件时，界面看起来一切正常，所有点击却都
+/// 落空；只发 `WM_COMMAND` 的脚本测不出它，只有查 z 序才测得出。
+pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
+    let dir = std::env::temp_dir().join("heinrich-settings-uitest");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建临时目录失败：{e}"))?;
+    let path = dir.join("words.tsv");
+    std::fs::write(&path, "好吃\t\t\n").map_err(|e| format!("造词库失败：{e}"))?;
+
+    let app = Box::new(App::new(data, Some(path))?);
+    let hwnd = create_window(&app)?;
+    // 不抢焦点地显示一下：真实路径里窗口是可见的，z 序表现才一致
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    drain_messages();
+
+    let result = (|| -> Result<(), String> {
+        check_z_order(hwnd)?;
+        // 模拟 Tab 拿到焦点（点中它、或 Tab 键走过去）：它自己会抬到最上层，
+        // 我们的子类化过程必须把它压回去
+        unsafe {
+            send(app.tab, WM_SETFOCUS, WPARAM(0), LPARAM(0));
+        }
+        check_z_order(hwnd).map_err(|e| format!("Tab 拿到焦点后：{e}"))
+    })();
+
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// 跑掉已经排队的消息（建窗期间的布局/刷新都在 `WM_CREATE` 里同步跑完，这里再兜一遍）。
+fn drain_messages() {
+    let mut msg = MSG::default();
+    while unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
+            &mut msg,
+            None,
+            0,
+            0,
+            windows::Win32::UI::WindowsAndMessaging::PM_REMOVE,
+        )
+    }
+    .as_bool()
+    {
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// 取子窗口（**z 序从上到下**，第一个是最上层）。
+fn children(hwnd: HWND) -> Vec<HWND> {
+    let mut out = Vec::new();
+    let mut cur = unsafe { GetWindow(hwnd, GW_CHILD) }.unwrap_or_default();
+    while !cur.0.is_null() {
+        out.push(cur);
+        cur = unsafe { GetWindow(cur, GW_HWNDNEXT) }.unwrap_or_default();
+    }
+    out
+}
+
+fn id_of(hwnd: HWND) -> isize {
+    unsafe { GetWindowLongPtrW(hwnd, GWLP_ID) }
+}
+
+fn rect_of(hwnd: HWND) -> RECT {
+    let mut r = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut r);
+    }
+    r
+}
+
+/// 两道检查，都针对 F44 那个「点了没反应」：
+/// 1. **结构**：Tab 必须是 z 序最底层（它一浮上来就会盖住整个内容区）；
+/// 2. **命中**：拿系统自己的 `RealChildWindowFromPoint` 在可交互控件的几个点上
+///    做命中测试，命中的必须是它自己——这一条才真正等价于「鼠标点得到」。
+///
+/// 为什么不用 `WindowFromPoint`：那是在**整个桌面**上找窗口，会被别的窗口、锁屏
+/// 界面干扰；`RealChildWindowFromPoint` 只在父窗口内部按 z 序/可见性找子窗口，
+/// 与桌面状态无关，可以放进自动化里跑。
+fn check_z_order(hwnd: HWND) -> Result<(), String> {
+    let kids = children(hwnd);
+    if kids.is_empty() {
+        return Err("窗口里一个子控件都没有".into());
+    }
+    let last = *kids.last().unwrap();
+    if id_of(last) != ID_TAB as isize {
+        return Err(format!(
+            "z 序最底层应是 Tab（id {ID_TAB}），实际是 id {}——Tab 一浮上来就会盖住所有按钮",
+            id_of(last)
+        ));
+    }
+
+    const CLICKABLE: [usize; 10] = [
+        ID_LIST,
+        ID_E_WORD,
+        ID_E_PINYIN,
+        ID_E_CODE,
+        ID_E_WEIGHT,
+        ID_B_ADD,
+        ID_B_SAVE,
+        ID_B_DEL,
+        ID_B_IMPORT,
+        ID_B_UNDO,
+    ];
+    for id in CLICKABLE {
+        let Some(h) = kids.iter().copied().find(|&h| id_of(h) == id as isize) else {
+            return Err(format!("找不到控件 id {id}"));
+        };
+        let r = rect_of(h);
+        if r.right - r.left <= 0 || r.bottom - r.top <= 0 {
+            return Err(format!("控件 id {id} 尺寸是 0（没被布局）"));
+        }
+        // 中心 + 四个四分点：中心挡住、边缘露出来的情况也要抓
+        for (fx, fy) in [(0.5, 0.5), (0.2, 0.5), (0.8, 0.5), (0.5, 0.2), (0.5, 0.8)] {
+            let mut pt = POINT {
+                x: r.left + ((r.right - r.left) as f32 * fx) as i32,
+                y: r.top + ((r.bottom - r.top) as f32 * fy) as i32,
+            };
+            unsafe {
+                let _ = ScreenToClient(hwnd, &mut pt);
+            }
+            let hit = unsafe { RealChildWindowFromPoint(hwnd, pt) };
+            if hit != h {
+                return Err(format!(
+                    "控件 id {id} 在相对位置 ({fx}, {fy}) 处命中的是 id {}（点了不会有反应）",
+                    id_of(hit)
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // 保留未使用的导入时给出明确意图：这些常量与函数是给 M4b 的页留的入口。

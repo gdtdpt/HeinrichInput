@@ -140,5 +140,9 @@ Invoke-Step '自定义词自测' {
 # 同样绝不碰 %APPDATA%：自测改用户词库是不可接受的副作用。
 Invoke-Step '设置窗口自测' { & cargo run --release -q -p heinrich-settings -- --selftest --data $DataDir }
 
+# 窗口层的自测：只查 z 序与命中测试。截图看着完美、鼠标点哪儿都没反应这类问题
+# （F44：Tab 盖住全部按钮）只有查命中才查得出来，肉眼和截图都漏。
+Invoke-Step '设置窗口 z 序/命中自测' { & cargo run --release -q -p heinrich-settings -- --selftest-ui --data $DataDir }
+
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

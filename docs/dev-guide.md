@@ -1111,10 +1111,15 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 **自己验**
 
 ```
-cargo run -q -p heinrich-settings -- --selftest --data data/wubi86
+cargo run -q -p heinrich-settings -- --selftest --data data/wubi86      # 数据层七项
+cargo run -q -p heinrich-settings -- --selftest-ui --data data/wubi86   # z 序 + 命中测试
 # 带一组假词开窗口（不会碰 %APPDATA%）
 cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 ```
+
+`--selftest-ui` 是踩坑 44 换来的：**界面看着对、点哪儿都没反应**这种问题，截图与
+`WM_COMMAND` 脚本都照不出来，只有查「这个点命中的是谁」才照得出来。它建窗时用
+`SW_SHOWNOACTIVATE` 显示一下（不抢焦点），验完即销毁，跑的是一份临时词库。
 
 窗口的观感/对齐靠 `win-ui-selfscreenshot` 那套截图（`PrintWindow` 对普通窗口有效，
 分层候选窗才需要 §4.15 的 `--save-bmp`）。**注意：后台任务结束后进程会被带走**，
@@ -1300,6 +1305,19 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     时进程是「DPI 不感知」的：`GetDpiForSystem()` 返回 96、我们按 96 布局，然后 Windows
     把整张窗口当位图放大到 200%——窗口本身 900×600，截图出来是 1800×1200 且字全糊。
     迷惑点在于**布局坐标全部正确**，只是被整体缩放了一次，肉眼看截图会误判成「字号太小」。
+44. **Tab 控件（`SysTabControl32`）必须压在 z 序最底层，否则它盖住整页控件、所有点击落空。**
+    M4a 交付后第一次真机试用报的是「新增点了没反应、词也没真加上」。真相是：Tab 的矩形
+    覆盖整个内容区（`(190,213)-(1053,728)`，把按钮、编辑框、列表全包进去），而它**自己被抬到了
+    z 序最上层**——于是鼠标点哪个按钮，命中的都是 Tab，`WM_COMMAND` 一条都不会发出来。
+    界面看起来完全正常（`PrintWindow` 截图一个字都不差），只发 `WM_COMMAND` 的脚本也全绿，
+    **只有真的点鼠标才会发现**。
+    - 它什么时候浮上来的：`SysTabControl32` 在 `WM_SETFOCUS` 里会 `SetWindowPos` 抬自己到顶部，
+      而建窗显示时第一个 `WS_TABSTOP` 子控件正好是它。
+    - 两道防线：`layout()` 末尾 `SetWindowPos(tab, HWND_BOTTOM, …, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)`；
+      再给 Tab 挂子类化过程，在 `WM_SETFOCUS` 里**先 `DefSubclassProc` 再压回去**（顺序反了会被它自己的抬升覆盖）。
+    - 验收方式：`--selftest-ui` 用 `RealChildWindowFromPoint` 在 10 个可交互控件的 5 个点上做命中测试，
+      命中的必须是它自己。**别用 `WindowFromPoint`**：那是在整个桌面上找窗口，会被别的窗口甚至
+      锁屏界面（`LockScreenBackstopFrame`）抢走结果，锁屏时全部测不出来。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 
