@@ -1294,6 +1294,12 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.5 `z` 通配 + 段级多段 | ✅ **2026-10-23 真机验收通过**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收。验收中发现词表缺新词，转 D65 预研——见 §8 后继） |
 | M3.6 自定义词组 | 🟡 **代码与自测完成，待真机验收**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」） |
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
+| M4a 设置窗口 + 词组页 | 🟡 **进行中**（`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；保存走临时文件 + 原子替换） |
+| M4b 通用设置页 + 学习数据页 | ⬜ 未开始（`hint.mode` / `learning_gain` / `half_life_days`；`learning.db` 只读列表 + 清单词学习分） |
+| M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
+| M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
+| M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
+| M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
 另外**不要照抄青简**——它 2026-09 才首发、Windows 壳未经装机验证。参考顺序固定为：官方文档判语义 → Weasel 判工程做法 → WindInput 判产品形态 → chewing-tsf 判 Rust 写法 → 青简判坑。
