@@ -1375,13 +1375,13 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 
 ### 4.21 设置窗口的三页（M4b / D78）
 
-三页都是**主窗口的子控件，靠显隐切换**（原生 `SysTabControl32` 没有「页」这个对象）。
+三页都是**主窗口的子控件，靠显隐切换**（页签是自绘的一段文字，本来就没有「页」这个对象）。
 `App.pages: [Vec<HWND>; 3]` 是唯一真相，切页只 `ShowWindow(SW_SHOW/SW_HIDE)`——
 重建控件会让编辑中的内容、列表滚动位置全丢。
 
 | 页 | 控件 | 数据去向 |
 |---|---|---|
-| 通用（默认） | `hint.mode` 下拉 + `learning_gain` / `half_life_days` 两个 Edit + `应用` / `恢复默认` + 只读的路径与 `config_version` | `%APPDATA%\Heinrich\config.toml` |
+| 通用（默认） | `hint.mode` 三段选择器 + `learning_gain` / `half_life_days` 两个 Edit + `应用` / `恢复默认` + 只读的路径与 `config_version` | `%APPDATA%\Heinrich\config.toml` |
 | 词组 | M4a 原样 | `words.tsv` |
 | 学习数据 | 搜索 Edit + `搜` + ListView（词 / 上屏次数 / 上次使用 / 学习分 / 档位）+ `清除选中词的学习分` | `%LOCALAPPDATA%\Heinrich\learn.db`（只读 + 清零） |
 
@@ -1412,9 +1412,52 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 学习页断言行数 / 排序 / 档位 / 搜索 / 「选中才亮清除」。**注意**：隐藏页的控件做命中测试必然
 失败（`RealChildWindowFromPoint` 不认隐藏窗口），所以要 `switch_page` 切过去再查。
 
-**截图验收用 `--page 0|1|2`**：`PrintWindow` 只截当前可见的那一页，而三个 Tab 是自绘在
-Tab 控件里的，没有「单独截某一页」的办法。加了这个开关，`win-ui-selfscreenshot` 那套
+**截图验收用 `--page 0|1|2`**：`PrintWindow` 只截当前可见的那一页，而三页是靠显隐切换的
+子控件集，没有「单独截某一页」的办法。加了这个开关，`win-ui-selfscreenshot` 那套
 （起进程 → 截图 → 看 → 改）就能逐页跑。
+
+### 4.22 设置窗口的视觉层与自绘边界（M4b-UI / D79）
+
+**颜色与字体只有一个入口**：`src/theme.rs`。
+
+| 项 | 内容 |
+|---|---|
+| `rgb(r, g, b)` | 全仓唯一的 `COLORREF` 构造入口。GDI 是 `0x00BBGGRR`，散写会把红蓝写反——反了不难看，只是「用户说强调色发绿」这种查半天的怪事 |
+| `Colors::light(accent)` | 页面底 `#F3F3F3`、卡片白、卡片描边 `#E5E5E5`、分隔线 `#EDEDED`、正文 `#1A1A1A` / 次要 `#5D5D5D` / 弱 `#8A8A8A`、输入框描边 `#D6D6D6`、错误 `#C42B1C`、三段槽 `#ECECEC`，以及强调色的 hover / pressed 派生（`mix(accent, white, 36)` / `mix(accent, black, 36)`） |
+| `system_accent()` | 读 `HKCU\SOFTWARE\Microsoft\Windows\DWM\ColorizationColor`（`0xAARRGGBB`，掩掉 alpha），失败回退 `#0067C0` |
+| `Fonts::new(dpi)` | 标题 20/600、分区 13/600、正文 14/400、说明 12/400，全部 YaHei UI；`Drop` 里删句柄 |
+
+**自绘只做壳，编辑框与列表仍是原生**：
+
+| 自绘 | 原生（只套圆角 region + 画外部描边） |
+|---|---|
+| 页签文字 + 3px 指示条、卡片、行分隔线、按钮（`BS_OWNERDRAW` + `WM_DRAWITEM`）、三段选择器、输入框描边 | `Edit`（中文输入依赖系统 IME 组合窗）、`SysListView32`（列宽拖动、滚动、键盘导航） |
+
+**几个必须记住的坑**：
+
+- **页签不是控件**：`SysTabControl32` 一拿焦点就浮到 z 序顶（F44 的原病根），所以页签只是
+  `WM_PAINT` 里的一段文字 + 命中矩形数组，hover 靠 `TrackMouseEvent(TME_LEAVE)`。
+- **高 DPI 下描边要过 `s()`**：系统 DPI 2.0 时 1 物理像素 = 0.5 逻辑像素，`CreatePen(PS_SOLID, 1, …)`
+  画出来的卡片框淡得像没有；统一用 `round_rect_w(..., self.s(1))`。
+- **子窗口的方角会啃掉父窗口的圆角**：Edit / ListView 是不透明子窗口，父窗口在角上画的是弧，
+  直角白块一盖就断。给它们 `SetWindowRgn(CreateRoundRectRgn(0, 0, w + 1, h + 1, …))`，
+  并在布局里让列表内缩 `s(8)`——列头是直角、带自己的背景，缩 1 会把卡片圆角啃掉四角。
+- **无边框 Edit 是白底**：白底压在白卡上等于隐形。描边必须画在父窗口上（`draw_words` 的
+  `panel_boxes`），Edit 内缩 `s(1)` 让开那条线，焦点时描边转强调色。
+- **`Ghost` 按钮也要擦底**：不填充就留着上一帧的内容（或控件默认灰底），看起来像「文字背后
+  贴了块灰补丁」。`fill_rect(rectItem, colors.card)` 一句的事。
+- **禁用按钮要留轮廓**：底色 `#F0F0F0` 与页面底 `#F3F3F3` 只差 3 级，不给描边时整排按钮凭空
+  消失，用户看不出「这里本来有按钮、只是不能点」。
+- **最后一列要吃掉剩余宽度**（`fit_last_column`）：列宽写死后窗口一拉宽，右上角多出一块空白
+  和一条竖线，用户会以为多了一列。
+
+**comctl32 v6 清单**：`apps/windows/settings/app.manifest` + `build.rs`，用链接器的
+`/MANIFEST:EMBED` + `/MANIFESTINPUT:<绝对路径>` + `/MANIFESTUAC:NO`，**不引 `embed-resource` /
+`winres`**（那类 crate 要再拉一个 `rc.exe`，而本项目要求 `cargo build` 之外零工具）。
+`/MANIFESTUAC:NO` 不能省：否则链接器会自己再生成一段 trustInfo，与清单里的
+`requestedExecutionLevel` 撞成两份，直接报错。没有清单时 ListView 的列头是灰白凸起块、
+滚动条是带箭头的 Win95 灰条，`SetWindowTheme` 也救不了——视觉样式没激活时它全是空操作。
+
 
 ## 5. 数据管线
 
@@ -1597,6 +1640,8 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     把整张窗口当位图放大到 200%——窗口本身 900×600，截图出来是 1800×1200 且字全糊。
     迷惑点在于**布局坐标全部正确**，只是被整体缩放了一次，肉眼看截图会误判成「字号太小」。
 44. **Tab 控件（`SysTabControl32`）必须压在 z 序最底层，否则它盖住整页控件、所有点击落空。**
+    （**v1.55 起已按 D79 删掉 Tab 控件、页签改为自绘，本条成为历史**；留下的教训是
+    「命中测试才是判据，截图看不出来」——`--selftest-ui` 的逐页 z 序检查仍在跑。）
     M4a 交付后第一次真机试用报的是「新增点了没反应、词也没真加上」。真相是：Tab 的矩形
     覆盖整个内容区（`(190,213)-(1053,728)`，把按钮、编辑框、列表全包进去），而它**自己被抬到了
     z 序最上层**——于是鼠标点哪个按钮，命中的都是 Tab，`WM_COMMAND` 一条都不会发出来。
@@ -1814,7 +1859,8 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3.6 自定义词组 | ✅ **已验收（以自测为准，不做真机手测，D75）**（D65 / §6.9 / §4.16：`%APPDATA%\Heinrich\words.tsv` 四列；`Scheme::word_code` 词组取码（与词库 6.1 万条对照一致率 99.96%）；`apply_user_words` 双库全量替换合并；权重取同词长中位数、不置顶；server 走 mtime 节流做 1 秒热重载（**协议仍是 v6**）；CLI `word add/list/rm/import` + `look --words`；`check.ps1` 加「自定义词自测」）。热生效链路已由 M4a 真机经同一份文件覆盖 |
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
 | M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
-| M4b 通用设置页 + 学习数据页 | ⬜ 未开始（`hint.mode` / `learning_gain` / `half_life_days`；`learning.db` 只读列表 + 清单词学习分） |
+| M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
+| M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23，D79，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6） |
 | M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  设置窗口的应用清单。存在的唯一理由是第一条依赖：请求 comctl32 v6。
+
+  没有它时，进程内加载的是 comctl32 v5，ListView 的列头是灰白凸起块、滚动条是
+  Win95 那根带箭头的灰条（截图验收时一眼就能认出来）。自绘的卡片和按钮画得再像
+  Win11，旁边挂着这两样东西就还是「老软件」。SetWindowTheme / uxtheme 都救不了：
+  视觉样式没激活时它们全是空操作。
+
+  第二条是 asInvoker：设置窗口只写 %APPDATA% / %LOCALAPPDATA%，不要 UAC 弹窗。
+  第三条的 dpiAware 与 main.rs 里的 SetProcessDPIAware() 一致（system DPI aware），
+  写在这里是为了让「程序一起来就是感知 DPI 的」，别等到第一帧才切。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="Heinrich.Settings"
+      version="1.0.0.0"
+      processorArchitecture="*"/>
+
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+    </windowsSettings>
+  </application>
+</assembly>

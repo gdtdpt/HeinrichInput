@@ -1,22 +1,27 @@
-//! 设置窗口：主窗口 + Tab（通用 / 词组 / 学习数据）。
+//! 设置窗口：主窗口 + 三页（通用 / 词组 / 学习数据），Win11 设置卡片风。
 //!
 //! 词组页写 `%APPDATA%\Heinrich\words.tsv`，通用页写同目录的 `config.toml`，
 //! 学习数据页只读（外加清零）`%LOCALAPPDATA%\Heinrich\learn.db`。三者都**不经过
 //! 任何进程间通信**：server 每秒 stat 一次前两个、每次查询直接读第三个（D65），
 //! 所以这个 exe 可以随时开、随时关，改完不用重启任何东西。
 //!
-//! 为什么用原生控件而不是复用 `heinrich-win-ui` 的自绘：编辑框要能**用亨利自己
-//! 打中文**（单字都在词库里），自绘就得连光标、选区、IME 组合串一起实现；而这张
-//! 表的重点是把功能跑通，观感可以以后再统一（M4 之后仍可只换绘制层）。
+//! **为什么编辑框仍是原生控件**：编辑框要能**用亨利自己打中文**（单字都在词库里），
+//! 自绘就得连光标、选区、IME 组合串一起实现。自绘的是壳（卡片、页签、按钮、
+//! 三段选择器、输入框描边），输入仍交给系统。
 //!
-//! **Tab 必须永远压在 z 序最底层**（[`lower_tab`]）：`SysTabControl32` 拿到焦点
-//! 时会把自己抬到最上层，而它的矩形正好覆盖整个内容区——一旦抬上来，它就把下面
-//! 所有按钮和编辑框整片盖住，鼠标点哪儿都被它吃掉。界面看起来完全正常，只是所有
-//! 点击都石沉大海（F44：验收时「新增/保存点了没反应、词也没真加上」就是这个）。
+//! **页签没有控件**：`SysTabControl32` 一拿到焦点就把自己抬到 z 序最上层，而它的
+//! 矩形正好覆盖整个内容区——一旦抬上来就把所有按钮和编辑框盖住，鼠标点哪儿都被
+//! 它吃掉（F44）。上一版靠子类化「等它抬完再压回去」；这一版干脆不建这个窗口，
+//! 页签、指示条、hover 全部画在主窗口自己的 `WM_PAINT` 里，命中测试就是几个矩形，
+//! 没有可浮上来的东西，F44 这类病根连发生的土壤都没了。
 //!
-//! 多页的代价：三页的控件都是主窗口的子窗口，靠显隐切换（原生 Tab 没有「页」这个
-//! 对象）。所以每条 WM_COMMAND / WM_NOTIFY 都要看清是谁发的——两个 ListView 同时
-//! 存在，只按消息类型分派会把学习数据的行当成词组去改。
+//! 多页的代价：三页的控件都是主窗口的子窗口，靠显隐切换。所以每条 WM_COMMAND /
+//! WM_NOTIFY 都要看清是谁发的——两个 ListView 同时存在，只按消息类型分派会把
+//! 学习数据的行当成词组去改。
+//!
+//! 几何的唯一真相是 [`App::geo`]：`layout()` 算一遍存下来，`paint()` 只读不算。
+//! 画卡片和摆控件用同一组矩形，「卡片里有一行、控件却在行外」这种错位从结构上
+//! 就不可能出现。
 
 use std::path::PathBuf;
 
@@ -26,16 +31,21 @@ use heinrich_scheme::HintMode;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, GetDC, GetSysColorBrush, ReleaseDC, ScreenToClient, SetBkMode, HFONT, TRANSPARENT,
+    BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, InvalidateRect, LineTo, MoveToEx, RoundRect, ScreenToClient, SelectObject, SetBkMode,
+    SetTextColor, SetWindowRgn, HBRUSH, HDC, HFONT, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Controls::{
-    LVCOLUMNW, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM,
-    LVM_ENSUREVISIBLE, LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
+    DRAWITEMSTRUCT, LVCOLUMNW, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
+    LVM_DELETEITEM, LVM_ENSUREVISIBLE, LVM_GETCOLUMNWIDTH, LVM_GETITEMCOUNT, LVM_GETNEXTITEM,
+    LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE,
+    LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW,
 };
@@ -44,37 +54,26 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
     GetWindowTextW, GetWindowThreadProcessId, LoadCursorW, MessageBoxW, MoveWindow,
     PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, TranslateMessage,
-    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE,
-    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING,
-    MB_OK, MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS,
-    WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, ShowWindowAsync, TranslateMessage,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GW_CHILD,
+    GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
+    WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
 use crate::model::{Model, Row};
+use crate::theme::{self, Colors, Fonts};
 
 // 窗口类名不在这里写死：见 `create_window` 里对 `heinrich_tip_id::SETTINGS_CLASS` 的说明。
 
-// Static 的两个样式位（`SS_CENTER` / `SS_CENTERIMAGE`）。它们在 windows crate 的
-// `Win32_System_SystemServices` 里，那个 feature 没开、为一对常量开一整个模块不值，
-// 直接照 winuser.h 写字面量。
-const SS_CENTER: u32 = 0x0000_0001;
-const SS_CENTERIMAGE: u32 = 0x0000_0200;
-
-const ID_TAB: usize = 100;
 const ID_LIST: usize = 101;
 const ID_E_WORD: usize = 110;
 const ID_E_PINYIN: usize = 111;
 const ID_E_CODE: usize = 112;
 const ID_E_WEIGHT: usize = 113;
-const ID_L_WORD: usize = 120;
-const ID_L_PINYIN: usize = 121;
-const ID_L_CODE: usize = 122;
-const ID_L_WEIGHT: usize = 123;
 const ID_B_CLEAR: usize = 130;
 const ID_B_SAVE: usize = 131;
 const ID_B_DEL: usize = 132;
@@ -85,34 +84,26 @@ const ID_NOTE: usize = 140;
 const ID_STATUS: usize = 141;
 
 // 通用页
-const ID_L_HINT: usize = 200;
-const ID_C_HINT: usize = 201;
-const ID_N_HINTDESC: usize = 202;
-const ID_L_GAIN: usize = 203;
 const ID_E_GAIN: usize = 204;
-const ID_N_GAINDESC: usize = 205;
-const ID_L_HALF: usize = 206;
 const ID_E_HALF: usize = 207;
-const ID_N_HALFDESC: usize = 208;
 const ID_B_APPLY: usize = 209;
 const ID_B_DEFAULT: usize = 210;
-const ID_N_CONFIG: usize = 211;
-const ID_N_TIPS: usize = 212;
+const ID_B_OPEN_CFG: usize = 213;
 
 // 学习数据页
-const ID_L_SEARCH: usize = 300;
 const ID_E_SEARCH: usize = 301;
 const ID_B_SEARCH: usize = 302;
 const ID_LEARN_LIST: usize = 303;
 const ID_B_FORGET: usize = 304;
-const ID_N_LEARN: usize = 305;
 
-/// 页序号。**与 Tab 里的顺序、`pages` 数组的下标三者必须一致**。
+/// 页序号。**与页签顺序、`pages` 数组的下标三者必须一致**。
 const PAGE_GENERAL: usize = 0;
 const PAGE_WORDS: usize = 1;
 const PAGE_LEARN: usize = 2;
 const PAGE_COUNT: usize = 3;
 const PAGE_TITLES: [&str; PAGE_COUNT] = ["通用", "词组", "学习数据"];
+/// 码提示的三段选择器文案与取值，顺序 = `HintMode` 的映射顺序。
+const HINT_SEGMENTS: [&str; 3] = ["总是", "首次", "关闭"];
 
 // ListView 的几条消息/样式常量。`windows` crate 把它们定义成裸 u32，这里直接引用
 // 会让整段代码被 `as` 淹没，所以只挑用得到的几个，写清来历。
@@ -124,38 +115,73 @@ const LVIF_TEXT: u32 = 0x0001;
 const LVIF_PARAM: u32 = 0x0004;
 const LVCF_WIDTH: u32 = 0x0002;
 const LVCF_TEXT: u32 = 0x0004;
-/// `TCN_SELCHANGE = TCN_FIRST - 1`，`TCN_FIRST = -550`。
-const TCN_SELCHANGE: u32 = 0xFFFF_FDD9;
-/// `CBN_SELCHANGE = 1`：下拉框换了选项，走的是 `WM_COMMAND` 的通知码。
-const CBN_SELCHANGE: u32 = 1;
-/// `CBS_DROPDOWNLIST`：只能选、不能输入——这三个值是封闭集合，让人敲字只会敲出
-/// 一个解析不了的值。
-const CBS_DROPDOWNLIST: u32 = 0x0003;
-const CB_ADDSTRING: u32 = 0x0143;
-const CB_GETCURSEL: u32 = 0x0147;
-const CB_SETCURSEL: u32 = 0x014E;
-/// `TCM_SETCURSEL` / `TCM_GETCURSEL`：切页是程序驱动的（启动时选第一页）。
-const TCM_GETCURSEL: u32 = 0x130B;
-const TCM_SETCURSEL: u32 = 0x130C;
+/// ListView 背景与文字色（`LVM_FIRST = 0x1000`）。
+const LVM_SETBKCOLOR: u32 = 0x1001;
+const LVM_SETTEXTCOLOR: u32 = 0x1024;
+const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
+/// `WM_COMMAND` 的通知码。EN_* 在 winuser.h 是 0x01xx 段。
+const EN_CHANGE: u32 = 0x0300;
+const EN_SETFOCUS: u32 = 0x0100;
+const EN_KILLFOCUS: u32 = 0x0200;
+/// `BS_OWNERDRAW`：按钮自己画（见 `draw_button`）。
+const BS_OWNERDRAW: u32 = 0x000B;
+/// `WM_DRAWITEM` 的 itemState 位。
+const ODS_SELECTED: u32 = 0x0001;
+const ODS_DISABLED: u32 = 0x0004;
+const ODS_HOTLIGHT: u32 = 0x0040;
+/// `DrawTextW` 的排版位：单行 + 垂直居中 + 超宽省略号 + 不处理 `&` 前缀
+/// （路径里有 `&` 的概率不为零，把它当普通字符）。
+const DT_SINGLELINE: u32 = 0x0020;
+const DT_VCENTER: u32 = 0x0004;
+const DT_CENTER: u32 = 0x0001;
+const DT_END_ELLIPSIS: u32 = 0x8000;
+const DT_NOPREFIX: u32 = 0x0800;
 
 /// 窗口内容的最小尺寸（96 DPI 下的逻辑像素），窄于这个就压缩不动了。
 const MIN_W: i32 = 720;
 const MIN_H: i32 = 460;
 
+/// 页面的几何快照：`layout()` 算、`paint()` 读的唯一真相。
+///
+/// 只存「画的时候要原样用」的矩形。控件自己的矩形不在这里——控件用 `MoveWindow`
+/// 摆好之后系统自己知道，重复存一份只会早晚失同步。
+#[derive(Default)]
+struct Geo {
+    /// 页签矩形（横排）。命中测试与绘制共用。
+    tabs: [RECT; PAGE_COUNT],
+    /// 通用页卡片与其中四行（码提示 / g / H / 配置文件）。
+    gen_card: RECT,
+    gen_rows: [RECT; 4],
+    /// 三段选择器（在 gen_rows[0] 内）。
+    seg: RECT,
+    /// 数字框外框（Edit 比它内缩 1px，描边画在框上）。
+    gain_box: RECT,
+    half_box: RECT,
+    /// 数字框左侧的默认值提示（右对齐到框左沿 - 8）。
+    gain_hint: RECT,
+    half_hint: RECT,
+    /// 通用页按钮行基线 y（按钮矩形由布局直接摆，这里给「短语」定位）。
+    gen_btn_row: RECT,
+    /// 词组页：列表卡、编辑面板卡、面板内四个输入框外框。
+    words_card: RECT,
+    panel_card: RECT,
+    panel_boxes: [RECT; 4],
+    panel_labels: [RECT; 4],
+    /// 学习页：搜索框外框、列表卡。
+    learn_search_box: RECT,
+    learn_card: RECT,
+}
+
 pub struct App {
     hwnd: HWND,
     dpi: f32,
+    /// 原生控件共用的正文字体（14px）。标题/说明走 [`Self::fonts`]。
     font: HFONT,
-    tab: HWND,
     list: HWND,
     e_word: HWND,
     e_pinyin: HWND,
     e_code: HWND,
     e_weight: HWND,
-    l_word: HWND,
-    l_pinyin: HWND,
-    l_code: HWND,
-    l_weight: HWND,
     b_clear: HWND,
     b_save: HWND,
     b_del: HWND,
@@ -165,23 +191,14 @@ pub struct App {
     note: HWND,
     status: HWND,
 
-    // 通用页
-    c_hint: HWND,
-    l_hint: HWND,
-    n_hint_desc: HWND,
-    l_gain: HWND,
+    // 通用页（只剩输入框与按钮；标题、描述、路径全部自绘）
     e_gain: HWND,
-    n_gain_desc: HWND,
-    l_half: HWND,
     e_half: HWND,
-    n_half_desc: HWND,
     b_apply: HWND,
     b_default: HWND,
-    n_config: HWND,
-    n_tips: HWND,
+    b_open_cfg: HWND,
 
     // 学习数据页
-    l_search: HWND,
     e_search: HWND,
     b_search: HWND,
     learn_list: HWND,
@@ -194,6 +211,28 @@ pub struct App {
     page: usize,
     /// 启动时停在哪一页。只给 `--page` 用（截图验收要能直接打开某一页）。
     initial_page: usize,
+
+    // ---- 视觉 ----
+    colors: Colors,
+    fonts: Fonts,
+    geo: Geo,
+    /// hover 中的页签（-1 = 无）。切页与 hover 都靠重画整窗，窗口小，代价可忽略。
+    tab_hot: i32,
+    /// 三段选择器 hover 中的段（-1 = 无）。
+    seg_hot: i32,
+    /// 码提示的当前段（0 总是 / 1 首次 / 2 关闭），与 `HINT_SEGMENTS` 对齐。
+    hint_sel: usize,
+    /// 焦点所在的输入框 id（画强调色描边用；0 = 无）。
+    focus_id: usize,
+    /// 两个数字框的即时校验结果。`Err` 时描述行画红字——说明 Static 已经不存在，
+    /// 这是 paint 从这里直接取的。
+    gain_state: Result<f64, String>,
+    half_state: Result<f64, String>,
+    /// 配置文件那行只读信息（路径 · config_version · 提示）。
+    config_info: String,
+    /// 缓存的刷子：WM_ERASEBKGND / WM_CTLCOLOR* 每次消息都要一个，现场创建太浪费。
+    brush_bg: HBRUSH,
+    brush_card: HBRUSH,
 
     model: Model,
     lex: Option<Lexicons>,
@@ -235,24 +274,9 @@ impl App {
             ),
         };
         let dpi = unsafe { GetDpiForSystem() } as f32 / 96.0;
-        let font = unsafe {
-            CreateFontW(
-                -(14.0 * dpi) as i32,
-                0,
-                0,
-                0,
-                400,
-                0,
-                0,
-                0,
-                windows::Win32::Graphics::Gdi::FONT_CHARSET(1), // DEFAULT_CHARSET
-                windows::Win32::Graphics::Gdi::FONT_OUTPUT_PRECISION(0),
-                windows::Win32::Graphics::Gdi::FONT_CLIP_PRECISION(0),
-                windows::Win32::Graphics::Gdi::FONT_QUALITY(5), // CLEARTYPE_QUALITY
-                0,
-                w!("Microsoft YaHei UI"),
-            )
-        };
+        let fonts = Fonts::new(dpi);
+        let colors = Colors::light(theme::system_accent());
+        let make_brush = |c: COLORREF| unsafe { CreateSolidBrush(c) };
         let config_path = config
             .or_else(crate::general::default_path)
             .ok_or("取不到 %APPDATA%，请用 --config 指定配置文件")?;
@@ -264,17 +288,12 @@ impl App {
         Ok(Self {
             hwnd: HWND::default(),
             dpi,
-            font,
-            tab: HWND::default(),
+            font: fonts.body,
             list: HWND::default(),
             e_word: HWND::default(),
             e_pinyin: HWND::default(),
             e_code: HWND::default(),
             e_weight: HWND::default(),
-            l_word: HWND::default(),
-            l_pinyin: HWND::default(),
-            l_code: HWND::default(),
-            l_weight: HWND::default(),
             b_clear: HWND::default(),
             b_save: HWND::default(),
             b_del: HWND::default(),
@@ -283,20 +302,11 @@ impl App {
             b_undo: HWND::default(),
             note: HWND::default(),
             status: HWND::default(),
-            c_hint: HWND::default(),
-            l_hint: HWND::default(),
-            n_hint_desc: HWND::default(),
-            l_gain: HWND::default(),
             e_gain: HWND::default(),
-            n_gain_desc: HWND::default(),
-            l_half: HWND::default(),
             e_half: HWND::default(),
-            n_half_desc: HWND::default(),
             b_apply: HWND::default(),
             b_default: HWND::default(),
-            n_config: HWND::default(),
-            n_tips: HWND::default(),
-            l_search: HWND::default(),
+            b_open_cfg: HWND::default(),
             e_search: HWND::default(),
             b_search: HWND::default(),
             learn_list: HWND::default(),
@@ -305,6 +315,18 @@ impl App {
             pages: [Vec::new(), Vec::new(), Vec::new()],
             page: PAGE_GENERAL,
             initial_page: PAGE_GENERAL,
+            tab_hot: -1,
+            seg_hot: -1,
+            hint_sel: 0,
+            focus_id: 0,
+            gain_state: Ok(crate::general::GAIN_RANGE.0),
+            half_state: Ok(crate::general::HALF_RANGE.0),
+            config_info: String::new(),
+            brush_bg: make_brush(colors.bg),
+            brush_card: make_brush(colors.card),
+            colors,
+            fonts,
+            geo: Geo::default(),
             model,
             lex,
             lex_note,
@@ -328,40 +350,6 @@ impl App {
     }
 
     fn create_children(&mut self) -> windows::core::Result<()> {
-        let hwnd = self.hwnd;
-        self.tab = child(
-            hwnd,
-            w!("SysTabControl32"),
-            "",
-            WS_TABSTOP,
-            ID_TAB,
-            self.font,
-        )?;
-        // 见模块头的 F44：Tab 一拿到焦点就自己浮到最上层，把内容区全盖住。
-        // 这里挂一个子类化过程，等它自己抬完再把它压回去（顺序不能反）。
-        unsafe {
-            let _ = SetWindowSubclass(self.tab, Some(tab_proc), 1, 0);
-        }
-        // 页签顺序 = `PAGE_*` 常量的顺序 = `pages` 的下标，三者错一个就会「点通用
-        // 出来的是词组」。启动默认选第一个（通用）——见 `show_page` 的调用点。
-        for (i, title) in PAGE_TITLES.iter().enumerate() {
-            let mut item = vec![0u16; 32];
-            put_utf16(&mut item, title);
-            let mut tc = windows::Win32::UI::Controls::TCITEMW {
-                mask: windows::Win32::UI::Controls::TCITEMHEADERA_MASK(0x0001), // TCIF_TEXT
-                pszText: PWSTR(item.as_mut_ptr()),
-                ..Default::default()
-            };
-            unsafe {
-                send(
-                    self.tab,
-                    windows::Win32::UI::Controls::TCM_INSERTITEMW,
-                    WPARAM(i),
-                    LPARAM(&mut tc as *mut _ as isize),
-                );
-            }
-        }
-
         self.create_words_page()?;
         self.create_general_page()?;
         self.create_learn_page()?;
@@ -371,6 +359,8 @@ impl App {
     /// 词组页：列表 + 编辑面板 + 文件级操作。
     fn create_words_page(&mut self) -> windows::core::Result<()> {
         let hwnd = self.hwnd;
+        // 列表不带 WS_BORDER：它的「边框」就是包着它的卡片描边（见 `paint_words`），
+        // 双层框是老界面的主要土气来源之一。底色/文字色在两个列表都建完之后统一上。
         self.list = child(
             hwnd,
             w!("SysListView32"),
@@ -378,7 +368,6 @@ impl App {
             WINDOW_STYLE(
                 WS_CHILD.0
                     | WS_VISIBLE.0
-                    | WS_BORDER.0
                     | WS_TABSTOP.0
                     | LVS_REPORT
                     | LVS_SINGLESEL
@@ -423,75 +412,31 @@ impl App {
             }
         }
 
-        // 字段名居中（`SS_CENTER` + `SS_CENTERIMAGE`：水平、垂直都居中）。
-        // 默认的 Static 是左上对齐，一行高 26px 的框里字贴着上沿、又紧靠左边框，
-        // 和右边同样高的编辑框摆在一起看着像错位。
-        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
-        self.l_word = child(hwnd, w!("Static"), "词", label_style, ID_L_WORD, self.font)?;
-        self.l_pinyin = child(
-            hwnd,
-            w!("Static"),
-            "拼音",
-            label_style,
-            ID_L_PINYIN,
-            self.font,
-        )?;
-        self.l_code = child(hwnd, w!("Static"), "码", label_style, ID_L_CODE, self.font)?;
-        self.l_weight = child(
-            hwnd,
-            w!("Static"),
-            "权重",
-            label_style,
-            ID_L_WEIGHT,
-            self.font,
-        )?;
-
-        let edit_style =
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080); // ES_AUTOHSCROLL
+        let edit_style = WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | 0x0080); // ES_AUTOHSCROLL，无边框
         self.e_word = child(hwnd, w!("Edit"), "", edit_style, ID_E_WORD, self.font)?;
         self.e_pinyin = child(hwnd, w!("Edit"), "", edit_style, ID_E_PINYIN, self.font)?;
         self.e_code = child(hwnd, w!("Edit"), "", edit_style, ID_E_CODE, self.font)?;
         self.e_weight = child(hwnd, w!("Edit"), "", edit_style, ID_E_WEIGHT, self.font)?;
 
         // 「新增」被去掉了：编辑面板一直可输入，点「保存」就是加入/更新，
-        // 多一步「先点新增」只会让人以为词已经进列表了。
+        // 多一步「先点新增」只会让人以为已经进列表了。
         //
         // 建子控件的顺序 = 视觉顺序 = Tab 键走过去的顺序，所以「保存」必须第一个建。
         // 「清空」是次要动作（只清面板、不写文件），排到行尾。
-        self.b_save = child(hwnd, w!("Button"), "保存", WS_TABSTOP, ID_B_SAVE, self.font)?;
-        self.b_del = child(hwnd, w!("Button"), "删除", WS_TABSTOP, ID_B_DEL, self.font)?;
-        self.b_import = child(
+        // 所有按钮都 owner-draw：主次、hover、按下在 `draw_button` 里分派。
+        self.b_save = child(
             hwnd,
             w!("Button"),
-            "批量导入…",
-            WS_TABSTOP,
-            ID_B_IMPORT,
+            "保存",
+            WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
+            ID_B_SAVE,
             self.font,
         )?;
-        self.b_open = child(
-            hwnd,
-            w!("Button"),
-            "打开文件位置",
-            WS_TABSTOP,
-            ID_B_OPEN,
-            self.font,
-        )?;
-        self.b_undo = child(
-            hwnd,
-            w!("Button"),
-            "撤销删除",
-            WS_TABSTOP,
-            ID_B_UNDO,
-            self.font,
-        )?;
-        self.b_clear = child(
-            hwnd,
-            w!("Button"),
-            "清空",
-            WS_TABSTOP,
-            ID_B_CLEAR,
-            self.font,
-        )?;
+        self.b_del = button(hwnd, "删除", ID_B_DEL, self.font)?;
+        self.b_import = button(hwnd, "批量导入…", ID_B_IMPORT, self.font)?;
+        self.b_open = button(hwnd, "打开文件位置", ID_B_OPEN, self.font)?;
+        self.b_undo = button(hwnd, "撤销删除", ID_B_UNDO, self.font)?;
+        self.b_clear = button(hwnd, "清空", ID_B_CLEAR, self.font)?;
         // 回车 = 保存、Esc = 清空：加词是「打一个词 → 回车 → 打下一个词」的节奏，
         // 每个词都要把鼠标挪到「保存」上，手感就像没加上一样。
         unsafe {
@@ -506,7 +451,7 @@ impl App {
             "在上面四个框里填词，点「保存」或按回车就加入；点列表任一行可以改它。拼音/码留空按规则自动推导",
             WINDOW_STYLE(0),
             ID_NOTE,
-            self.font,
+            self.fonts.caption,
         )?;
         // 状态栏三页共用：它是「刚刚发生了什么」的唯一出口，切页时不跟着变。
         self.status = child(
@@ -515,15 +460,11 @@ impl App {
             "",
             WINDOW_STYLE(0),
             ID_STATUS,
-            self.font,
+            self.fonts.caption,
         )?;
 
         self.pages[PAGE_WORDS] = vec![
             self.list,
-            self.l_word,
-            self.l_pinyin,
-            self.l_code,
-            self.l_weight,
             self.e_word,
             self.e_pinyin,
             self.e_code,
@@ -539,97 +480,32 @@ impl App {
         Ok(())
     }
 
-    /// 通用页：码提示时机 + 排序两参数 + 应用/恢复默认。
+    /// 通用页：码提示三段选择 + 排序两参数 + 应用/恢复默认。
     ///
     /// 这一页**没有**「即时生效」：三个框都可能处于半输入状态（`0.` 还没打完），
     /// 边打边写盘会把中间态写进配置。所以统一走「应用」，Enter 也等于应用。
     fn create_general_page(&mut self) -> windows::core::Result<()> {
         let hwnd = self.hwnd;
-        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
-        let plain = WINDOW_STYLE(0);
-        let edit_style =
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080); // ES_AUTOHSCROLL
-
-        self.l_hint = child(
-            hwnd,
-            w!("Static"),
-            "码提示时机",
-            label_style,
-            ID_L_HINT,
-            self.font,
-        )?;
-        self.c_hint = child(
-            hwnd,
-            w!("ComboBox"),
-            "",
-            WINDOW_STYLE(WS_TABSTOP.0 | CBS_DROPDOWNLIST),
-            ID_C_HINT,
-            self.font,
-        )?;
-        for label in [
-            "总是显示（mixed）",
-            "只在第一次（first_time）",
-            "不显示（off）",
-        ] {
-            let text = wide(label);
-            unsafe {
-                send(
-                    self.c_hint,
-                    CB_ADDSTRING,
-                    WPARAM(0),
-                    LPARAM(text.as_ptr() as isize),
-                );
-            }
-        }
-        self.n_hint_desc = child(hwnd, w!("Static"), "", plain, ID_N_HINTDESC, self.font)?;
-
-        self.l_gain = child(
-            hwnd,
-            w!("Static"),
-            "学习增益 g",
-            label_style,
-            ID_L_GAIN,
-            self.font,
-        )?;
+        let edit_style = WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | 0x0080);
         self.e_gain = child(hwnd, w!("Edit"), "", edit_style, ID_E_GAIN, self.font)?;
-        self.n_gain_desc = child(hwnd, w!("Static"), "", plain, ID_N_GAINDESC, self.font)?;
-
-        self.l_half = child(
-            hwnd,
-            w!("Static"),
-            "半衰期 H（天）",
-            label_style,
-            ID_L_HALF,
-            self.font,
-        )?;
         self.e_half = child(hwnd, w!("Edit"), "", edit_style, ID_E_HALF, self.font)?;
-        self.n_half_desc = child(hwnd, w!("Static"), "", plain, ID_N_HALFDESC, self.font)?;
-
         self.b_apply = child(
             hwnd,
             w!("Button"),
             "应用",
-            WS_TABSTOP,
+            WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
             ID_B_APPLY,
             self.font,
         )?;
-        self.b_default = child(
+        self.b_default = button(hwnd, "恢复默认", ID_B_DEFAULT, self.font)?;
+        // 配置行右侧的「打开位置」：无边框文字按钮（accent 色），见 draw_button 的 ghost
+        self.b_open_cfg = child(
             hwnd,
             w!("Button"),
-            "恢复默认",
-            WS_TABSTOP,
-            ID_B_DEFAULT,
-            self.font,
-        )?;
-        self.n_config = child(hwnd, w!("Static"), "", plain, ID_N_CONFIG, self.font)?;
-        self.n_tips = child(
-            hwnd,
-            w!("Static"),
-            "这三项写在 config.toml 里，点「应用」后 1 秒内生效，不用重启任何东西。\n\
-             「恢复默认」是把这三行删掉，不是写死数值——将来默认值调整时，你的文件会跟着变。",
-            plain,
-            ID_N_TIPS,
-            self.font,
+            "打开位置",
+            WINDOW_STYLE(BS_OWNERDRAW),
+            ID_B_OPEN_CFG,
+            self.fonts.caption,
         )?;
 
         // 两个数字框里按回车 = 点「应用」；不打这个补丁，回车只会「叮」一声
@@ -640,19 +516,11 @@ impl App {
         }
 
         self.pages[PAGE_GENERAL] = vec![
-            self.l_hint,
-            self.c_hint,
-            self.n_hint_desc,
-            self.l_gain,
             self.e_gain,
-            self.n_gain_desc,
-            self.l_half,
             self.e_half,
-            self.n_half_desc,
             self.b_apply,
             self.b_default,
-            self.n_config,
-            self.n_tips,
+            self.b_open_cfg,
         ];
         Ok(())
     }
@@ -660,28 +528,17 @@ impl App {
     /// 学习数据页：搜索 + 只读列表 + 「清除选中词的学习分」。
     fn create_learn_page(&mut self) -> windows::core::Result<()> {
         let hwnd = self.hwnd;
-        let label_style = WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE);
-        let edit_style =
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080);
-
-        self.l_search = child(
-            hwnd,
-            w!("Static"),
-            "搜索",
-            label_style,
-            ID_L_SEARCH,
-            self.font,
-        )?;
+        let edit_style = WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | 0x0080);
         self.e_search = child(hwnd, w!("Edit"), "", edit_style, ID_E_SEARCH, self.font)?;
-        self.b_search = child(hwnd, w!("Button"), "搜", WS_TABSTOP, ID_B_SEARCH, self.font)?;
-        self.b_forget = child(
+        self.b_search = child(
             hwnd,
             w!("Button"),
-            "清除选中词的学习分",
-            WS_TABSTOP,
-            ID_B_FORGET,
+            "搜",
+            WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
+            ID_B_SEARCH,
             self.font,
         )?;
+        self.b_forget = button(hwnd, "清除选中词的学习分", ID_B_FORGET, self.font)?;
         self.learn_list = child(
             hwnd,
             w!("SysListView32"),
@@ -689,7 +546,6 @@ impl App {
             WINDOW_STYLE(
                 WS_CHILD.0
                     | WS_VISIBLE.0
-                    | WS_BORDER.0
                     | WS_TABSTOP.0
                     | LVS_REPORT
                     | LVS_SINGLESEL
@@ -698,14 +554,6 @@ impl App {
             ID_LEARN_LIST,
             self.font,
         )?;
-        unsafe {
-            send(
-                self.learn_list,
-                LVM_SETEXTENDEDLISTVIEWSTYLE,
-                WPARAM(LVS_EX_FULLROWSELECT),
-                LPARAM(LVS_EX_FULLROWSELECT as isize),
-            );
-        }
         for (i, (title, width)) in [
             ("词", 160),
             ("上屏次数", 90),
@@ -738,16 +586,21 @@ impl App {
             w!("Static"),
             "",
             WINDOW_STYLE(0),
-            ID_N_LEARN,
-            self.font,
+            ID_STATUS + 1, // 不参与命中分派，id 只要不撞别的控件即可
+            self.fonts.caption,
         )?;
 
         unsafe {
+            send(
+                self.learn_list,
+                LVM_SETEXTENDEDLISTVIEWSTYLE,
+                WPARAM(LVS_EX_FULLROWSELECT),
+                LPARAM(LVS_EX_FULLROWSELECT as isize),
+            );
             let _ = SetWindowSubclass(self.e_search, Some(enter_proc), 2, ID_B_SEARCH);
         }
 
         self.pages[PAGE_LEARN] = vec![
-            self.l_search,
             self.e_search,
             self.b_search,
             self.b_forget,
@@ -757,7 +610,35 @@ impl App {
         Ok(())
     }
 
+    /// 两个列表的底色/文字色统一在**两页都建完之后**上色（`create_words_page`
+    /// 跑的时候 `learn_list` 还不存在，那里碰不到它）。
+    fn style_lists(&self) {
+        unsafe {
+            for &h in &[self.list, self.learn_list] {
+                send(
+                    h,
+                    LVM_SETBKCOLOR,
+                    WPARAM(0),
+                    LPARAM(self.colors.card.0 as isize),
+                );
+                send(
+                    h,
+                    LVM_SETTEXTCOLOR,
+                    WPARAM(0),
+                    LPARAM(self.colors.text1.0 as isize),
+                );
+                send(
+                    h,
+                    LVM_SETTEXTBKCOLOR,
+                    WPARAM(0),
+                    LPARAM(self.colors.card.0 as isize),
+                );
+            }
+        }
+    }
+
     /// 切页：只动可见性，不重建控件（重建会让编辑中的内容、滚动位置全丢）。
+    /// 页签本身是画出来的（见模块头），所以除了显隐只需要重画一次主窗口。
     fn show_page(&mut self, page: usize) {
         let page = page.min(PAGE_COUNT - 1);
         self.page = page;
@@ -768,193 +649,346 @@ impl App {
                 }
             }
         }
-        // Tab 只在内容区外面画页签，页控件都在它上面；但切页后它会重画自己，
-        // 顺手再压一次底，免得某些情况下浮上来盖住新页（F44 的另一条路径）
-        lower_tab(self.tab);
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
-    fn layout(&self) {
+    /// 一个 RECT 的便捷构造（全是逻辑像素，调用处负责 `s()` 换算）。
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> RECT {
+        RECT {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        }
+    }
+
+    fn inset(r: RECT, d: i32) -> RECT {
+        RECT {
+            left: r.left + d,
+            top: r.top + d,
+            right: r.right - d,
+            bottom: r.bottom - d,
+        }
+    }
+
+    /// 整窗布局。Win11 设置的节奏：页签 44 → 页标题 → 分组标题 → 卡片 → 按钮行。
+    /// 所有数字都是 96 DPI 逻辑像素，落屏前过 `s()`。
+    fn layout(&mut self) {
         let mut rc = RECT::default();
         unsafe {
             let _ = GetClientRect(self.hwnd, &mut rc);
         }
         let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
-        let m = self.s(12);
+        let m = self.s(20); // 页面左右留白
+        let tab_h = self.s(44);
         let status_h = self.s(26);
-        let tab_h = ch - m * 2 - status_h;
-        unsafe {
-            let _ = MoveWindow(self.tab, m, m, cw - m * 2, tab_h, true);
-        }
-        // Tab 的内容区：扣掉边框与页签高度
-        let cx = m + self.s(10);
-        let cy = m + self.s(30);
-        let cw2 = cw - m * 2 - self.s(20);
-        let ch2 = tab_h - self.s(38);
 
-        self.layout_words(cx, cy, cw2, ch2);
-        self.layout_general(cx, cy, cw2, ch2);
-        self.layout_learn(cx, cy, cw2, ch2);
-
-        unsafe {
-            let _ = MoveWindow(self.status, m, ch - status_h, cw - m * 2, self.s(20), true);
+        // 页签：从左排，宽 = 文字宽 + 24。文字宽度量需要 DC，粗略按每字 15 逻辑像素估，
+        // 估宽只影响点击区域（画的时候按同一条公式画），差一两个像素无感。
+        let mut tx = m;
+        for (i, title) in PAGE_TITLES.iter().enumerate() {
+            let w = self.s((title.chars().count() as i32) * 15 + 24);
+            self.geo.tabs[i] = Self::rect(tx, 0, w, tab_h);
+            tx += w + self.s(4);
         }
-        // 排在最后：Tab 是背景板，必须待在所有页控件下面（F44）
-        lower_tab(self.tab);
+
+        let content_top = tab_h + self.s(16);
+        let content_bottom = ch - status_h - self.s(8);
+        let cw2 = cw - m * 2;
+        // 通用页顶部还挂着页标题与分组标题，先给 layout_general 用
+        let y_after_title = content_top + self.s(30) + self.s(26);
+
+        self.layout_general(m, y_after_title, cw2, content_bottom);
+        self.layout_words(m, content_top, cw2, content_bottom);
+        self.layout_learn(m, content_top, cw2, content_bottom);
+
+        self.round_edits();
+
+        // 状态栏：全宽一行小字，贴底
+        unsafe {
+            let _ = MoveWindow(self.status, m, ch - status_h, cw2, self.s(20), true);
+        }
     }
 
-    fn layout_words(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
-        let row = self.s(26);
-        let gap = self.s(8);
-        let panel_h = row * 2 + gap * 2 + self.s(20);
-        let list_h = (ch2 - panel_h - gap).max(self.s(80));
+    /// 给无边框 Edit 也套一个 4px 圆角 region。
+    ///
+    /// 不做这一步，Edit 的方形白底会压住父窗口画的圆角描边：留 1px 内衬只够直边，
+    /// 四个角是 4px 的弧，被方角白块一切，描边在角上就断了（截图里看到「只有右/下
+    /// 两条边」正是这个）。region 让 Edit 自己的轮廓也是圆角，内外两圈才贴得住。
+    fn round_edits(&self) {
+        let r = self.s(4);
+        // 两个列表用卡片的圆角，其余是输入框的 4px
+        for (h, rad) in [(self.list, self.s(8)), (self.learn_list, self.s(8))] {
+            round_control(h, rad);
+        }
+        for &h in &[
+            self.e_gain,
+            self.e_half,
+            self.e_search,
+            self.e_word,
+            self.e_pinyin,
+            self.e_code,
+            self.e_weight,
+        ] {
+            let mut rc = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(h, &mut rc);
+            }
+            let (w, ht) = (rc.right - rc.left, rc.bottom - rc.top);
+            if w > 0 && ht > 0 {
+                unsafe {
+                    let rgn = CreateRoundRectRgn(0, 0, w + 1, ht + 1, r * 2, r * 2);
+                    if !rgn.is_invalid() {
+                        let _ = SetWindowRgn(h, Some(rgn), true);
+                    }
+                }
+            }
+        }
+    }
 
+    /// 通用页：页标题 + 分组标题 + 卡片（四行）+ 按钮行。
+    fn layout_general(&mut self, cx: i32, cy: i32, cw2: i32, bottom: i32) {
+        let row_h = self.s(62);
+        let cfg_h = self.s(52);
+        let card_h = row_h * 3 + cfg_h;
+        let card = Self::rect(cx, cy, cw2, card_h);
+        self.geo.gen_card = card;
+
+        // 四行：前三行各 row_h，最后是配置信息行
+        for i in 0..3 {
+            self.geo.gen_rows[i] = Self::rect(card.left, card.top + row_h * i as i32, cw2, row_h);
+        }
+        self.geo.gen_rows[3] = Self::rect(card.left, card.top + row_h * 3, cw2, cfg_h);
+
+        // 右缘对齐的控件区
+        let right = card.right - self.s(16);
+        let ctl_h = self.s(32);
+
+        // 行 0：三段选择器（3 × 88）
+        let seg_w = self.s(88 * 3);
+        self.geo.seg = Self::rect(right - seg_w, card.top + self.s(15), seg_w, ctl_h);
+
+        // 行 1/2：数字框（84 宽）+ 左侧的默认值提示
+        let box_w = self.s(84);
+        let hint_left = card.left + self.s(180);
+        let hint_w = right - box_w - self.s(8) - hint_left;
+        let mut y = card.top + row_h + self.s(15);
+        self.geo.gain_box = Self::rect(right - box_w, y, box_w, ctl_h);
+        self.geo.gain_hint = Self::rect(hint_left, y, hint_w, ctl_h);
+        y += row_h;
+        self.geo.half_box = Self::rect(right - box_w, y, box_w, ctl_h);
+        self.geo.half_hint = Self::rect(hint_left, y, hint_w, ctl_h);
+
+        // 按钮行：卡片下 14px，右对齐「恢复默认」「应用」
+        let btn_y = card.bottom + self.s(14);
+        let btn_h = self.s(30);
+        self.geo.gen_btn_row = Self::rect(cx, btn_y, cw2, btn_h);
         unsafe {
-            let _ = MoveWindow(self.list, cx, cy, cw2, list_h, true);
+            let _ = MoveWindow(
+                self.b_default,
+                right - self.s(96) - self.s(72) - self.s(8),
+                btn_y,
+                self.s(96),
+                btn_h,
+                true,
+            );
+            let _ = MoveWindow(
+                self.b_apply,
+                right - self.s(72),
+                btn_y,
+                self.s(72),
+                btn_h,
+                true,
+            );
+            // 配置行右侧的链接
+            let cfg = self.geo.gen_rows[3];
+            let _ = MoveWindow(
+                self.b_open_cfg,
+                right - self.s(80),
+                cfg.top + (cfg.bottom - cfg.top - btn_h) / 2,
+                self.s(80),
+                btn_h,
+                true,
+            );
         }
 
-        let py = cy + list_h + gap;
-        let mut x = cx;
-        let label_w = self.s(44);
-        let place = |h: HWND, w: i32, hh: i32, y: i32, x: &mut i32| {
-            unsafe {
-                let _ = MoveWindow(h, *x, y, w, hh, true);
-            }
-            *x += w + gap;
-        };
-        place(self.l_word, label_w, row, py, &mut x);
-        place(self.e_word, self.s(130), row, py, &mut x);
-        place(self.l_pinyin, label_w + self.s(4), row, py, &mut x);
-        place(self.e_pinyin, self.s(150), row, py, &mut x);
-        place(self.l_code, label_w, row, py, &mut x);
-        place(self.e_code, self.s(80), row, py, &mut x);
-        place(self.l_weight, label_w + self.s(4), row, py, &mut x);
-        place(self.e_weight, self.s(100), row, py, &mut x);
+        // 数字框：Edit 内缩 1px，描边画在框上（`paint_general`）
+        move_rect(self.e_gain, Self::inset(self.geo.gain_box, self.s(1)), true);
+        move_rect(self.e_half, Self::inset(self.geo.half_box, self.s(1)), true);
 
-        let by = py + row + gap;
+        // 窗口太矮时卡片底部至少要在状态栏之上（MIN_H 已保证，这里只兜底）
+        let _ = bottom;
+    }
+
+    /// 词组页：列表卡 + 编辑面板卡 + 按钮行 + 说明行。
+    fn layout_words(&mut self, cx: i32, cy: i32, cw2: i32, bottom: i32) {
+        let btn_h = self.s(30);
+        let row = self.s(30);
+        let note_h = self.s(22);
+        // 面板卡：一行输入 + 上下内衬
+        let panel_h = row + self.s(28);
+        // 从底往上排：说明 → 按钮行 → 面板卡 → 列表卡
+        let note_y = bottom - note_h;
+        let btn_y = note_y - self.s(8) - btn_h;
+        let panel_y = btn_y - self.s(12) - panel_h;
+        let list_y = cy + self.s(56); // 页标题 + 分组标题
+        let list_h = (panel_y - self.s(14) - list_y).max(self.s(120));
+
+        let card = Self::rect(cx, list_y, cw2, list_h);
+        self.geo.words_card = card;
+        unsafe {
+            // 列表内缩 1px：描边画在卡片上，别跟列表自带边框叠
+            // 缩 8 的理由同学习页：列头是直角，缩 1 会把卡片圆角啃掉。
+            move_rect(self.list, Self::inset(card, self.s(8)), true);
+            let _ = MoveWindow(
+                self.note,
+                cx + self.s(4),
+                note_y + self.s(2),
+                cw2 - self.s(8),
+                note_h,
+                true,
+            );
+        }
+
+        let panel = Self::rect(cx, panel_y, cw2, panel_h);
+        self.geo.panel_card = panel;
+        // 一行四组：label + box（文字在 draw_words 里画）。按权重铺满整行，不写死
+        // 像素：写死时窗口一拉宽，右半屏全是空白，四个框挤在左边像没排完版。
+        let weights = [30, 30, 18, 22];
+        // 标签宽按字宽算；多出来的 8px 是描边余量，靠**右对齐**吃掉——
+        // 这样文字永远贴着它自己的输入框，与前一个框之间才留出真正的分组间距。
+        let label_ws = [
+            self.s(14 * 2 + 8),
+            self.s(14 * 2 + 8),
+            self.s(14 + 8),
+            self.s(14 * 2 + 8),
+        ];
+        let label_to_box = self.s(8);
+        let group_gap = self.s(16);
+        let inner_left = panel.left + self.s(16);
+        let fixed = label_ws.iter().sum::<i32>() + label_to_box * 4 + group_gap * 3;
+        let box_total = (panel.right - self.s(16) - inner_left - fixed).max(self.s(320));
+        let mut x = inner_left;
+        let mut used = 0;
+        let mid = panel.top + self.s(14);
+        for i in 0..4 {
+            self.geo.panel_labels[i] = Self::rect(x, mid, label_ws[i], row);
+            x += label_ws[i] + label_to_box;
+            // 最后一个吃掉取整余数，右侧才不会飘出半像素的缝
+            let bw = if i == 3 {
+                box_total - used
+            } else {
+                box_total * weights[i] / 100
+            };
+            used += bw;
+            self.geo.panel_boxes[i] = Self::rect(x, mid, bw, row);
+            x += bw + group_gap;
+        }
+        let boxes = self.geo.panel_boxes;
+        for (&box_r, &h) in
+            boxes
+                .iter()
+                .zip(&[self.e_word, self.e_pinyin, self.e_code, self.e_weight])
+        {
+            move_rect(h, Self::inset(box_r, self.s(1)), true);
+        }
+
+        // 按钮行：主操作靠左，文件级操作跟后，「清空」靠右
+        let gap = self.s(8);
         let mut bx = cx;
-        // 主操作在前：保存 / 删除；中间空一格，再是文件级的三个；「清空」靠右单独放，
-        // 它是「放弃这次输入」，不该跟保存挤在一起（F46 的界面意见）。
-        place(self.b_save, self.s(72), row, by, &mut bx);
-        place(self.b_del, self.s(72), row, by, &mut bx);
-        bx += self.s(16);
-        place(self.b_import, self.s(96), row, by, &mut bx);
-        place(self.b_open, self.s(104), row, by, &mut bx);
-        place(self.b_undo, self.s(88), row, by, &mut bx);
+        for (h, w) in [
+            (self.b_save, 72),
+            (self.b_del, 72),
+            (self.b_import, 96),
+            (self.b_open, 104),
+            (self.b_undo, 88),
+        ] {
+            unsafe {
+                let _ = MoveWindow(h, bx, btn_y, self.s(w), btn_h, true);
+            }
+            bx += self.s(w) + gap;
+        }
         unsafe {
             let _ = MoveWindow(
                 self.b_clear,
                 cx + cw2 - self.s(64),
-                by,
+                btn_y,
                 self.s(64),
-                row,
+                btn_h,
                 true,
             );
         }
+        self.fit_last_column(self.list, 4);
+    }
 
-        let ny = by + row + self.s(4);
+    /// 最后一列吃掉剩余宽度。列宽是按逻辑像素写死的，窗口拉宽后右上角会多出
+    /// 一块空白 + 一条莫名其妙的竖线（用户会以为多出一列）。留 `s(2)` 余量，
+    /// 不然列宽加上边框刚好撑出水平滚动条。
+    fn fit_last_column(&self, list: HWND, last: usize) {
         unsafe {
-            let _ = MoveWindow(self.note, cx, ny, cw2, self.s(20), true);
+            let mut r = RECT::default();
+            if GetClientRect(list, &mut r).is_err() {
+                return;
+            }
+            let mut used = 0;
+            for i in 0..last {
+                used += send(list, LVM_GETCOLUMNWIDTH, WPARAM(i), LPARAM(0)).0 as i32;
+            }
+            let w = (r.right - r.left - used - self.s(2)).max(self.s(80));
+            send(list, LVM_SETCOLUMNWIDTH, WPARAM(last), LPARAM(w as isize));
         }
     }
 
-    /// 通用页：三行「标签 + 输入 + 一句说明」，下面一行按钮，最底下一行只读的配置信息。
-    ///
-    /// 说明文字跟在**各自那一行右边**而不是统一堆在底部：改 g 的时候眼睛在那一行，
-    /// 说明跑到底部就得来回跳。
-    fn layout_general(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
-        let row = self.s(26);
-        let gap = self.s(10);
-        let label_w = self.s(110);
-        let field_w = self.s(150);
-        let mut y = cy + self.s(4);
+    /// 学习数据页：搜索行 + 列表卡 + 说明行。
+    fn layout_learn(&mut self, cx: i32, cy: i32, cw2: i32, bottom: i32) {
+        let btn_h = self.s(30);
+        let note_h = self.s(22);
+        let search_y = cy + self.s(56);
+        let note_y = bottom - note_h;
+        let card_y = search_y + self.s(38);
+        let card_h = (note_y - self.s(8) - card_y).max(self.s(120));
+        let card = Self::rect(cx, card_y, cw2, card_h);
+        self.geo.learn_card = card;
+        self.geo.learn_search_box = Self::rect(cx + self.s(40), search_y, self.s(320), btn_h);
 
-        let line = |label: HWND, field: HWND, field_h: i32, desc: HWND, y: &mut i32| {
-            unsafe {
-                let _ = MoveWindow(label, cx, *y, label_w, row, true);
-                let _ = MoveWindow(field, cx + label_w + gap, *y, field_w, field_h, true);
-                let _ = MoveWindow(
-                    desc,
-                    cx + label_w + gap + field_w + self.s(16),
-                    *y,
-                    cw2 - label_w - gap - field_w - self.s(20),
-                    row,
-                    true,
-                );
-            }
-            *y += row + self.s(18);
-        };
-        // 下拉框的高度是「展开后」的高度，收起来只有一行高
-        line(
-            self.l_hint,
-            self.c_hint,
-            self.s(160),
-            self.n_hint_desc,
-            &mut y,
-        );
-        line(self.l_gain, self.e_gain, row, self.n_gain_desc, &mut y);
-        line(self.l_half, self.e_half, row, self.n_half_desc, &mut y);
-
-        y += self.s(6);
         unsafe {
-            let _ = MoveWindow(self.b_apply, cx, y, self.s(80), row, true);
-            let _ = MoveWindow(self.b_default, cx + self.s(88), y, self.s(96), row, true);
-        }
-        // 两行说明：高度按两行给足，Static 不会自己长高（AutoSize 在这里没有）
-        unsafe {
-            let _ = MoveWindow(self.n_tips, cx, y + row + self.s(16), cw2, self.s(44), true);
-        }
-        // 配置文件的路径贴在页面底部：它只在排障时有用，平时不该抢注意力
-        unsafe {
+            move_rect(
+                self.e_search,
+                Self::inset(self.geo.learn_search_box, 1),
+                true,
+            );
             let _ = MoveWindow(
-                self.n_config,
-                cx,
-                cy + ch2 - self.s(24),
-                cw2,
-                self.s(20),
+                self.b_search,
+                self.geo.learn_search_box.right + self.s(8),
+                search_y,
+                self.s(48),
+                btn_h,
                 true,
             );
-        }
-    }
-
-    fn layout_learn(&self, cx: i32, cy: i32, cw2: i32, ch2: i32) {
-        let row = self.s(26);
-        let gap = self.s(8);
-        let label_w = self.s(44);
-        let mut x = cx;
-        let place = |h: HWND, w: i32, hh: i32, y: i32, x: &mut i32| {
-            unsafe {
-                let _ = MoveWindow(h, *x, y, w, hh, true);
-            }
-            *x += w + gap;
-        };
-        place(self.l_search, label_w, row, cy, &mut x);
-        place(self.e_search, self.s(220), row, cy, &mut x);
-        place(self.b_search, self.s(56), row, cy, &mut x);
-        unsafe {
             // 「清除」是破坏性动作，靠右单独放，别挨着搜索框（F46 的同一条理由）
             let _ = MoveWindow(
                 self.b_forget,
                 cx + cw2 - self.s(160),
-                cy,
+                search_y,
                 self.s(160),
-                row,
+                btn_h,
                 true,
             );
-        }
-
-        let list_y = cy + row + gap;
-        let list_h = (ch2 - row - gap - self.s(28)).max(self.s(80));
-        unsafe {
-            let _ = MoveWindow(self.learn_list, cx, list_y, cw2, list_h, true);
+            // 列表内缩 8：卡片描边与列表之间留出呼吸位。缩 1 时列头（直角、带自己的
+            // 背景）正好压在卡片圆角上，四个角全被削成方的，看着像「卡片没画圆」。
+            move_rect(self.learn_list, Self::inset(card, self.s(8)), true);
             let _ = MoveWindow(
                 self.n_learn,
-                cx,
-                list_y + list_h + self.s(4),
-                cw2,
-                self.s(20),
+                cx + self.s(4),
+                note_y + self.s(2),
+                cw2 - self.s(8),
+                note_h,
                 true,
             );
         }
+        self.fit_last_column(self.learn_list, 4);
     }
 
     /// 重算推导列并重填 ListView（保留当前选中项）。
@@ -1286,90 +1320,80 @@ impl App {
     ///
     /// **刷新一定从文件读**，不从界面读：界面只是文件的投影，照界面回填会把
     /// 「文件里本来写的是 500、被界面夹成 365」这种差异永久抹平。
+    /// 从磁盘重读三项并刷进控件。打开窗口、点「应用」、点「恢复默认」之后各一次。
+    ///
+    /// **刷新一定从文件读**，不从界面读：界面只是文件的投影，照界面回填会把
+    /// 「文件里本来写的是 500、被界面夹成 365」这种差异永久抹平。
     fn refresh_general(&mut self) {
         let g = crate::general::General::load(&self.config_path);
-        unsafe {
-            send(
-                self.c_hint,
-                CB_SETCURSEL,
-                WPARAM(hint_index(g.hint)),
-                LPARAM(0),
-            );
-        }
+        self.hint_sel = hint_index(g.hint);
         set_text(self.e_gain, &crate::general::fmt_number(g.gain));
         set_text(self.e_half, &crate::general::fmt_number(g.half_life));
-        self.update_hint_desc(g.hint);
         self.update_general_fields();
 
-        let mut info = format!("{} · {}", self.config_path.display(), g.version);
+        let mut info = format!("{} \u{b7} {}", self.config_path.display(), g.version);
         if !g.found {
-            info.push_str(" · 文件还不存在，点「应用」时会建");
+            info.push_str(" \u{b7} 文件还不存在，点「应用」时会建");
         }
         for w in g.warnings.iter().take(1) {
-            info.push_str(&format!(" · {w}"));
+            info.push_str(&format!(" \u{b7} {w}"));
         }
-        set_text(self.n_config, &info);
+        self.config_info = info;
+        self.repaint();
     }
 
     fn selected_hint(&self) -> HintMode {
-        match unsafe { send(self.c_hint, CB_GETCURSEL, WPARAM(0), LPARAM(0)) }.0 {
+        match self.hint_sel {
             1 => HintMode::FirstTime,
             2 => HintMode::Off,
             _ => HintMode::Mixed,
         }
     }
 
-    /// 下拉框右边那句说明。选完立刻变——选完还要滚到别处看说明，等于没说明。
-    fn update_hint_desc(&self, mode: HintMode) {
-        let text = match mode {
-            HintMode::Mixed => "拼音候选旁边总是显示这个词的五笔码",
-            HintMode::FirstTime => "只在这个词还没上过屏时显示一次（学会就不打扰）",
-            HintMode::Off => "一律不显示五笔码",
-        };
-        set_text(self.n_hint_desc, text);
+    /// 码提示每段的描述，绘制时直接取（不再有 Static 存它）。
+    fn hint_desc(sel: usize) -> &'static str {
+        match sel {
+            1 => "只在这个词还没上过屏时显示一次（学会就不打扰）",
+            2 => "一律不显示五笔码",
+            _ => "拼音候选旁边总是显示这个词的五笔码",
+        }
     }
 
-    /// 两个数字框的即时校验：合法就亮「应用」，非法就把原因写在该行右边。
+    /// 点了三段选择器：只改内存里的段位，落盘仍等「应用」。
+    fn select_hint(&mut self, seg: usize) {
+        if self.hint_sel != seg {
+            self.hint_sel = seg;
+            self.repaint();
+        }
+    }
+
+    /// 两个数字框的即时校验：合法就亮「应用」，非法就把原因存下来给绘制画红字。
     ///
     /// 界面层拦住非法值，是为了不让人写进一个会被 `sanitized` 静默夹掉的数——
     /// 那种「写了 500、跑起来是 365、界面上还显示 500」最费时间。
-    fn update_general_fields(&self) {
-        let gain =
+    fn update_general_fields(&mut self) {
+        self.gain_state =
             crate::general::parse_number(&get_text(self.e_gain), crate::general::GAIN_RANGE, "");
-        let half =
+        self.half_state =
             crate::general::parse_number(&get_text(self.e_half), crate::general::HALF_RANGE, " 天");
-        let gain_text = match &gain {
-            Ok(_) => "越大越容易把常用的词往前提；0 = 不学习；默认 0.35".to_string(),
-            Err(e) => format!("输入有误：{e}"),
-        };
-        let half_text = match &half {
-            Ok(_) => "多少天不用，分数减半；默认 45".to_string(),
-            Err(e) => format!("输入有误：{e}"),
-        };
-        set_text(self.n_gain_desc, &gain_text);
-        set_text(self.n_half_desc, &half_text);
-        enable_window(self.b_apply, gain.is_ok() && half.is_ok());
+        enable_window(
+            self.b_apply,
+            self.gain_state.is_ok() && self.half_state.is_ok(),
+        );
+        self.repaint();
     }
 
     fn on_apply(&mut self) {
-        let gain = match crate::general::parse_number(
-            &get_text(self.e_gain),
-            crate::general::GAIN_RANGE,
-            "",
-        ) {
+        let gain = match self.gain_state {
             Ok(v) => v,
-            Err(e) => {
+            Err(ref e) => {
                 self.set_status(&format!("学习增益没法用：{e}"));
                 return;
             }
         };
-        let half = match crate::general::parse_number(
-            &get_text(self.e_half),
-            crate::general::HALF_RANGE,
-            " 天",
-        ) {
+        let half = match self.half_state {
             Ok(v) => v,
-            Err(e) => {
+            Err(ref e) => {
                 self.set_status(&format!("半衰期没法用：{e}"));
                 return;
             }
@@ -1401,6 +1425,36 @@ impl App {
                 "恢复默认失败",
                 &format!("{}：{e}", self.config_path.display()),
             ),
+        }
+    }
+
+    /// 打开配置文件所在目录（资源管理器，选中文件本身）。
+    fn on_open_cfg(&mut self) {
+        let path = self.config_path.clone();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let target = wide(&format!("/select,\"{}\"", path.display()));
+        unsafe {
+            ShellExecuteW(
+                Some(self.hwnd),
+                w!("open"),
+                w!("explorer.exe"),
+                PCWSTR(target.as_ptr()),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+
+    /// 重画整窗。静态文案全部由 `paint` 从 `self` 现取，所以状态一变就整窗重画——
+    /// 窗口小（< 1000×700），一次全画在 GDI 下微秒级，不值得做脏矩形。
+    fn repaint(&self) {
+        if self.hwnd.0.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
     }
 
@@ -1618,14 +1672,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if let Some(app) = unsafe { app_of(hwnd) } {
                 app.hwnd = hwnd;
                 if app.create_children().is_ok() {
+                    app.style_lists();
                     app.layout();
                     // 默认停在第一页（通用）。先显页再刷数据：刷的时候要读文件的，
                     // 读失败的信息得写在已经可见的控件上。
                     let page = app.initial_page;
                     app.show_page(page);
-                    unsafe {
-                        send(app.tab, TCM_SETCURSEL, WPARAM(page), LPARAM(0));
-                    }
                     app.refresh_general();
                     app.refresh_learn();
                     app.refresh();
@@ -1639,6 +1691,66 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SIZE => {
             if let Some(app) = unsafe { app_of(hwnd) } {
                 app.layout();
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => {
+            // 背景就是色表的 bg。返回 1 = 「我擦过了」，别再走 DefWindowProc
+            // 的白墙刷（那是全窗口闪烁的来源之一）。
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+                let mut rc = RECT::default();
+                unsafe {
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let _ = FillRect(hdc, &rc, app.brush_bg);
+                }
+                LRESULT(1)
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+        }
+        WM_PAINT => {
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                app.paint();
+            }
+            LRESULT(0)
+        }
+        WM_DRAWITEM => {
+            // 所有按钮都是 BS_OWNERDRAW，这里统一入口
+            let dis = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                app.draw_button(dis);
+            }
+            LRESULT(1)
+        }
+        WM_LBUTTONDOWN => {
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                let pt = POINT {
+                    x: (lparam.0 & 0xFFFF) as i16 as i32,
+                    y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                };
+                app.on_click(pt);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                let pt = POINT {
+                    x: (lparam.0 & 0xFFFF) as i16 as i32,
+                    y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                };
+                app.on_mouse_move(pt);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                app.tab_hot = -1;
+                app.seg_hot = -1;
+                app.repaint();
             }
             LRESULT(0)
         }
@@ -1646,16 +1758,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let id = wparam.0 & 0xffff;
             let code = ((wparam.0 >> 16) & 0xffff) as u32;
             if let Some(app) = unsafe { app_of(hwnd) } {
-                // EN_CHANGE = 0x0300：编辑框内容变了，按钮该亮该灰要跟着走。
-                // 不做这一步，「保存」就只能一直亮着（空词点下去只得到一句抱怨）。
-                // 三个编辑框的判据各不相同，按 id 分派——一律走 `update_buttons`
-                // 会拿两个数字框的内容去判「词填了没」，结果永远是亮的。
                 match (code, id) {
-                    (0x0300, ID_E_GAIN | ID_E_HALF) => app.update_general_fields(),
-                    (0x0300, ID_E_WORD | ID_E_PINYIN | ID_E_CODE | ID_E_WEIGHT) => {
+                    // 焦点跟到哪个输入框，那个框的描边就用强调色（Win11 行为）
+                    (EN_SETFOCUS, _) => {
+                        app.focus_id = id;
+                        app.repaint();
+                    }
+                    (EN_KILLFOCUS, _) => {
+                        if app.focus_id == id {
+                            app.focus_id = 0;
+                            app.repaint();
+                        }
+                    }
+                    // EN_CHANGE = 编辑框内容变了。三个编辑框的判据各不相同，按 id
+                    // 分派——一律走同一个函数会拿数字框的内容去判「词填了没」。
+                    (EN_CHANGE, ID_E_GAIN | ID_E_HALF) => app.update_general_fields(),
+                    (EN_CHANGE, ID_E_WORD | ID_E_PINYIN | ID_E_CODE | ID_E_WEIGHT) => {
                         app.update_buttons()
                     }
-                    (CBN_SELCHANGE, ID_C_HINT) => app.update_hint_desc(app.selected_hint()),
                     (0, ID_B_CLEAR) => app.on_clear(),
                     (0, ID_B_SAVE) => app.on_save(),
                     (0, ID_B_DEL) => app.on_delete(),
@@ -1664,6 +1784,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (0, ID_B_OPEN) => app.on_open(),
                     (0, ID_B_APPLY) => app.on_apply(),
                     (0, ID_B_DEFAULT) => app.on_restore_defaults(),
+                    (0, ID_B_OPEN_CFG) => app.on_open_cfg(),
                     (0, ID_B_SEARCH) => app.on_search(),
                     (0, ID_B_FORGET) => app.on_forget(),
                     _ => {}
@@ -1688,28 +1809,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // 两个 ListView 同时存在，「有没有选中」要各问各的：
                     // 拿词语列表的选中项去判「能不能清除学习分」会指错行
                     app.update_learn_buttons();
-                } else if hdr.code == TCN_SELCHANGE && hdr.hwndFrom == app.tab {
-                    let page = send(app.tab, TCM_GETCURSEL, WPARAM(0), LPARAM(0)).0;
-                    app.show_page(page.max(0) as usize);
                 }
             }
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => {
-            // 所有 Static 都用**父窗口自己的背景色**。主窗口类注册时的 hbrBackground
-            // 是 `COLOR_BTNFACE + 1`（系统灰），这里必须回同一个颜色：原来回的是
-            // `COLOR_WINDOW`（白），于是每个字段名背后挂一块白方块，在浅灰底上一眼
-            // 就看出来（F47）。文字本身用透明背景，字缝里透出的也是这块灰。
-            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut core::ffi::c_void);
-            unsafe {
-                SetBkMode(hdc, TRANSPARENT);
+            // 说明性质的 Static（note / status / n_learn）全部：透明底 + 次级文字色 +
+            // 页面底色刷。回页面底色而不是白色，字缝里透出的才是底色而不是白方块。
+            let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                unsafe {
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, app.colors.text2);
+                }
+                LRESULT(app.brush_bg.0 as isize)
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
-            let brush = unsafe {
-                GetSysColorBrush(
-                    windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX(15), /* COLOR_BTNFACE */
-                )
-            };
-            LRESULT(brush.0 as isize)
         }
         WM_CLOSE => {
             unsafe {
@@ -1720,13 +1836,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_DESTROY => {
             if let Some(app) = unsafe { app_of(hwnd) } {
                 unsafe {
-                    let _ = RemoveWindowSubclass(app.tab, Some(tab_proc), 1);
                     for &h in &[app.e_word, app.e_pinyin, app.e_code, app.e_weight] {
                         let _ = RemoveWindowSubclass(h, Some(edit_proc), 1);
                     }
                     for &h in &[app.e_gain, app.e_half, app.e_search] {
                         let _ = RemoveWindowSubclass(h, Some(enter_proc), 2);
                     }
+                    let _ = DeleteObject(app.brush_bg.into());
+                    let _ = DeleteObject(app.brush_card.into());
                 }
             }
             unsafe { PostQuitMessage(0) };
@@ -1740,12 +1857,678 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
+/// 页签 / 三段选择器 / 「打开位置」链接的命中与切换。
+impl App {
+    fn on_click(&mut self, pt: POINT) {
+        // 页签
+        for (i, &r) in self.geo.tabs.iter().enumerate() {
+            if pt_in(pt, r) {
+                if self.page != i {
+                    self.switch_to(i);
+                }
+                return;
+            }
+        }
+        // 三段选择器（只在通用页响应）
+        if self.page == PAGE_GENERAL && pt_in(pt, self.geo.seg) {
+            let seg_w = (self.geo.seg.right - self.geo.seg.left) / 3;
+            let seg = ((pt.x - self.geo.seg.left) / seg_w.max(1)).clamp(0, 2) as usize;
+            self.select_hint(seg);
+        }
+    }
+
+    fn on_mouse_move(&mut self, pt: POINT) {
+        let tab = self
+            .geo
+            .tabs
+            .iter()
+            .position(|&r| pt_in(pt, r))
+            .map(|i| i as i32)
+            .unwrap_or(-1);
+        let seg = if pt_in(pt, self.geo.seg) {
+            let seg_w = (self.geo.seg.right - self.geo.seg.left) / 3;
+            ((pt.x - self.geo.seg.left) / seg_w.max(1)).clamp(0, 2)
+        } else {
+            -1
+        };
+        if tab != self.tab_hot || seg != self.seg_hot {
+            self.tab_hot = tab;
+            self.seg_hot = seg;
+            self.repaint();
+        }
+        // hover 离开通知只订阅一次；WM_MOUSELEAVE 后再订阅即可持续生效
+        unsafe {
+            let _ = TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: self.hwnd,
+                dwHoverTime: 0,
+            });
+        }
+    }
+
+    /// 自测与「点页签」共用的切页入口。
+    fn switch_to(&mut self, page: usize) {
+        self.show_page(page);
+    }
+}
+
+/// secondary 档按钮的便捷构造（主按钮/ghost 按钮样式各异，就地写）。
+fn button(parent: HWND, text: &str, id: usize, font: HFONT) -> windows::core::Result<HWND> {
+    child(
+        parent,
+        w!("Button"),
+        text,
+        WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
+        id,
+        font,
+    )
+}
+
+/// `MoveWindow` 的 RECT 版。
+fn move_rect(hwnd: HWND, r: RECT, repaint: bool) {
+    unsafe {
+        let _ = MoveWindow(
+            hwnd,
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            repaint,
+        );
+    }
+}
+
+/// 把一个子窗口裁成圆角矩形（坐标相对窗口自身）。
+fn round_control(hwnd: HWND, radius: i32) {
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut rc);
+    }
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    unsafe {
+        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
+        if !rgn.is_invalid() {
+            let _ = SetWindowRgn(hwnd, Some(rgn), true);
+        }
+    }
+}
+
+fn pt_in(pt: POINT, r: RECT) -> bool {
+    pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom
+}
+
+// ---------------------------------------------------------------- 绘制
+
+/// 绘制辅助（都是 96 DPI 语义下的薄封装，颜色来自 `theme::Colors`）。
+impl App {
+    /// 整窗绘制入口。背景在 WM_ERASEBKGND 里铺过，这里只画页签与当前页。
+    fn paint(&self) {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
+        if hdc.is_invalid() {
+            return;
+        }
+        self.draw_tab_bar(hdc);
+        match self.page {
+            PAGE_GENERAL => self.draw_general(hdc),
+            PAGE_WORDS => self.draw_words(hdc),
+            _ => self.draw_learn(hdc),
+        }
+        unsafe {
+            let _ = EndPaint(self.hwnd, &ps);
+        }
+    }
+
+    /// 页签栏：文字 + 选中项底下的 3px 强调色条 + 一条全宽分隔线。
+    fn draw_tab_bar(&self, hdc: HDC) {
+        let tab_h = self.s(44);
+        unsafe {
+            // 分隔线横贯整个客户区。之前按「最后一个页签 + 200px」估算，
+            // 窗口一拉宽线就在半路断掉，看起来像画到一半没墨了。
+            let mut rc = RECT::default();
+            let _ = GetClientRect(self.hwnd, &mut rc);
+            let pen = CreatePen(PS_SOLID, self.s(1), self.colors.card_border);
+            let old = SelectObject(hdc, pen.into());
+            let _ = MoveToEx(hdc, 0, tab_h, None);
+            let _ = LineTo(hdc, rc.right, tab_h);
+            SelectObject(hdc, old);
+            let _ = DeleteObject(pen.into());
+        }
+        for (i, title) in PAGE_TITLES.iter().enumerate() {
+            let r = self.geo.tabs[i];
+            let selected = i == self.page;
+            let color = if selected || i as i32 == self.tab_hot {
+                self.colors.text1
+            } else {
+                self.colors.text2
+            };
+            draw_text(hdc, title, r, self.fonts.body, color);
+            if selected {
+                // 指示条：文字区域全宽、贴着分隔线
+                let bar = Self::rect(r.left, tab_h - self.s(3), r.right - r.left, self.s(3));
+                fill_rect(hdc, bar, self.colors.accent);
+            }
+        }
+    }
+
+    /// 页标题 + 分组标题（三页共用的小件）。
+    fn draw_page_head(&self, hdc: HDC, title: &str, section: &str) {
+        let m = self.s(20);
+        let tab_h = self.s(44);
+        draw_text(
+            hdc,
+            title,
+            Self::rect(m, tab_h + self.s(10), self.s(400), self.s(30)),
+            self.fonts.title,
+            self.colors.text1,
+        );
+        draw_text(
+            hdc,
+            section,
+            Self::rect(m, tab_h + self.s(48), self.s(400), self.s(18)),
+            self.fonts.section,
+            self.colors.text2,
+        );
+    }
+
+    /// 通用页：卡片 + 四行 + 三段选择器 + 数字框描边 + 按钮行短语。
+    fn draw_general(&self, hdc: HDC) {
+        self.draw_page_head(hdc, "通用", "候选与提示");
+        let card = self.geo.gen_card;
+        round_rect_w(
+            hdc,
+            card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+
+        // 行间分隔线（左端缩进 16，不顶到圆角）
+        for i in 0..3 {
+            let r = self.geo.gen_rows[i];
+            let h = self.s(1);
+            fill_rect(
+                hdc,
+                Self::rect(
+                    card.left + self.s(16),
+                    r.bottom - h,
+                    card.right - card.left - self.s(32),
+                    h,
+                ),
+                self.colors.separator,
+            );
+        }
+
+        // 行 0：标题 + 描述（描述随选中段变）
+        let (title, desc) = ("码提示时机", Self::hint_desc(self.hint_sel));
+        draw_row_text(hdc, title, desc, self.geo.gen_rows[0], self, false);
+
+        // 行 1/2：标题 + 描述（校验失败时红色）
+        let rows = [
+            (
+                "学习增益 g",
+                &self.gain_state,
+                "越大越容易把常用的词往前提；0 表示不学习",
+            ),
+            ("半衰期 H", &self.half_state, "多少天不用，学习分减半"),
+        ];
+        for (i, (title, state, ok_desc)) in rows.iter().enumerate() {
+            let desc = match state {
+                Ok(_) => (*ok_desc).to_string(),
+                Err(e) => format!("输入有误：{e}"),
+            };
+            let bad = state.is_err();
+            draw_row_text(hdc, title, &desc, self.geo.gen_rows[i + 1], self, bad);
+        }
+
+        // 三段选择器：底槽 + 白色选中块 + 文字
+        let seg = self.geo.seg;
+        round_rect_w(
+            hdc,
+            seg,
+            self.colors.seg_track,
+            self.colors.seg_track,
+            self.s(6),
+            self.s(1),
+        );
+        let seg_w = (seg.right - seg.left) / 3;
+        let sel = Self::rect(
+            seg.left + seg_w * self.hint_sel as i32 + self.s(2),
+            seg.top + self.s(2),
+            seg_w - self.s(4),
+            seg.bottom - seg.top - self.s(4),
+        );
+        round_rect_w(
+            hdc,
+            sel,
+            self.colors.card,
+            self.colors.separator,
+            self.s(4),
+            self.s(1),
+        );
+        for (i, name) in HINT_SEGMENTS.iter().enumerate() {
+            let r = Self::rect(
+                seg.left + seg_w * i as i32,
+                seg.top,
+                seg_w,
+                seg.bottom - seg.top,
+            );
+            let color = if i == self.hint_sel {
+                self.colors.text1
+            } else if i as i32 == self.seg_hot {
+                self.colors.text2
+            } else {
+                self.colors.text3
+            };
+            draw_text(hdc, name, r, self.fonts.caption, color);
+        }
+
+        // 行 1/2 的数字框：1px 描边（焦点时强调色）+ 左侧默认值提示
+        for (id, box_r, hint_r, hint) in [
+            (
+                ID_E_GAIN,
+                self.geo.gain_box,
+                self.geo.gain_hint,
+                "默认 0.35",
+            ),
+            (ID_E_HALF, self.geo.half_box, self.geo.half_hint, "7 – 365"),
+        ] {
+            let border = if self.focus_id == id {
+                self.colors.accent
+            } else {
+                self.colors.input_border
+            };
+            round_rect_w(hdc, box_r, self.colors.card, border, self.s(4), self.s(1));
+            draw_text_align(
+                hdc,
+                hint,
+                hint_r,
+                self.fonts.caption,
+                self.colors.text3,
+                true,
+            );
+        }
+
+        // 行 3：配置信息 + 右侧「打开位置」按钮（按钮自己画）
+        let cfg = self.geo.gen_rows[3];
+        let cfg_text = Self::rect(
+            card.left + self.s(16),
+            cfg.top,
+            card.right - card.left - self.s(120),
+            cfg.bottom - cfg.top,
+        );
+        draw_text(
+            hdc,
+            &self.config_info,
+            cfg_text,
+            self.fonts.caption,
+            self.colors.text3,
+        );
+
+        // 按钮行左边的短语
+        let tip = "改完点「应用」，1 秒内生效，无需重启";
+        draw_text(
+            hdc,
+            tip,
+            Self::rect(
+                self.geo.gen_btn_row.left,
+                self.geo.gen_btn_row.top,
+                self.geo.gen_btn_row.right - self.geo.gen_btn_row.left - self.s(220),
+                self.geo.gen_btn_row.bottom - self.geo.gen_btn_row.top,
+            ),
+            self.fonts.caption,
+            self.colors.text2,
+        );
+    }
+
+    /// 词组页：列表卡 + 面板卡（label 自绘）。
+    fn draw_words(&self, hdc: HDC) {
+        self.draw_page_head(hdc, "词组", "自定义词");
+        round_rect_w(
+            hdc,
+            self.geo.words_card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+        round_rect_w(
+            hdc,
+            self.geo.panel_card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+        for (i, name) in ["词", "拼音", "码", "权重"].iter().enumerate() {
+            draw_text_align(
+                hdc,
+                name,
+                self.geo.panel_labels[i],
+                self.fonts.caption,
+                self.colors.text2,
+                true,
+            );
+        }
+        // 四个输入框是**无边框原生 Edit**，描边只能画在卡片上：Edit 本身是白底，
+        // 白底压在白卡上等于没长眼睛，不画框就成了一片空白（截图里「输入框不见了」）。
+        // 描边画在 box 外沿，Edit 已经内缩 s(1) 让开这条线。
+        for (i, id) in [ID_E_WORD, ID_E_PINYIN, ID_E_CODE, ID_E_WEIGHT]
+            .into_iter()
+            .enumerate()
+        {
+            let border = if self.focus_id == id {
+                self.colors.accent
+            } else {
+                self.colors.input_border
+            };
+            round_rect_w(
+                hdc,
+                self.geo.panel_boxes[i],
+                self.colors.card,
+                border,
+                self.s(4),
+                self.s(1),
+            );
+        }
+    }
+
+    /// 学习数据页：搜索框描边 + 列表卡。
+    fn draw_learn(&self, hdc: HDC) {
+        self.draw_page_head(hdc, "学习数据", "按学习分排序");
+        let border = if self.focus_id == ID_E_SEARCH {
+            self.colors.accent
+        } else {
+            self.colors.input_border
+        };
+        round_rect_w(
+            hdc,
+            self.geo.learn_search_box,
+            self.colors.card,
+            border,
+            self.s(4),
+            self.s(1),
+        );
+        draw_text(
+            hdc,
+            "搜索",
+            Self::rect(
+                self.geo.learn_search_box.left - self.s(36),
+                self.geo.learn_search_box.top,
+                self.s(32),
+                self.geo.learn_search_box.bottom - self.geo.learn_search_box.top,
+            ),
+            self.fonts.caption,
+            self.colors.text2,
+        );
+        round_rect_w(
+            hdc,
+            self.geo.learn_card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+    }
+
+    /// owner-draw 按钮统一入口。样式分三档：
+    ///
+    /// | 档 | id | 观感 |
+    /// |---|---|---|
+    /// | primary | 应用、保存 | 实心强调色，hover 提亮、按下压暗 |
+    /// | secondary | 其余 | 白底细描边，hover 浅灰底 |
+    /// | ghost | 打开位置 | 无底无框的强调色文字（链接感） |
+    fn draw_button(&self, dis: &DRAWITEMSTRUCT) {
+        let id = dis.CtlID as usize;
+        let (fill, border, text_color) = if dis.itemState.0 & ODS_DISABLED != 0 {
+            // 灰按钮**也要留住轮廓**：底色 #F0F0F0 与页面底 #F3F3F3 只差 3 级，
+            // 不给描边时整排按钮会凭空消失，用户看不出「这里本来有按钮、只是不能点」。
+            match button_kind(id) {
+                ButtonKind::Primary => (
+                    self.colors.btn_disabled_bg,
+                    self.colors.card_border,
+                    self.colors.btn_disabled_text,
+                ),
+                ButtonKind::Secondary => (
+                    self.colors.btn_disabled_bg,
+                    self.colors.card_border,
+                    self.colors.btn_disabled_text,
+                ),
+                ButtonKind::Ghost => (
+                    self.colors.bg,
+                    self.colors.bg,
+                    self.colors.btn_disabled_text,
+                ),
+            }
+        } else if dis.itemState.0 & ODS_SELECTED != 0 {
+            match button_kind(id) {
+                ButtonKind::Primary => (
+                    self.colors.accent_down,
+                    self.colors.accent_down,
+                    self.colors.accent_text,
+                ),
+                ButtonKind::Secondary => {
+                    (self.colors.seg_track, self.colors.text3, self.colors.text1)
+                }
+                ButtonKind::Ghost => (self.colors.card, self.colors.card, self.colors.accent),
+            }
+        } else if dis.itemState.0 & ODS_HOTLIGHT != 0 {
+            match button_kind(id) {
+                ButtonKind::Primary => (
+                    self.colors.accent_hover,
+                    self.colors.accent_hover,
+                    self.colors.accent_text,
+                ),
+                ButtonKind::Secondary => {
+                    (self.colors.btn_hover, self.colors.text3, self.colors.text1)
+                }
+                ButtonKind::Ghost => (self.colors.card, self.colors.card, self.colors.accent),
+            }
+        } else {
+            match button_kind(id) {
+                ButtonKind::Primary => (
+                    self.colors.accent,
+                    self.colors.accent,
+                    self.colors.accent_text,
+                ),
+                ButtonKind::Secondary => (
+                    self.colors.card,
+                    self.colors.input_border,
+                    self.colors.text1,
+                ),
+                ButtonKind::Ghost => (self.colors.card, self.colors.card, self.colors.accent),
+            }
+        };
+        let radius = match button_kind(id) {
+            ButtonKind::Ghost => 0,
+            _ => self.s(4),
+        };
+        if radius > 0 {
+            round_rect_w(dis.hDC, dis.rcItem, fill, border, radius, self.s(1));
+        } else {
+            // Ghost 也要**先把底擦掉**再写字。不擦的话按钮矩形里留着上一帧的
+            // 内容（或控件默认灰底），看起来像「文字背后贴了一块灰补丁」。
+            fill_rect(dis.hDC, dis.rcItem, fill);
+        }
+        // 文字：用按钮自己的标题（SetWindowTextW 改过也能跟）
+        let label = get_text(dis.hwndItem);
+        let font = if button_kind(id) == ButtonKind::Ghost {
+            self.fonts.caption
+        } else {
+            self.fonts.body
+        };
+        draw_text_center(dis.hDC, &label, dis.rcItem, font, text_color);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ButtonKind {
+    Primary,
+    Secondary,
+    Ghost,
+}
+
+fn button_kind(id: usize) -> ButtonKind {
+    match id {
+        ID_B_APPLY | ID_B_SAVE => ButtonKind::Primary,
+        ID_B_OPEN_CFG => ButtonKind::Ghost,
+        _ => ButtonKind::Secondary,
+    }
+}
+
+/// 纯色矩形填充。
+fn fill_rect(hdc: HDC, r: RECT, c: COLORREF) {
+    unsafe {
+        let brush = CreateSolidBrush(c);
+        let _ = FillRect(hdc, &r, brush);
+        let _ = DeleteObject(brush.into());
+    }
+}
+
+/// 圆角矩形：填充 + 1px 描边。GDI 的圆角是硬边，8px 下肉眼可接受；
+/// 引 GDI+ 只为抗锯齿一个收益，不值当（单文件、零多余依赖是本程序的底线）。
+/// 带线宽的版本：高 DPI 下调用方传 `s(1)`，否则描边只有半个逻辑像素
+/// （系统 DPI 2.0 时 1 物理像素 = 0.5 逻辑像素，卡片框会淡得像没有）。
+fn round_rect_w(hdc: HDC, r: RECT, fill: COLORREF, border: COLORREF, radius: i32, pen_w: i32) {
+    unsafe {
+        let brush = CreateSolidBrush(fill);
+        let pen = CreatePen(PS_SOLID, pen_w, border);
+        let (ob, op) = (
+            SelectObject(hdc, brush.into()),
+            SelectObject(hdc, pen.into()),
+        );
+        // RoundRect 的椭圆宽高是直径语义
+        let _ = RoundRect(
+            hdc,
+            r.left,
+            r.top,
+            r.right,
+            r.bottom,
+            radius * 2,
+            radius * 2,
+        );
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        let _ = DeleteObject(brush.into());
+        let _ = DeleteObject(pen.into());
+    }
+}
+
+/// 单行文字，可选右对齐（数字框左侧那两句「默认 0.35」用它贴框）。
+fn draw_text_align(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, right: bool) {
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let old = SelectObject(hdc, font.into());
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, color);
+        let _ = DrawTextW(
+            hdc,
+            &mut { wide },
+            &mut RECT {
+                left: r.left,
+                top: r.top,
+                right: r.right,
+                bottom: r.bottom,
+            },
+            windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
+                DT_SINGLELINE
+                    | DT_VCENTER
+                    | DT_END_ELLIPSIS
+                    | DT_NOPREFIX
+                    | if right { 0x0002 } else { 0x0000 }, // DT_RIGHT
+            ),
+        );
+        SelectObject(hdc, old);
+    }
+}
+
+/// 单行文字（垂直居中，超宽省略）。
+fn draw_text(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let old = SelectObject(hdc, font.into());
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, color);
+        let _ = DrawTextW(
+            hdc,
+            &mut { wide },
+            &mut RECT {
+                left: r.left,
+                top: r.top,
+                right: r.right,
+                bottom: r.bottom,
+            },
+            windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            ),
+        );
+        SelectObject(hdc, old);
+    }
+}
+
+/// 按钮文字：水平居中。左对齐放在按钮里，一个字宽的「搜」会贴着左边框，
+/// 看着像没排进去。
+fn draw_text_center(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let old = SelectObject(hdc, font.into());
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, color);
+        let _ = DrawTextW(
+            hdc,
+            &mut { wide },
+            &mut RECT {
+                left: r.left,
+                top: r.top,
+                right: r.right,
+                bottom: r.bottom,
+            },
+            windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
+                DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            ),
+        );
+        SelectObject(hdc, old);
+    }
+}
+
+/// 通用页一行：标题（左上）+ 描述（标题下方，可红）。
+fn draw_row_text(hdc: HDC, title: &str, desc: &str, row: RECT, app: &App, bad: bool) {
+    let x = row.left + app.s(16);
+    let title_r = RECT {
+        left: x,
+        top: row.top + app.s(10),
+        right: row.right - app.s(16),
+        bottom: row.top + app.s(32),
+    };
+    let desc_r = RECT {
+        left: x,
+        top: row.top + app.s(33),
+        right: row.right - app.s(16),
+        bottom: row.top + app.s(52),
+    };
+    draw_text(hdc, title, title_r, app.fonts.body, app.colors.text1);
+    draw_text(
+        hdc,
+        desc,
+        desc_r,
+        app.fonts.caption,
+        if bad {
+            app.colors.error
+        } else {
+            app.colors.text2
+        },
+    );
+}
+
 unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut App;
     unsafe { ptr.as_mut() }
 }
-
-// ---------------------------------------------------------------- 小工具
 
 /// 在列表里选中第 `idx` 行（不管界面状态，也不填面板）。
 ///
@@ -1772,11 +2555,6 @@ fn select_item(list: HWND, idx: usize) {
     }
 }
 
-/// 编辑框里的回车 = 保存，Esc = 清空。
-///
-/// 单行 Edit 收到回车只会「叮」一声（`WM_CHAR` 走默认处理），改成转发一条
-/// `WM_COMMAND(ID_B_SAVE)` 给父窗口即可——就是按钮被点一下时发的那条消息，
-/// 所以走的还是同一个 `on_save`，不存在第二条保存路径。
 unsafe extern "system" fn edit_proc(
     hwnd: HWND,
     msg: u32,
@@ -1801,10 +2579,6 @@ unsafe extern "system" fn edit_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// 通用页 / 学习页的编辑框里按回车 = 点它对应的那个按钮。
-///
-/// 目标按钮的 id 走子类化的 `data` 参数，所以一个过程能服务「应用」和「搜」
-/// 两个不同的按钮——不必为每个框写一遍同样的代码（也就不会漏掉某一个）。
 unsafe extern "system" fn enter_proc(
     hwnd: HWND,
     msg: u32,
@@ -1819,44 +2593,6 @@ unsafe extern "system" fn enter_proc(
         return LRESULT(0);
     }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
-}
-
-/// 把 Tab 压到 z 序最底层（F44）。
-///
-/// 不用 `WS_EX_TRANSPARENT` 之类的花样：Tab 只是背景板，压到底之后它照常画页签、
-/// 照常响应 `TCN_SELCHANGE`，被页控件盖住的部分不画——这正是原生 Tab 的常规用法。
-fn lower_tab(tab: HWND) {
-    if tab.0.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = SetWindowPos(
-            tab,
-            Some(HWND_BOTTOM),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-    }
-}
-
-/// Tab 的子类化过程：`SysTabControl32` 在 `WM_SETFOCUS` 里会 `SetWindowPos` 把
-/// 自己抬到最上层，所以必须**等它处理完**（先 `DefSubclassProc`）再压回去。
-unsafe extern "system" fn tab_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    _data: usize,
-) -> LRESULT {
-    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-    if msg == WM_SETFOCUS {
-        lower_tab(hwnd);
-    }
-    result
 }
 
 /// 发一条窗口消息。
@@ -2100,58 +2836,6 @@ fn check_panel_flow(app: &App, path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 字段名（`词/拼音/码/权重`）的两条视觉约定：
-///
-/// 1. 样式里带 `SS_CENTER | SS_CENTERIMAGE`（水平+垂直居中）——默认的 Static 是
-///    左上对齐，跟同高的编辑框摆一起看着像错位；
-/// 2. 主窗口对 `WM_CTLCOLORSTATIC` 回的画刷必须是**父窗口背景色**（`COLOR_BTNFACE`），
-///    不是 `COLOR_WINDOW`。回白的后果是每个字段名背后挂一块白方块，浅灰底上一眼可见
-///    （F47）。
-///
-/// 第 2 条直接发一次真的 `WM_CTLCOLORSTATIC` 看返回值——这比读代码可靠，也比截图
-/// 精确：色差只有 15 级，肉眼复查容易漏。
-fn check_labels(hwnd: HWND, app: &App) -> Result<(), String> {
-    let want = unsafe {
-        GetSysColorBrush(
-            windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX(15), /* COLOR_BTNFACE */
-        )
-    };
-    let dc = unsafe { GetDC(None) };
-    let result = (|| -> Result<(), String> {
-        for &(h, name) in &[
-            (app.l_word, "词"),
-            (app.l_pinyin, "拼音"),
-            (app.l_code, "码"),
-            (app.l_weight, "权重"),
-        ] {
-            let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) } as u32;
-            if style & SS_CENTER == 0 || style & SS_CENTERIMAGE == 0 {
-                return Err(format!(
-                    "字段名「{name}」没有居中样式（SS_CENTER | SS_CENTERIMAGE）"
-                ));
-            }
-            let got = unsafe {
-                send(
-                    hwnd,
-                    WM_CTLCOLORSTATIC,
-                    WPARAM(dc.0 as usize),
-                    LPARAM(h.0 as isize),
-                )
-            };
-            if got.0 as isize != want.0 as isize {
-                return Err(format!(
-                    "字段名「{name}」的背景画刷不是父窗口背景色——白方块会露出来（F47）"
-                ));
-            }
-        }
-        Ok(())
-    })();
-    unsafe {
-        ReleaseDC(None, dc);
-    }
-    result
-}
-
 /// 建窗（不显示、不进消息循环）。
 fn create_window(app: &App) -> Result<HWND, String> {
     unsafe {
@@ -2276,7 +2960,7 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
         .map_err(|e| format!("写学习记录失败：{e}"))?;
     }
 
-    let app = Box::new(App::new(
+    let mut app = Box::new(App::new(
         data,
         Some(path.clone()),
         Some(cfg_path.clone()),
@@ -2295,22 +2979,16 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
         check_z_order(hwnd, PAGE_GENERAL)?;
         check_general_flow(&app, &cfg_path)?;
 
-        switch_page(&app, PAGE_WORDS);
+        switch_page(&mut app, PAGE_WORDS);
         check_z_order(hwnd, PAGE_WORDS)?;
-        check_labels(hwnd, &app)?;
         check_panel_flow(&app, &path)?;
 
-        switch_page(&app, PAGE_LEARN);
+        switch_page(&mut app, PAGE_LEARN);
         check_z_order(hwnd, PAGE_LEARN)?;
         check_learn_page(&app)?;
 
-        switch_page(&app, PAGE_GENERAL);
-        // 模拟 Tab 拿到焦点（点中它、或 Tab 键走过去）：它自己会抬到最上层，
-        // 我们的子类化过程必须把它压回去
-        unsafe {
-            send(app.tab, WM_SETFOCUS, WPARAM(0), LPARAM(0));
-        }
-        check_z_order(hwnd, PAGE_GENERAL).map_err(|e| format!("Tab 拿到焦点后：{e}"))
+        switch_page(&mut app, PAGE_GENERAL);
+        check_z_order(hwnd, PAGE_GENERAL)
     })();
 
     unsafe {
@@ -2320,33 +2998,21 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
     result
 }
 
-/// 自测用：像用户点页签那样切页（走 `TCM_SETCURSEL` + 真正的 `TCN_SELCHANGE`）。
-fn switch_page(app: &App, page: usize) {
-    unsafe {
-        send(app.tab, TCM_SETCURSEL, WPARAM(page), LPARAM(0));
-        // 直接调 `show_page` 会绕开「消息 → 分派」这一段，而恰恰是那一段里
-        // 容易指错页（下标与页签顺序不一致）。
-        let mut hdr = windows::Win32::UI::Controls::NMHDR {
-            hwndFrom: app.tab,
-            idFrom: ID_TAB,
-            code: TCN_SELCHANGE,
-        };
-        send(
-            app.hwnd,
-            WM_NOTIFY,
-            WPARAM(ID_TAB),
-            LPARAM(&mut hdr as *mut _ as isize),
-        );
-    }
+/// 自测用：像用户点页签那样切页。页签现在是画出来的，没有「发消息给 Tab
+/// 控件」这回事；但「切页 = 显隐 + 重画」这半段仍然走真实路径（`show_page`）。
+fn switch_page(app: &mut App, page: usize) {
+    app.switch_to(page);
     drain_messages();
 }
 
 /// 通用页：合法/非法输入的门、写盘后注释还在、恢复默认真的删行。
 fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
-    // 1. 打开时按文件里的值显示：hint.mode = "mixed" → 第 0 项
-    let sel = unsafe { send(app.c_hint, CB_GETCURSEL, WPARAM(0), LPARAM(0)) }.0;
-    if sel != 0 {
-        return Err(format!("下拉框应选中 mixed（0），实际是 {sel}"));
+    // 1. 打开时按文件里的值显示：hint.mode = "mixed" → 第 0 段
+    if app.hint_sel != 0 {
+        return Err(format!(
+            "三段选择器应选中 mixed（0），实际是 {}",
+            app.hint_sel
+        ));
     }
     if get_text(app.e_half) != "45" {
         return Err(format!(
@@ -2361,11 +3027,9 @@ fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
     if is_enabled(app.b_apply) {
         return Err("学习增益输 99（超出 0–10）时「应用」应当灰掉".into());
     }
-    if !get_text(app.n_gain_desc).contains("输入有误") {
-        return Err(format!(
-            "非法输入没给出原因，实际是 {:?}",
-            get_text(app.n_gain_desc)
-        ));
+    if !matches!(&app.gain_state, Err(e) if e.contains("0") || e.contains("之间") || e.contains("10"))
+    {
+        return Err(format!("非法输入没存下原因，实际是 {:?}", app.gain_state));
     }
 
     // 3. 合法了才允许写：写盘后注释与顺序都得在，值要能被 Config::parse 读回
@@ -2540,16 +3204,9 @@ fn check_z_order(hwnd: HWND, page: usize) -> Result<(), String> {
     if kids.is_empty() {
         return Err("窗口里一个子控件都没有".into());
     }
-    let last = *kids.last().unwrap();
-    if id_of(last) != ID_TAB as isize {
-        return Err(format!(
-            "z 序最底层应是 Tab（id {ID_TAB}），实际是 id {}——Tab 一浮上来就会盖住所有按钮",
-            id_of(last)
-        ));
-    }
 
     let clickable: &[usize] = match page {
-        PAGE_GENERAL => &[ID_C_HINT, ID_E_GAIN, ID_E_HALF, ID_B_APPLY, ID_B_DEFAULT],
+        PAGE_GENERAL => &[ID_E_GAIN, ID_E_HALF, ID_B_APPLY, ID_B_DEFAULT],
         PAGE_WORDS => &[
             ID_LIST,
             ID_E_WORD,

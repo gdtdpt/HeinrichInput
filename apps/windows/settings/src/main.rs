@@ -22,6 +22,7 @@ mod general;
 mod learn;
 mod lex;
 mod model;
+mod theme;
 mod ui;
 
 use std::path::PathBuf;
