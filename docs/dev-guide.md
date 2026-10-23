@@ -1178,7 +1178,7 @@ cargo run -q -p heinrich-settings -- --words out/ui-words.tsv --data data/wubi86
 
 | 入口 | 触发 | 代码 | 可用性 |
 |---|---|---|---|
-| 任务栏角标「亨/英」图标 | 左键切中英；右键 → 设置 / 打开词库文件夹 | `tsf/src/langbar.rs` | **真机通过**（切换 / 左键 / 右键菜单均验；见踩坑 52 的句柄纪律） |
+| 任务栏角标「亨/英」图标 | 左键切中英；右键 → 设置 / 打开词库文件夹 | `tsf/src/langbar.rs` | **真机通过**（图标随切换变、左键、右键菜单、Alt+Tab 往返后仍在；与输入法列表图标可共存，见 D74；句柄纪律见踩坑 52） |
 | 开始菜单「亨利五笔 设置」 | 用户点 .lnk | `setup/src/shortcut.rs` | **主路**，写两处位置 |
 | 系统设置 → 语言选项 → 键盘 → 亨利五笔 → 选项 | `CoCreateInstance(IID_ITfFnConfigure)` 后调 `Show` | `tsf/src/text_service.rs` + `tsf/src/launch.rs` | 接口在，但 Win10 22H2 **不画按钮** |
 
@@ -1633,6 +1633,10 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     是天然的对照组，一看就能定位到「唯一不同的是句柄复用」。以后遇到「某功能一半好
     一半坏」，先问「上次好的那版在这处代码上有什么不同」，比按症状逐个猜成因快得多；
     另外，**一次只改一个变量**，否则 A/B 会变成猜谜。
+    终局补充（D74）：句柄问题修好后，`IconFile` 指 `heinrich.ico` 与指 DLL **两态皆正常**
+    ——「profile 有了有效图标，系统就把那格抢走」这条推断从头到尾是错的，它只是从
+    「v1.48 改了 IconFile、症状也在 v1.48 出现」这个**时间相邻**推出来的假因果。
+    时间相邻只能产生候选，**要定论必须让其它变量都不动、只翻这一个**。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）
 ```
