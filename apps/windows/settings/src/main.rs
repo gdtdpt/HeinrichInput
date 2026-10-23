@@ -76,7 +76,7 @@ fn main() -> std::process::ExitCode {
     if args.selftest_ui {
         return match ui::selftest_ui(args.data) {
             Ok(()) => {
-                println!("设置窗口自测通过（z 序 + 命中 + 面板保存流程）");
+                println!("设置窗口自测通过（z 序 + 命中 + 面板保存/连加/改名）");
                 std::process::ExitCode::SUCCESS
             }
             Err(e) => {

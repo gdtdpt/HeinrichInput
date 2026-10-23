@@ -34,15 +34,15 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, LoadCursorW,
-    MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW,
-    SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GW_CHILD,
-    GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY,
-    WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE,
+    GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
+    RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA,
+    GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MSG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN, WM_NCCREATE,
+    WM_NCDESTROY, WM_NOTIFY, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_BORDER,
+    WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -317,14 +317,9 @@ impl App {
 
         // 「新增」被去掉了：编辑面板一直可输入，点「保存」就是加入/更新，
         // 多一步「先点新增」只会让人以为词已经进列表了。
-        self.b_clear = child(
-            hwnd,
-            w!("Button"),
-            "清空",
-            WS_TABSTOP,
-            ID_B_CLEAR,
-            self.font,
-        )?;
+        //
+        // 建子控件的顺序 = 视觉顺序 = Tab 键走过去的顺序，所以「保存」必须第一个建。
+        // 「清空」是次要动作（只清面板、不写文件），排到行尾。
         self.b_save = child(hwnd, w!("Button"), "保存", WS_TABSTOP, ID_B_SAVE, self.font)?;
         self.b_del = child(hwnd, w!("Button"), "删除", WS_TABSTOP, ID_B_DEL, self.font)?;
         self.b_import = child(
@@ -351,11 +346,26 @@ impl App {
             ID_B_UNDO,
             self.font,
         )?;
+        self.b_clear = child(
+            hwnd,
+            w!("Button"),
+            "清空",
+            WS_TABSTOP,
+            ID_B_CLEAR,
+            self.font,
+        )?;
+        // 回车 = 保存、Esc = 清空：加词是「打一个词 → 回车 → 打下一个词」的节奏，
+        // 每个词都要把鼠标挪到「保存」上，手感就像没加上一样。
+        unsafe {
+            for &h in &[self.e_word, self.e_pinyin, self.e_code, self.e_weight] {
+                let _ = SetWindowSubclass(h, Some(edit_proc), 1, 0);
+            }
+        }
 
         self.note = child(
             hwnd,
             w!("Static"),
-            "编辑框只显示文件里写的内容，留空 = 按规则自动推导（列表里带 *）；保存后 1 秒内生效，不用重启输入法",
+            "在上面四个框里填词，点「保存」或按回车就加入；点列表任一行可以改它。拼音/码留空按规则自动推导",
             WINDOW_STYLE(0),
             ID_NOTE,
             self.font,
@@ -418,18 +428,29 @@ impl App {
 
         let by = py + row + gap;
         let mut bx = cx;
-        place(self.b_clear, self.s(72), row, by, &mut bx);
+        // 主操作在前：保存 / 删除；中间空一格，再是文件级的三个；「清空」靠右单独放，
+        // 它是「放弃这次输入」，不该跟保存挤在一起（F46 的界面意见）。
         place(self.b_save, self.s(72), row, by, &mut bx);
         place(self.b_del, self.s(72), row, by, &mut bx);
+        bx += self.s(16);
         place(self.b_import, self.s(96), row, by, &mut bx);
         place(self.b_open, self.s(104), row, by, &mut bx);
         place(self.b_undo, self.s(88), row, by, &mut bx);
+        unsafe {
+            let _ = MoveWindow(
+                self.b_clear,
+                cx + cw2 - self.s(64),
+                by,
+                self.s(64),
+                row,
+                true,
+            );
+        }
 
         let ny = by + row + self.s(4);
         unsafe {
             let _ = MoveWindow(self.note, cx, ny, cw2, self.s(20), true);
             let _ = MoveWindow(self.status, m, ch - status_h, cw - m * 2, self.s(20), true);
-            let _ = MoveWindow(self.e_word, cx + label_w + gap, py, self.s(130), row, true);
         }
         // 排在最后：Tab 是背景板，必须待在所有页控件下面（F44）
         lower_tab(self.tab);
@@ -479,24 +500,7 @@ impl App {
     }
 
     fn select(&mut self, idx: usize) {
-        let mut item = LVITEMW {
-            state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
-                LVIS_SELECTED.0 | LVIS_FOCUSED.0,
-            ),
-            stateMask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
-                LVIS_SELECTED.0 | LVIS_FOCUSED.0,
-            ),
-            ..Default::default()
-        };
-        unsafe {
-            send(
-                self.list,
-                LVM_SETITEMSTATE,
-                WPARAM(idx),
-                LPARAM(&mut item as *mut _ as isize),
-            );
-            send(self.list, LVM_ENSUREVISIBLE, WPARAM(idx), LPARAM(0));
-        }
+        select_item(self.list, idx);
         self.editing = Some(idx);
         self.fill_panel(Some(idx));
         self.update_buttons();
@@ -640,32 +644,50 @@ impl App {
             return;
         }
         w.word = w.word.trim().to_string();
-        // 改了词名 = 删旧词 + 加新词，否则旧词会留在文件里再也删不掉
-        if let Some(idx) = self.editing {
-            if let Some(old) = self.rows.get(idx).map(|r| r.raw.word.clone()) {
-                if old != w.word {
-                    self.model.remove(&old);
-                }
-            }
+        // 只有**从列表里点进来的那一行**被改了词名才算「改名」（删旧 + 加新）。
+        //
+        // 判据不能是「上次保存后留下的 editing」：那样连着加第二个词时面板还挂着
+        // 上一个词，于是被当成改名、旧词被删掉——连加三次列表里只留一条（F46）。
+        // 保存完把面板腾空，就再也不可能误判。
+        let renamed = self
+            .editing
+            .and_then(|i| self.rows.get(i))
+            .map(|r| r.raw.word.clone())
+            .filter(|old| *old != w.word);
+        if let Some(old) = &renamed {
+            self.model.remove(old);
         }
-        let (idx, is_new) = self.model.upsert(w.clone());
+        let (_, is_new) = self.model.upsert(w.clone());
         if !self.save() {
             return;
         }
-        self.editing = Some(idx);
+        // 回到新词态：面板空、无选中、焦点在词框。下一次点保存（或回车）就是再加一条。
+        self.editing = None;
+        self.fill_panel(None);
         self.refresh();
-        self.select(idx);
-        let r = self.rows.get(idx);
-        let (pin, code) = r
-            .map(|r| (r.pinyin_cell(), r.code_cell()))
-            .unwrap_or_default();
-        self.set_status(&format!(
-            "{}「{}」· 拼音 {} · 码 {} · 1 秒内生效",
-            if is_new { "已加入" } else { "已更新" },
-            w.word,
-            pin,
-            code
-        ));
+        set_focus(self.e_word);
+        // `refresh` 会清空并重填列表，滚动位置跟着回到顶部——词一多，刚存的这条就看不见了。
+        // 只滚过去、**不选中**：选中会填面板，又变回「下一次保存被当成改名」的老问题。
+        let at = self.rows.iter().position(|r| r.raw.word == w.word);
+        if let Some(i) = at {
+            unsafe {
+                send(self.list, LVM_ENSUREVISIBLE, WPARAM(i), LPARAM(0));
+            }
+        }
+        let how = match at.and_then(|i| self.rows.get(i)) {
+            Some(r) => match (&r.code, &r.pinyin) {
+                (Some(c), _) => format!("打字时输 {c}"),
+                (None, Some(p)) => format!("打字时输 {p}"),
+                (None, None) => "还没推出码，去「码」框里手填一个".to_string(),
+            },
+            None => String::new(),
+        };
+        let verb = match (&renamed, is_new) {
+            (Some(old), _) => format!("已改名「{old}」→「{}」", w.word),
+            (None, true) => format!("已加入「{}」", w.word),
+            (None, false) => format!("已更新「{}」", w.word),
+        };
+        self.set_status(&format!("{verb} · {how} · 最坏 3 秒内可打"));
     }
 
     fn on_delete(&mut self) {
@@ -896,6 +918,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if let Some(app) = unsafe { app_of(hwnd) } {
                 unsafe {
                     let _ = RemoveWindowSubclass(app.tab, Some(tab_proc), 1);
+                    for &h in &[app.e_word, app.e_pinyin, app.e_code, app.e_weight] {
+                        let _ = RemoveWindowSubclass(h, Some(edit_proc), 1);
+                    }
                 }
             }
             unsafe { PostQuitMessage(0) };
@@ -915,6 +940,60 @@ unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
 }
 
 // ---------------------------------------------------------------- 小工具
+
+/// 在列表里选中第 `idx` 行（不管界面状态，也不填面板）。
+///
+/// 走的是 ListView 自己的 `LVM_SETITEMSTATE`，所以会照常给父窗口发
+/// `LVN_ITEMCHANGED`——自测因此可以走**和真实点击同一条消息链**。
+fn select_item(list: HWND, idx: usize) {
+    let mut item = LVITEMW {
+        state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
+            LVIS_SELECTED.0 | LVIS_FOCUSED.0,
+        ),
+        stateMask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
+            LVIS_SELECTED.0 | LVIS_FOCUSED.0,
+        ),
+        ..Default::default()
+    };
+    unsafe {
+        send(
+            list,
+            LVM_SETITEMSTATE,
+            WPARAM(idx),
+            LPARAM(&mut item as *mut _ as isize),
+        );
+        send(list, LVM_ENSUREVISIBLE, WPARAM(idx), LPARAM(0));
+    }
+}
+
+/// 编辑框里的回车 = 保存，Esc = 清空。
+///
+/// 单行 Edit 收到回车只会「叮」一声（`WM_CHAR` 走默认处理），改成转发一条
+/// `WM_COMMAND(ID_B_SAVE)` 给父窗口即可——就是按钮被点一下时发的那条消息，
+/// 所以走的还是同一个 `on_save`，不存在第二条保存路径。
+unsafe extern "system" fn edit_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_CHAR if wparam.0 == 0x0d => {
+            let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+            send(parent, WM_COMMAND, WPARAM(ID_B_SAVE), LPARAM(0));
+            return LRESULT(0);
+        }
+        WM_KEYDOWN if wparam.0 == 0x1b => {
+            let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+            send(parent, WM_COMMAND, WPARAM(ID_B_CLEAR), LPARAM(0));
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
 
 /// 把 Tab 压到 z 序最底层（F44）。
 ///
@@ -1086,53 +1165,92 @@ fn pick_file(owner: HWND) -> Option<PathBuf> {
 ///
 /// 1. 空面板时「保存」「清空」「删除」都是灰的——不给假按钮；
 /// 2. 填了词，「保存」「清空」亮，「删除」仍灰（还没选中任何行）；
-/// 3. 点「保存」：文件里真出现这个词，列表选中它，「删除」变亮；
-/// 4. 点「清空」：面板空、无选中，按钮回到第 1 步的灰。
+/// 3. 点「保存」：文件里真出现这个词，**面板回到新词态**（否则下一次保存会被
+///    当成改名——F46 就是这么连加三个只剩一条的）；
+/// 4. 再填一个词再保存：文件里必须**两条都在**；
+/// 5. 从列表里点一行、改词名、保存：旧词消失、新词出现、**其它词不受影响**。
 ///
-/// 全部走真实控件消息（`WM_SETTEXT` / `BM_CLICK` 由按钮自己发 `BN_CLICKED`），
-/// 断言落点是**磁盘上的文件**，不是界面上的字符串——界面骗人的事刚发生过（F44）。
+/// 全部走真实控件消息（`WM_SETTEXT` / `BM_CLICK` 由按钮自己发 `BN_CLICKED` /
+/// `LVM_SETITEMSTATE` 由列表自己发 `LVN_ITEMCHANGED`），断言落点是**磁盘上的文件**，
+/// 不是界面上的字符串——界面骗人的事刚发生过（F44）。
 fn check_panel_flow(app: &App, path: &std::path::Path) -> Result<(), String> {
+    let click = |b: HWND| unsafe {
+        send(b, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
+    };
     let state = |what: &str| -> Result<(), String> {
-        let (save, clear, del) = (
+        let got = (
             is_enabled(app.b_save),
             is_enabled(app.b_clear),
             is_enabled(app.b_del),
         );
         let want = match what {
-            "空面板" => (false, false, false),
+            "空面板" | "保存后" | "清空后" => (false, false, false),
             "填了词" => (true, true, false),
-            "保存后" => (true, true, true),
-            "清空后" => (false, false, false),
             _ => unreachable!(),
         };
-        if (save, clear, del) != want {
+        if got != want {
             return Err(format!(
-                "{what}：保存={save} 清空={clear} 删除={del}，期望 {:?}",
-                want
+                "{what}：保存={} 清空={} 删除={}，期望 {want:?}",
+                got.0, got.1, got.2
             ));
         }
         Ok(())
     };
+    // 落盘的内容按「词」取出来比对：注释行、空行、坏行都不算
+    let words = || -> Result<Vec<String>, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("回读词库失败：{e}"))?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split('\t').next().map(str::to_string))
+            .collect())
+    };
 
     state("空面板")?;
+
     set_text(app.e_word, "微信");
     state("填了词")?;
-
-    unsafe {
-        send(app.b_save, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
+    click(app.b_save);
+    if !words()?.iter().any(|w| w == "微信") {
+        return Err(format!("点保存后文件里没有「微信」：{:?}", words()?));
     }
-    let text = std::fs::read_to_string(path).map_err(|e| format!("回读词库失败：{e}"))?;
-    if !text.lines().any(|l| l.split('\t').next() == Some("微信")) {
-        return Err(format!("点保存后文件里没有「微信」：{text:?}"));
-    }
-    if app.editing != app.rows.iter().position(|r| r.raw.word == "微信") {
-        return Err("保存后没有选中刚保存的那一行".into());
+    if app.editing.is_some() || !get_text(app.e_word).is_empty() {
+        return Err("保存后面板没回到新词态——下一个词会被当成改名，把这条顶掉（F46）".into());
     }
     state("保存后")?;
 
-    unsafe {
-        send(app.b_clear, 0x00F5, WPARAM(0), LPARAM(0));
+    // 连加第二个词：两条都得在。这一步就是 F46 的回归测试。
+    set_text(app.e_word, "虎纠");
+    click(app.b_save);
+    let got = words()?;
+    if !(got.iter().any(|w| w == "微信") && got.iter().any(|w| w == "虎纠")) {
+        return Err(format!("连加两个词后应当两条都在，实际是 {got:?}"));
     }
+
+    // 改名：从列表点一行（真发 LVN_ITEMCHANGED），把「微信」改成「威信」
+    let Some(idx) = app.rows.iter().position(|r| r.raw.word == "微信") else {
+        return Err("列表里找不到刚加的「微信」".into());
+    };
+    select_item(app.list, idx);
+    drain_messages();
+    if get_text(app.e_word) != "微信" {
+        return Err(format!(
+            "点中列表行后面板没跟着填，实际是 {:?}",
+            get_text(app.e_word)
+        ));
+    }
+    set_text(app.e_word, "威信");
+    click(app.b_save);
+    let got = words()?;
+    if got.iter().any(|w| w == "微信") {
+        return Err(format!("改名后旧词「微信」还在文件里：{got:?}"));
+    }
+    if !(got.iter().any(|w| w == "威信") && got.iter().any(|w| w == "虎纠")) {
+        return Err(format!("改名后新词或其它词丢了：{got:?}"));
+    }
+
+    set_text(app.e_word, "多打的草稿");
+    click(app.b_clear);
     if !get_text(app.e_word).is_empty() || app.editing.is_some() {
         return Err("点清空后面板/选中状态没回到新词态".into());
     }
