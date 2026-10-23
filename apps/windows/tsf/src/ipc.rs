@@ -73,6 +73,18 @@ const REJECT_RETRY: Duration = Duration::from_secs(5);
 /// 不需要 LRU 的精确性。
 const CACHE_CAP: usize = 64;
 
+/// 候选缓存的有效期。
+///
+/// 这份缓存的存在理由是「连打同一个码时顺序不跳」（D55/D57），而那是**亚秒级**的
+/// 事——3 秒足够覆盖，多出来的时间只是在替用户挡掉一次几毫秒的本机 IPC。
+///
+/// 不设上限会有一个真问题：server 按 mtime 热重载 `words.tsv`，但 DLL 这份缓存
+/// 没有任何推送通道。于是**加词之前打过的码**，加完词再打永远看到旧结果——
+/// 而且因为命中缓存，server 日志里连一条 `Query` 都不会出现（F45 的真机现象：
+/// 「微信」保存成功、`tmwy` 却还是四个生僻字）。缓存过期是这条链上唯一不升协议
+/// 就能补的洞。
+const CACHE_TTL: Duration = Duration::from_secs(3);
+
 /// 待上报的上屏记录条数上限。
 ///
 /// 溢出丢**最旧**的：学习数据丢几条不影响打字，但让它无限涨会拖死宿主进程
@@ -829,7 +841,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 /// 清脏 → 取」，这几步必须在同一个视图下完成，否则两个会话线程会互相踩。
 #[derive(Default)]
 struct CacheState {
-    map: HashMap<String, Reply>,
+    map: HashMap<String, Cached>,
     /// 上屏后标脏的码——排序已过时，但连打期间先不刷新（D57）。
     stale: HashSet<String>,
     /// 上一次**提交**的码（`record` 时才更新）。
@@ -840,7 +852,14 @@ struct CacheState {
     last_commit: Option<String>,
 }
 
+/// 一条缓存：候选 + 什么时候取回来的（[`CACHE_TTL`] 要按它算年龄）。
+struct Cached {
+    reply: Reply,
+    at: Instant,
+}
+
 fn cache_get(code: &str) -> Option<Reply> {
+    let now = Instant::now();
     let mut g = CACHE.lock().ok()?;
     let st = g.get_or_insert_with(CacheState::default);
     // 这条被提交过 ⇒ 它的排序可能已经变了。只有「提交后用户已经去打过别的码」
@@ -850,7 +869,14 @@ fn cache_get(code: &str) -> Option<Reply> {
         st.map.remove(code);
         return None;
     }
-    st.map.get(code).cloned()
+    let hit = st.map.get(code)?;
+    // 放太久就作废：这期间词库/配置可能被热重载过（见 CACHE_TTL 的说明）。
+    if now.duration_since(hit.at) > CACHE_TTL {
+        st.map.remove(code);
+        st.stale.remove(code);
+        return None;
+    }
+    Some(hit.reply.clone())
 }
 
 fn cache_put(code: &str, reply: &Reply) {
@@ -860,7 +886,13 @@ fn cache_put(code: &str, reply: &Reply) {
             st.map.clear();
             st.stale.clear();
         }
-        st.map.insert(code.to_string(), reply.clone());
+        st.map.insert(
+            code.to_string(),
+            Cached {
+                reply: reply.clone(),
+                at: Instant::now(),
+            },
+        );
         // 刚查到的是一手数据，顺手把脏标记去掉。
         st.stale.remove(code);
     }
@@ -998,6 +1030,33 @@ mod tests {
 
         assert!(cache_get("vbg").is_some(), "没上屏过的码不该被清");
         assert!(cache_get("fcu").is_none(), "上屏过的那个才该清");
+
+        reset();
+    }
+
+    /// 缓存放久了自己过期（[`CACHE_TTL`]）。
+    ///
+    /// 词库热重载没有推送通道，这份缓存是唯一会让「加完词再打同一个码」看不到新词的
+    /// 地方（F45：加「微信」前打过 `tmwy`，加完再打还是四个生僻字，而且因为命中缓存，
+    /// server 日志里连 `Query` 都没有）。
+    #[test]
+    fn entry_expires_after_ttl() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+
+        cache_put("tmwy", &reply(&["䄲", "𢓇"]));
+        assert!(cache_get("tmwy").is_some(), "刚取回来的当然能用");
+
+        // 直接把时间戳往回拨，免得测试真睡 3 秒
+        if let Ok(mut g) = CACHE.lock() {
+            let st = g.get_or_insert_with(CacheState::default);
+            let e = st.map.get_mut("tmwy").expect("刚放进去的条目");
+            e.at = Instant::now() - CACHE_TTL - Duration::from_millis(1);
+        }
+        assert!(
+            cache_get("tmwy").is_none(),
+            "超过有效期必须重问 server，否则加完词还是旧结果"
+        );
 
         reset();
     }
