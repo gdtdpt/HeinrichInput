@@ -57,16 +57,17 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect,
     GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, KillTimer, LoadCursorW,
-    MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW,
-    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    ShowWindowAsync, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    GWLP_ID, GWLP_USERDATA, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION,
-    MB_ICONWARNING, MB_OK, MB_YESNO, MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER,
-    WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, KillTimer,
+    LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
+    RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW,
+    ShowWindow, ShowWindowAsync, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
+    CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES,
+    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE,
+    SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+    WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -820,6 +821,10 @@ impl App {
             self.emoji_list,
             self.e_emoji_search,
             self.e_emoji_new,
+            // 漏一个就是「它留在每一页上」：切页只对 `pages[n]` 里的控件做
+            // `ShowWindow(SW_HIDE)`，没登记的就一直显示在最上层（真机看到
+            // 通用页中间悬着一个「浏览 emoji…」按钮）。
+            self.b_emoji_browse,
             self.b_emoji_save,
             self.b_emoji_disable,
             self.b_emoji_restore,
@@ -4077,25 +4082,30 @@ pub fn selftest_ui(_data: Option<PathBuf>) -> Result<(), String> {
     drain_messages();
 
     let result = (|| -> Result<(), String> {
-        // 三页各查一次：z 序（Tab 在底）+ 命中（点得到）。页是显隐切换的，
-        // 隐藏页的控件命中测试必然失败，只能切过去再查。
+        // 四页各查一次：z 序（Tab 在底）+ 命中（点得到）+ 页内控件归属。
+        // 页是显隐切换的，隐藏页的控件命中测试必然失败，只能切过去再查。
         check_z_order(hwnd, PAGE_GENERAL)?;
+        check_page_scope(&app, PAGE_GENERAL)?;
         check_general_flow(&app, &cfg_path)?;
 
         switch_page(&mut app, PAGE_WORDS);
         check_z_order(hwnd, PAGE_WORDS)?;
+        check_page_scope(&app, PAGE_WORDS)?;
         check_panel_flow(&app, &path)?;
 
         switch_page(&mut app, PAGE_EMOJI);
         check_z_order(hwnd, PAGE_EMOJI)?;
+        check_page_scope(&app, PAGE_EMOJI)?;
         check_emoji_page(&app, &emoji_path)?;
 
         switch_page(&mut app, PAGE_LEARN);
         check_z_order(hwnd, PAGE_LEARN)?;
+        check_page_scope(&app, PAGE_LEARN)?;
         check_learn_page(&app)?;
 
         switch_page(&mut app, PAGE_GENERAL);
-        check_z_order(hwnd, PAGE_GENERAL)
+        check_z_order(hwnd, PAGE_GENERAL)?;
+        check_page_scope(&app, PAGE_GENERAL)
     })();
 
     unsafe {
@@ -4411,6 +4421,30 @@ fn rect_of(hwnd: HWND) -> RECT {
         let _ = GetWindowRect(hwnd, &mut r);
     }
     r
+}
+
+/// 切到 `page` 之后，屏幕上**能看到的子控件必须都属于这一页**。
+///
+/// 这是「控件忘了登记进 `pages[n]`」的唯一自动检法：`check_z_order` 只按 id 找本页
+/// 那几个控件、量它们没被挡住——漏登记的控件待在别处，照样能全过。真机上表现为
+/// 「每一页都悬着同一个按钮」（`b_emoji_browse` 就漏过一次）。
+fn check_page_scope(app: &App, page: usize) -> Result<(), String> {
+    let allowed = &app.pages[page];
+    for h in children(app.hwnd) {
+        if !unsafe { IsWindowVisible(h).as_bool() } {
+            continue;
+        }
+        // 状态栏是**刻意**全页共用的（「刚刚发生了什么」的出口，切页不变），
+        // 它不登记在任何一页里。
+        if h == app.status || allowed.contains(&h) {
+            continue;
+        }
+        return Err(format!(
+            "第 {page} 页上有一个不属于本页的可见控件 id {}（漏登记进 pages[{page}]？）",
+            id_of(h)
+        ));
+    }
+    Ok(())
 }
 
 /// 两道检查，都针对 F44 那个「点了没反应」：

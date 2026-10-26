@@ -186,6 +186,13 @@ impl Catalog {
 pub struct Geometry {
     pub w: i32,
     pub h: i32,
+    /// DPI 缩放系数。
+    ///
+    /// **字体、圆角、描边这些不参与命中的量也必须乘它**：几何是物理像素，而 DWrite
+    /// 的字号在 `dpi = 96` 的 DC 渲染目标上就是「1 DIP = 1 物理像素」。只缩放几何、
+    /// 不缩放字号，结果就是 200% DPI 下格子 92px、emoji 仍只有 26px——看着像一颗芝麻
+    /// 撒在白板上（真机截图反馈「文字也太小了吧」就是这个）。
+    pub scale: f32,
     /// 网格单元边长。
     pub cell: i32,
     pub cols: i32,
@@ -201,11 +208,21 @@ pub struct Geometry {
     tab_h: i32,
     /// 关闭按钮。
     pub close: RECT,
+    /// 字号（物理像素）：标题 / 页签 / 格子里的 emoji / 底部提示。
+    pub font_title: f32,
+    pub font_tab: f32,
+    pub font_emoji: f32,
+    pub font_hint: f32,
+}
+
+/// 逻辑 dp → 物理像素。
+fn sp(v: i32, scale: f32) -> i32 {
+    (v as f32 * scale).round() as i32
 }
 
 impl Geometry {
     pub fn new(w: i32, h: i32, scale: f32) -> Self {
-        let s = |v: i32| (v as f32 * scale).round() as i32;
+        let s = |v: i32| sp(v, scale);
         let (w, h) = (s(w), s(h));
         let cell = s(46);
         let tab_h = s(34);
@@ -222,6 +239,7 @@ impl Geometry {
         Self {
             w,
             h,
+            scale,
             cell,
             cols,
             rows,
@@ -238,6 +256,32 @@ impl Geometry {
                 right: w - s(12),
                 bottom: s(34),
             },
+            // emoji 直接按格子边长取比例：字号写死 26 的话，换一档 DPI 或改一次
+            // 格子尺寸，两者就重新脱节。
+            font_title: 16.0 * scale,
+            font_tab: 14.0 * scale,
+            font_emoji: cell as f32 * 0.68,
+            font_hint: 13.0 * scale,
+        }
+    }
+
+    /// 标题文字框（左内衬 20、顶 6、高 32——装得下 16dp 的粗体，不会切到字头）。
+    pub fn title_rect(&self) -> RECT {
+        RECT {
+            left: sp(20, self.scale),
+            top: sp(6, self.scale),
+            right: self.w - sp(64, self.scale),
+            bottom: sp(38, self.scale),
+        }
+    }
+
+    /// 底部提示文字框。
+    pub fn footer_rect(&self) -> RECT {
+        RECT {
+            left: sp(20, self.scale),
+            top: self.h - sp(30, self.scale),
+            right: self.w - sp(40, self.scale),
+            bottom: self.h - sp(8, self.scale),
         }
     }
 
@@ -484,15 +528,15 @@ impl State {
 }
 
 impl Device {
-    fn new() -> windows::core::Result<Self> {
+    fn new(geo: &Geometry) -> windows::core::Result<Self> {
         let factory: ID2D1Factory =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         Ok(Self {
-            title: make_format(&dwrite, w!("Microsoft YaHei UI"), 15.0, false)?,
-            tab: make_format(&dwrite, w!("Microsoft YaHei UI"), 13.0, true)?,
-            emoji: make_format(&dwrite, w!("Segoe UI Emoji"), 26.0, true)?,
-            hint: make_format(&dwrite, w!("Microsoft YaHei UI"), 12.0, false)?,
+            title: make_format(&dwrite, w!("Microsoft YaHei UI"), geo.font_title, false)?,
+            tab: make_format(&dwrite, w!("Microsoft YaHei UI"), geo.font_tab, true)?,
+            emoji: make_format(&dwrite, w!("Segoe UI Emoji"), geo.font_emoji, true)?,
+            hint: make_format(&dwrite, w!("Microsoft YaHei UI"), geo.font_hint, false)?,
             factory,
         })
     }
@@ -632,7 +676,7 @@ fn paint(hwnd: HWND, st: &mut State) {
 fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
     // 设备对象懒建（一个弹窗活一次）；建完就把 `&mut` 收回去，后面全是只读
     if state.device.is_none() {
-        state.device = Device::new().ok();
+        state.device = Device::new(&state.geo).ok();
     }
     let st: &State = state;
     let geo_w = st.geo.w;
@@ -678,11 +722,12 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
         let border = dev.title_brush(&target, 0xD8, 0xDC, 0xE0)?;
 
         // 标题 + 关闭
+        let t = st.geo.title_rect();
         text(
             &target,
             &dev.title,
             "选择 emoji",
-            (geo_w / 20, 6, geo_w - 60, 30),
+            (t.left, t.top, t.right - t.left, t.bottom - t.top),
             &ink,
             false,
         );
@@ -701,6 +746,8 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
         );
 
         // 分类页签
+        let sx = st.geo.scale;
+        let px = |v: i32| sp(v, sx);
         for (i, name) in tabs.iter().enumerate() {
             let r = st.geo.tab_rect(i);
             let color = if i == cat_i { &accent } else { &muted };
@@ -713,10 +760,10 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
                 false,
             );
             if i == cat_i {
-                // 选中下划线：2px，与文字同宽（居中时左右各收 8）
-                let y = r.bottom - 2;
+                // 选中下划线：与文字同宽（居中时左右各收 8dp），粗 2dp
+                let y = r.bottom - px(2);
                 target.FillRectangle(
-                    &d2d_rect(r.left + 8, y, r.right - 8, y + 2),
+                    &d2d_rect(r.left + px(8), y, r.right - px(8), y + px(2)),
                     &accent as &ID2D1Brush,
                 );
             }
@@ -724,19 +771,22 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
 
         // 网格
         for (i, e) in items.iter().enumerate() {
-            let idx = i as i32 % st.geo.cols;
             let row = i as i32 / st.geo.cols - scroll;
             if row < 0 || row >= st.geo.rows {
                 continue;
             }
-            let _ = idx;
             let r = st.geo.cell_rect(i, scroll);
             if hover == Some(i) {
                 target.FillRoundedRectangle(
                     &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                        rect: d2d_rect(r.left + 2, r.top + 2, r.right - 2, r.bottom - 2),
-                        radiusX: 6.0,
-                        radiusY: 6.0,
+                        rect: d2d_rect(
+                            r.left + px(2),
+                            r.top + px(2),
+                            r.right - px(2),
+                            r.bottom - px(2),
+                        ),
+                        radiusX: 6.0 * sx,
+                        radiusY: 6.0 * sx,
                     },
                     &hover_bg as &ID2D1Brush,
                 );
@@ -757,7 +807,7 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
                 &target,
                 &dev.hint,
                 "这类没有可用的 emoji",
-                (20, geo_h / 2 - 10, geo_w - 40, 24),
+                (px(20), geo_h / 2 - px(14), geo_w - px(40), px(28)),
                 &muted,
                 false,
             );
@@ -769,31 +819,32 @@ fn draw(hdc: HDC, state: &mut State) -> windows::core::Result<()> {
             let track_top = st.geo.grid_y;
             let track_h = st.geo.rows * st.geo.cell;
             let total_rows = (items.len() as i32 + st.geo.cols - 1) / st.geo.cols;
-            let thumb_h = (track_h * st.geo.rows / total_rows.max(1)).max(24);
+            let thumb_h = (track_h * st.geo.rows / total_rows.max(1)).max(px(24));
             let y = track_top + (track_h - thumb_h) * scroll / max;
-            let x = geo_w - 8;
+            let x = geo_w - px(12);
             target.FillRoundedRectangle(
                 &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                    rect: d2d_rect(x, y, x + 4, y + thumb_h),
-                    radiusX: 2.0,
-                    radiusY: 2.0,
+                    rect: d2d_rect(x, y, x + px(6), y + thumb_h),
+                    radiusX: 3.0 * sx,
+                    radiusY: 3.0 * sx,
                 },
                 &border as &ID2D1Brush,
             );
         }
 
         // 底部提示
+        let f = st.geo.footer_rect();
         text(
             &target,
             &dev.hint,
             "点击一枚填入「新 emoji」框；Esc 取消",
-            (geo_w / 20, geo_h - 24, geo_w - 40, 18),
+            (f.left, f.top, f.right - f.left, f.bottom - f.top),
             &muted,
             false,
         );
 
         // 最后画外框：压在内容上，绝不会被格子盖住
-        target.DrawRectangle(&d2d_rect(0, 0, geo_w, geo_h), &border, 1.0, None);
+        target.DrawRectangle(&d2d_rect(0, 0, geo_w, geo_h), &border, sx, None);
 
         target.EndDraw(None, None)?;
     }
@@ -956,5 +1007,25 @@ mod tests {
         assert_eq!(b.w, (WIN_W as f32 * 1.5) as i32);
         assert_eq!(b.cell, 69);
         assert_eq!((b.cols, b.rows), (a.cols, a.rows), "行列数不该随 DPI 变");
+    }
+
+    /// **字号也得随 DPI 放大**。几何是物理像素，而 DWrite 的字号在 dpi=96 的渲染目标上
+    /// 就是物理像素——只放大几何不放大字号，200% 下就是「92px 的格子装 26px 的字」
+    /// （真机反馈「文字也太小了吧」）。
+    #[test]
+    fn 字号随dpi放大且填满格子() {
+        let a = Geometry::new(WIN_W, WIN_H, 1.0);
+        let b = Geometry::new(WIN_W, WIN_H, 2.0);
+        assert!(
+            (b.font_title / a.font_title - 2.0).abs() < 0.02,
+            "标题字号应随 DPI 翻倍：{} → {}",
+            a.font_title,
+            b.font_title
+        );
+        // emoji 与格子同比例：占格约 2/3，既不留大片白边，也不会顶到线
+        for g in [&a, &b] {
+            let ratio = g.font_emoji / g.cell as f32;
+            assert!((0.6..=0.75).contains(&ratio), "emoji 占格比例 {ratio}");
+        }
     }
 }

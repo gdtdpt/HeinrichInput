@@ -1511,6 +1511,15 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
   `DrawTextW`。列头是系统画的，所以列的 `LVCFMT` 得统一改成左对齐，否则自绘行与列头错开半个身位。
 
 
+**页内控件的归属（v1.63 / D87）**：`show_page` 只对 `pages[n]` 里的句柄做 `SW_HIDE`——**没登记的控件就一直在屏上**。
+加控件时三件事必须一起做：创建 → 加进 `pages[n]` → 在对应的 `layout_*` 里摆位。漏第二件的症状不是
+「少了个控件」，而是「每一页都悬着它」（`b_emoji_browse` 漏过一次，通用 / 词组 / 学习数据页的中间都挂着
+一个「浏览 emoji…」）。
+
+`--selftest-ui` 的 `check_page_scope` 钉住这一条：切到某页后枚举全部子窗口，**可见但不属于本页**即失败，
+白名单只有状态栏（它刻意全页共用、切页不变）。`check_z_order` 抓不到这类问题——它只按 id 找本页那几件、
+量它们没被挡住，漏登记的控件待在别处照样全过。
+
 **comctl32 v6 清单**：`apps/windows/settings/app.manifest` + `build.rs`，用链接器的
 `/MANIFEST:EMBED` + `/MANIFESTINPUT:<绝对路径>` + `/MANIFESTUAC:NO`，**不引 `embed-resource` /
 `winres`**（那类 crate 要再拉一个 `rc.exe`，而本项目要求 `cargo build` 之外零工具）。
@@ -1691,6 +1700,13 @@ cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/e
 **几何一律物理像素**：`Geometry::new(w, h, scale)` 里每个数字都过 `scale`。逻辑单位混进去，
 DPI 2.0 下格子会一大一小（本节这套数：`cell = 46`、`tab_y = 44`、`title_h = 88`、
 `footer_h = 30`、`inset = 14`、11 列 × 7 行）。
+
+**字号也走同一个 `scale`**（v1.63 修正）：`Geometry` 除了矩形还给出四个字号——标题 16dp、
+页签 14dp、提示 13dp、emoji = `cell × 0.68`；圆角、页签下划线、滚动条、外框描边也一律过 `sp()`。
+理由在渲染目标：D2D 的 **DC 渲染目标建于 `dpiX = dpiY = 96`**，DWrite 的字号 1 DIP = 1 物理像素。
+只缩放几何、不缩放字号，结果就是「92px 的格子装 26px 的字」（真机反馈原话「文字也太小了吧」）。
+emoji 取**格子边长的比例**而不是写死字号：改一次格子尺寸或换一档 DPI，两者不会重新脱节。
+单测 `字号随dpi放大且填满格子` 断言「标题字号随 scale 翻倍」+「`font_emoji / cell` 落在 0.6–0.75」。
 
 **彩色只能走 D2D**：`ID2D1DCRenderTarget::BindDC` → `Clear` → 逐枚 `DrawTextW`，format 上开
 `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`。GDI 与 GDI+ 画 `Segoe UI Emoji` 都是**单色轮廓**
@@ -2097,6 +2113,15 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     emoji 选择器 D86），不要再从 GDI 试起。判据**用颜色计数**（同两行文字数不同颜色值，
     105 vs 13），不要用眼睛看「像不像彩色」——灰度抗锯齿也能骗过眼睛。
 
+63. **「几何放大了、字没放大」是自绘窗口的默认结局。** `ID2D1DCRenderTarget` 用
+    `dpiX/dpiY = 96` 建，DWrite 的字号就 1:1 等于物理像素；而布局通常已经乘过 DPI。
+    两套坐标系混着用，200% 下必然出现「格子 92px、字还是 26px」。
+    **判据**：字号与它所在矩形的比例必须与 DPI 无关（本项目写成单测：`font_emoji / cell`
+    落在 0.6–0.75、标题字号随 scale 翻倍），别靠截图眼看。
+    同一类的第二个入口是**控件归属**：页内控件漏登记进显隐列表，它就会在每一页上一直显示。
+    给自测加一条「当前页可见的子控件 ⊆ 本页集合」（白名单只留给刻意共用的状态栏），
+    比事后逐页截图便宜得多——它第一次跑就抓出了自己白名单漏写的状态栏。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -2142,7 +2167,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
-| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图） |
+| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属） |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
