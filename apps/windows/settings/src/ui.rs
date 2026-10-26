@@ -42,10 +42,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, LVCFMT_CENTER, LVCFMT_LEFT, LVCFMT_RIGHT, LVCOLUMNW, LVIS_FOCUSED,
-    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM, LVM_ENSUREVISIBLE,
-    LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
+    ShowScrollBar, DRAWITEMSTRUCT, LVCFMT_CENTER, LVCFMT_LEFT, LVCFMT_RIGHT, LVCOLUMNW,
+    LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM,
+    LVM_ENSUREVISIBLE, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
+    LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
+    LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -54,16 +55,17 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect,
-    GetMessageW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, LoadCursorW, MessageBoxW, MoveWindow,
-    PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, ShowWindowAsync, TranslateMessage,
-    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GW_CHILD,
-    GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
-    WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, LoadCursorW, MessageBoxW,
+    MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, ShowWindowAsync,
+    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA,
+    GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
+    MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_CHILD,
+    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -143,6 +145,8 @@ const DT_LEFT: u32 = 0x0000;
 const DT_CENTER: u32 = 0x0001;
 const DT_RIGHT: u32 = 0x0002;
 const DT_END_ELLIPSIS: u32 = 0x8000;
+/// 中间省略（路径用）：保留头尾，中间换成「…」
+const DT_PATH_ELLIPSIS: u32 = 0x4000;
 const DT_NOPREFIX: u32 = 0x0800;
 
 /// 窗口内容的最小尺寸（96 DPI 下的逻辑像素），窄于这个就压缩不动了。
@@ -236,8 +240,13 @@ pub struct App {
     /// 这是 paint 从这里直接取的。
     gain_state: Result<f64, String>,
     half_state: Result<f64, String>,
-    /// 配置文件那行只读信息（路径 · config_version · 提示）。
-    config_info: String,
+    /// 配置行第一行：配置文件路径（长路径按 `DT_PATH_ELLIPSIS` 中间省略，保住文件名）。
+    cfg_path: String,
+    /// 配置行第二行：路径之外的信息（版本 / 文件是否存在 / 第一条警告）。
+    ///
+    /// 拆成两行是因为上面三行都是「标题 + 说明」，只有这行把路径和说明挤在同一行里，
+    /// 一行小字从左铺到右、中间还夹着「·」，看着像一段没排完版的日志。
+    cfg_desc: String,
     /// 缓存的刷子：WM_ERASEBKGND / WM_CTLCOLOR* 每次消息都要一个，现场创建太浪费。
     brush_bg: HBRUSH,
     brush_card: HBRUSH,
@@ -329,7 +338,8 @@ impl App {
             focus_id: 0,
             gain_state: Ok(crate::general::GAIN_RANGE.0),
             half_state: Ok(crate::general::HALF_RANGE.0),
-            config_info: String::new(),
+            cfg_path: String::new(),
+            cfg_desc: String::new(),
             brush_bg: make_brush(colors.bg),
             brush_card: make_brush(colors.card),
             colors,
@@ -716,6 +726,18 @@ impl App {
         );
     }
 
+    /// 按钮宽度：**实测**文字宽度 + 左右各 12dp 内衬，`min` 是短按钮的下限
+    /// （逻辑像素）。
+    ///
+    /// 别按字数估算：「打开文件位置」六个字估出来 84dp，实测 90dp，差出的 6dp
+    /// 全被内衬吃掉，左右只剩 5dp——跟旁边「撤销删除」的 10dp 一比就露馅。
+    /// 内衬给到 16dp（而不是 Win11 名义上的 12）：`GetTextExtentPoint32W` 量的是
+    /// 字身宽，不含 ClearType 的右侧光栅余量，实测每边会比标称少 3–4dp。
+    fn btn_w(&self, hdc: HDC, text: &str, min: i32) -> i32 {
+        let need = text_width(hdc, self.fonts.body, text) + self.s(32);
+        self.s(min).max(need)
+    }
+
     /// 整窗布局。Win11 设置的节奏：页签 44 → 页标题 → 分组标题 → 卡片 → 按钮行。
     /// 所有数字都是 96 DPI 逻辑像素，落屏前过 `s()`。
     fn layout(&mut self) {
@@ -808,7 +830,9 @@ impl App {
     /// 通用页：页标题 + 分组标题 + 卡片（四行）+ 按钮行。
     fn layout_general(&mut self, cx: i32, cy: i32, cw2: i32, bottom: i32) {
         let row_h = self.s(62);
-        let cfg_h = self.s(52);
+        // 配置行与上面三行同高：它也是「标题 + 说明」两行，只给 52 时第二行会贴到
+        // 卡片下边缘，视觉上像被截断
+        let cfg_h = row_h;
         let card_h = row_h * 3 + cfg_h;
         let card = Self::rect(cx, cy, cw2, card_h);
         self.geo.gen_card = card;
@@ -946,26 +970,36 @@ impl App {
         }
 
         // 按钮行：主操作靠左，文件级操作跟后，「清空」靠右
+        //
+        // 宽度按**文字宽度 + 左右各 12dp 内衬**算，`min` 只是给短按钮一个下限。
+        // 原来全写死：改一次文案就贴边——「打开文件位置」104 宽装 6 个 14dp 汉字，
+        // 左右各剩 4dp，字像被框子夹住了。
         let gap = self.s(8);
+        let hdc = unsafe { GetDC(Some(self.hwnd)) };
         let mut bx = cx;
-        for (h, w) in [
-            (self.b_save, 72),
-            (self.b_del, 72),
-            (self.b_import, 96),
-            (self.b_open, 104),
-            (self.b_undo, 88),
+        for (h, text, min_w) in [
+            (self.b_save, "保存", 72),
+            (self.b_del, "删除", 72),
+            (self.b_import, "批量导入…", 96),
+            (self.b_open, "打开文件位置", 104),
+            (self.b_undo, "撤销删除", 88),
         ] {
+            let w = self.btn_w(hdc, text, min_w);
             unsafe {
-                let _ = MoveWindow(h, bx, btn_y, self.s(w), btn_h, true);
+                let _ = MoveWindow(h, bx, btn_y, w, btn_h, true);
             }
-            bx += self.s(w) + gap;
+            bx += w + gap;
+        }
+        let clear_w = self.btn_w(hdc, "清空", 64);
+        if !hdc.0.is_null() {
+            unsafe { ReleaseDC(Some(self.hwnd), hdc) };
         }
         unsafe {
             let _ = MoveWindow(
                 self.b_clear,
-                cx + cw2 - self.s(64),
+                cx + cw2 - clear_w,
                 btn_y,
-                self.s(64),
+                clear_w,
                 btn_h,
                 true,
             );
@@ -989,8 +1023,14 @@ impl App {
             if GetClientRect(list, &mut r).is_err() {
                 return;
             }
-            // 留 `s(2)` 余量：列宽加起来正好等于客户区时，边框会把水平滚动条挤出来
-            let total = r.right - r.left - self.s(2);
+            // 列宽铺满到客户区右缘。留 2dp 防水平滚动条的老办法会在表头右侧
+            // 留一块白 + 一条竖直分隔线，看着像多出来一列——所以干脆铺满，
+            // 真挤出水平滚动条就把它藏掉：这些列表的列宽是按比例自己分的，
+            // 永远不需要横向滚动。
+            //
+            // 有垂直滚动条时先把它占的宽度扣掉（用系统实际宽度，不用估的 18dp，
+            // 估大了照样在表头右端留一条白缝）。
+            let total = r.right - r.left - self.vscroll_reserve(list);
             let min = self.s(40);
             let mut used = 0;
             for (i, w) in weights.iter().enumerate() {
@@ -1002,6 +1042,46 @@ impl App {
                 };
                 used += cw;
                 send(list, LVM_SETCOLUMNWIDTH, WPARAM(i), LPARAM(cw as isize));
+            }
+            // 铺满之后列边框可能把水平滚动条顶出来；藏掉它，别让它占掉列表底边
+            let _ = ShowScrollBar(list, SB_HORZ, false);
+        }
+    }
+
+    /// 这个列表会不会出垂直滚动条（行数 × 行高 > 客户区高）→ 要预留多宽。
+    ///
+    /// 宽度取 `SM_CXVSCROLL`（系统实际值，物理像素），不要用估的 18dp：估大一点
+    /// 就会在表头右端留出一条白缝加一根分隔线。
+    ///
+    /// 行数为 0 或量不到行高时按「不会出」处理。
+    fn vscroll_reserve(&self, list: HWND) -> i32 {
+        unsafe {
+            let n = send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as i32;
+            if n <= 0 {
+                return 0;
+            }
+            // LVM_GETITEMRECT 用 `rc.left` 传入「要哪一部分」：LVIR_BOUNDS = 整行
+            let mut ir = RECT {
+                left: LVIR_BOUNDS as i32,
+                ..Default::default()
+            };
+            let ok = send(
+                list,
+                LVM_GETITEMRECT,
+                WPARAM(0),
+                LPARAM(&mut ir as *mut _ as isize),
+            )
+            .0 != 0;
+            let mut cr = RECT::default();
+            if !ok || GetClientRect(list, &mut cr).is_err() {
+                return 0;
+            }
+            let row_h = (ir.bottom - ir.top).max(1);
+            let client_h = (cr.bottom - cr.top).max(1);
+            if n * row_h > client_h {
+                GetSystemMetrics(SM_CXVSCROLL)
+            } else {
+                0
             }
         }
     }
@@ -1034,9 +1114,9 @@ impl App {
             // 「清除」是破坏性动作，靠右单独放，别挨着搜索框（F46 的同一条理由）
             let _ = MoveWindow(
                 self.b_forget,
-                cx + cw2 - self.s(160),
+                cx + cw2 - self.s(176),
                 search_y,
-                self.s(160),
+                self.s(176),
                 btn_h,
                 true,
             );
@@ -1391,14 +1471,17 @@ impl App {
         set_text(self.e_half, &crate::general::fmt_number(g.half_life));
         self.update_general_fields();
 
-        let mut info = format!("{} \u{b7} {}", self.config_path.display(), g.version);
+        self.cfg_path = self.config_path.display().to_string();
+        // `g.version` 本身就是「config_version = 1」或「config_version 未写入（按 v1
+        // 处理）」，前面再加「配置版本」会读成「配置版本 config_version = 1」，重复
+        let mut desc = g.version.clone();
         if !g.found {
-            info.push_str(" \u{b7} 文件还不存在，点「应用」时会建");
+            desc.push_str(" · 文件还不存在，点「应用」时会创建");
         }
         for w in g.warnings.iter().take(1) {
-            info.push_str(&format!(" \u{b7} {w}"));
+            desc.push_str(&format!(" · {w}"));
         }
-        self.config_info = info;
+        self.cfg_desc = desc;
         self.repaint();
     }
 
@@ -2031,12 +2114,26 @@ fn pt_in(pt: POINT, r: RECT) -> bool {
 
 /// 绘制辅助（都是 96 DPI 语义下的薄封装，颜色来自 `theme::Colors`）。
 impl App {
-    /// 整窗绘制入口。背景在 WM_ERASEBKGND 里铺过，这里只画页签与当前页。
+    /// 整窗绘制入口：先铺底，再画页签与当前页。
+    ///
+    /// **底必须在这里铺，不能指望 `WM_ERASEBKGND`**。`repaint()` 用的是
+    /// `InvalidateRect(..., false)`（不请求擦除），`ShowWindow(SW_HIDE)` 暴露出来的
+    /// 那块区域也不会走擦除——于是切页时新页只画自己那几张卡片，旧页的页标题、
+    /// 卡片描边、列表、页签下划线全留在屏上，两层直接叠着。用户看到的就是
+    /// 「tab 只添了下划线、内容没换」和「切几次内容糊在一起」。
+    ///
+    /// 窗口小（900×600），一次全铺在 GDI 下是微秒级，不值得做脏矩形。
     fn paint(&self) {
         let mut ps = PAINTSTRUCT::default();
         let hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
         if hdc.is_invalid() {
             return;
+        }
+        unsafe {
+            let mut rc = RECT::default();
+            let _ = GetClientRect(self.hwnd, &mut rc);
+            // 有 WS_CLIPCHILDREN，子控件占的地方会被裁掉，不会把 Edit 白底刷成本底色
+            let _ = FillRect(hdc, &rc, self.brush_bg);
         }
         self.draw_tab_bar(hdc);
         match self.page {
@@ -2249,18 +2346,26 @@ impl App {
             );
         }
 
-        // 行 3：配置信息 + 右侧「打开位置」按钮（按钮自己画）
+        // 行 3：配置文件路径 + 说明（两行，与上面三行同一节奏）
+        //
+        // 原来把「路径 · config_version · 警告」拼成一句塞在一行里：路径本身就有
+        // 五六十个字符，后半截的版本和警告被挤到右边缘，还跟「打开位置」抢地方。
+        // 现在路径独占第一行（中间省略，保住 `config.toml`），其余信息进第二行。
         let cfg = self.geo.gen_rows[3];
-        let cfg_text = Self::rect(
-            card.left + self.s(16),
-            cfg.top,
-            card.right - card.left - self.s(120),
-            cfg.bottom - cfg.top,
+        let cfg_x = card.left + self.s(16);
+        // 右边界让给「打开位置」按钮：80 宽 + 右侧内衬 16 + 12 的间隔
+        let cfg_right = card.right - self.s(16 + 80 + 12);
+        draw_text_path(
+            hdc,
+            &self.cfg_path,
+            Self::rect(cfg_x, cfg.top + self.s(11), cfg_right - cfg_x, self.s(18)),
+            self.fonts.caption,
+            self.colors.text2,
         );
         draw_text(
             hdc,
-            &self.config_info,
-            cfg_text,
+            &self.cfg_desc,
+            Self::rect(cfg_x, cfg.top + self.s(33), cfg_right - cfg_x, self.s(18)),
             self.fonts.caption,
             self.colors.text3,
         );
@@ -2539,18 +2644,28 @@ fn text_width(hdc: HDC, font: HFONT, s: &str) -> i32 {
     }
 }
 
-/// 单行文字的唯一实现：`align` 是 `DT_LEFT` / `DT_CENTER` / `DT_RIGHT` 之一。
+/// 单行文字的唯一实现：`align` 是 `DT_LEFT` / `DT_CENTER` / `DT_RIGHT` 之一，
+/// `ellipsis` 是超宽时的省略方式（`DT_END_ELLIPSIS` 尾巴省略 / `DT_PATH_ELLIPSIS`
+/// 中间省略，给路径用）。
 ///
 /// **水平位置自己算，不用 `DrawTextW` 的对齐位**。两个坑叠在一起：
 /// ① `DT_END_ELLIPSIS` 会在右侧预留省略号的宽度（哪怕文字远没超宽），居中/
 ///    右对齐因此整体偏左 7–8px；② 这个偏移量没有任何文档，随字体和字号变。
 /// 而我们已经用 `text_width` 量出真实宽度了，直接算左端点最稳——量多少放多少，
 /// 居中就是几何意义上的居中（页签下划线、按钮文字、三段选择器都靠这一步对齐）。
-fn draw_text_flags(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, align: u32) {
+fn draw_text_flags(
+    hdc: HDC,
+    s: &str,
+    r: RECT,
+    font: HFONT,
+    color: COLORREF,
+    align: u32,
+    ellipsis: u32,
+) {
     let mut wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
     let avail = r.right - r.left;
     let w = text_width(hdc, font, s);
-    let extra = if w > avail { DT_END_ELLIPSIS } else { 0 };
+    let extra = if w > avail { ellipsis } else { 0 };
     let left = match align {
         DT_CENTER => r.left + (avail - w).max(0) / 2,
         DT_RIGHT => (r.right - w).max(r.left),
@@ -2587,18 +2702,27 @@ fn draw_text_align(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF, rig
         font,
         color,
         if right { DT_RIGHT } else { DT_LEFT },
+        DT_END_ELLIPSIS,
     );
 }
 
 /// 单行文字（左对齐，垂直居中，超宽省略）。
 fn draw_text(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
-    draw_text_flags(hdc, s, r, font, color, DT_LEFT);
+    draw_text_flags(hdc, s, r, font, color, DT_LEFT, DT_END_ELLIPSIS);
 }
 
 /// 按钮文字：水平居中。左对齐放在按钮里，一个字宽的「搜」会贴着左边框，
 /// 看着像没排进去。
 fn draw_text_center(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
-    draw_text_flags(hdc, s, r, font, color, DT_CENTER);
+    draw_text_flags(hdc, s, r, font, color, DT_CENTER, DT_END_ELLIPSIS);
+}
+
+/// 路径专用：放不下时**从中间省略**，保住尾部的文件名。
+///
+/// 用尾巴省略会把 `config.toml` 整个换成「…」——路径长了以后，这行最关键的信息
+/// 恰好第一个没了。`DT_PATH_ELLIPSIS` 保留盘符和文件名，中间打省略号。
+fn draw_text_path(hdc: HDC, s: &str, r: RECT, font: HFONT, color: COLORREF) {
+    draw_text_flags(hdc, s, r, font, color, DT_LEFT, DT_PATH_ELLIPSIS);
 }
 
 /// 通用页一行：标题（左上）+ 描述（标题下方，可红）。
@@ -2972,7 +3096,10 @@ fn create_window(app: &App) -> Result<HWND, String> {
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             PCWSTR(class.as_ptr()),
             w!("亨利五笔 · 设置"),
-            WS_OVERLAPPEDWINDOW,
+            // WS_CLIPCHILDREN：父窗口整窗铺底时会**跳过子控件占的矩形**。
+            // 不设的话切页重绘会把 Edit / 列表白底刷成页面底色，控件看着「消失」，
+            // 鼠标划过去才回来（子控件只在需要时自己重画）。
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             w,

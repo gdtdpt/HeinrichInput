@@ -57,9 +57,11 @@ impl General {
             "ranking.half_life_days",
             &mut warnings,
         );
+        // 展示文案按「人话」写，不照抄键名：这行下面还有一句说明，写成
+        // `config_version = 1` 会和真正的配置项混在一起，看着像文件内容漏到了界面上
         let version = match cfg.get("config_version") {
-            Some(v) => format!("config_version = {v}"),
-            None => format!("config_version 未写入（按 v{CONFIG_VERSION} 处理）"),
+            Some(v) => format!("配置版本 {v}"),
+            None => format!("配置版本未写入（按 v{CONFIG_VERSION} 处理）"),
         };
         Self {
             hint: cfg.hint_mode(),

@@ -131,8 +131,11 @@ impl Colors {
             error: rgb(0xC4, 0x2B, 0x1C),
             seg_track: rgb(0xEC, 0xEC, 0xEC),
             btn_hover: rgb(0xF6, 0xF6, 0xF6),
-            btn_disabled_bg: rgb(0xF0, 0xF0, 0xF0),
-            btn_disabled_text: rgb(0xA6, 0xA6, 0xA6),
+            // 禁用态：底比页面背景**略浅**（#F5 vs #F3），字用 #94（对比度约 3:1）。
+            // 原来是 #F0 底 + #A6 字——底色比背景深一档，看着像一块脏灰砖，
+            // 字又淡到在截图里几乎读不出来。
+            btn_disabled_bg: rgb(0xF5, 0xF5, 0xF5),
+            btn_disabled_text: rgb(0x94, 0x94, 0x94),
             accent_hover: mix(accent, white, 36),
             // 按下态往纯黑里混：text1 那个黑带 0x1A 底，红通道为 0 的强调色
             // 混它反而会变亮

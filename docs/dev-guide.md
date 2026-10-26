@@ -1416,7 +1416,7 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 子控件集，没有「单独截某一页」的办法。加了这个开关，`win-ui-selfscreenshot` 那套
 （起进程 → 截图 → 看 → 改）就能逐页跑。
 
-### 4.22 设置窗口的视觉层与自绘边界（M4b-UI / D79、D80）
+### 4.22 设置窗口的视觉层、自绘边界与重绘纪律（M4b-UI / D79、D80、D81）
 
 **颜色与字体只有一个入口**：`src/theme.rs`。
 
@@ -1463,6 +1463,28 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 - **列表对齐跟着内容走**（`LVCF_FMT`）：数字列右对齐、短标记列居中、文字列左对齐。列宽用
   `fit_columns` 按权重分配；只让「最后一列吃掉剩余」的话，窗口一拉宽，`提示`/`档位` 这种
   短内容列会被撑成一块白板。
+- **按钮宽度按实测字宽算**（`btn_w` = `text_width` + 32dp）。写死宽度时改一次文案就贴边
+  （「打开文件位置」104 宽装六个 14dp 汉字，左右只剩 4dp，跟隔壁「撤销删除」的 10dp 一比就露馅）。
+  内衬给 32 而不是 Win11 名义上的 24：`GetTextExtentPoint32W` 量的是字身，不含 ClearType
+  右侧的光栅余量，实测每边会比标称少 3–4dp。
+- **列表列宽铺满客户区，别再留 2dp。** 留余量会在表头右侧留一块白 + 一条竖直分隔线，
+  看着像多出一列。要防水平滚动条就**按需**预留垂直条宽度（`SM_CXVSCROLL`，先用
+  `LVM_GETITEMRECT` 判「行数 × 行高 > 客户区高」），最后 `ShowScrollBar(SB_HORZ, false)`
+  把可能被挤出来的横条收掉。
+
+**重绘与切页（D81，v1.57）**：
+
+- **`paint()` 必须自己铺底，别指望 `WM_ERASEBKGND`。** `repaint()` 走的是
+  `InvalidateRect(..., false)`（不请求擦除），`ShowWindow(SW_HIDE)` 露出来的区域同样不走擦除。
+  指望擦除消息的结果是：切页时只画了新页那几张卡片，旧页的页标题、卡片描边、列表、
+  页签下划线**全留在屏上**——用户看到的就是「页签只多了一条下划线、内容没换」和
+  「切几次 tab 内容叠在一起」。现在 `paint()` 第一件事是 `FillRect(GetClientRect, brush_bg)`。
+- **主窗口要带 `WS_CLIPCHILDREN`。** 这是「自绘父窗口 + 原生子控件」的必配：不设时整窗铺底
+  会把 Edit / 列表的白底一起刷成页面底色，控件看着「消失」，鼠标划过才回来。
+- **切页只动可见性。** `pages: [Vec<HWND>; 3]` 是唯一真相，`ShowWindow` 显隐 + 末尾一次整窗
+  `InvalidateRect`；**不重建控件**（重建会丢编辑中的内容、列表滚动位置）。
+- **验收必须真点。** 静态截单页永远看不出残留。用 `WM_LBUTTONDOWN`（或 DPI 感知的真鼠标点击）
+  连切几次再截；判据是「切回第一页的截图与初始截图逐字节相同」。
 
 **comctl32 v6 清单**：`apps/windows/settings/app.manifest` + `build.rs`，用链接器的
 `/MANIFEST:EMBED` + `/MANIFESTINPUT:<绝对路径>` + `/MANIFESTUAC:NO`，**不引 `embed-resource` /
@@ -1830,6 +1852,13 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     同理，**z 序 / 命中自测要按页做**：隐藏页的控件命中测试必然失败，不切页就断言
     只会得到一个假失败（`PrintWindow` 也只看得到当前可见的那一页）。
 
+59. **自绘父窗口的「擦背景」不能外包给系统。** 症状是切页后旧页内容留在屏上、与新页叠在一起，
+    看起来像「页签点了没反应」或「切几次全糊了」。根因在 `InvalidateRect(hwnd, None, false)`
+    的第三个参数：`false` 表示「不要擦除」，而 `paint()` 又假设背景已经由 `WM_ERASEBKGND` 铺过
+    ——两边都不擦，旧像素就永远留着。**规矩：`WM_PAINT` 里第一件事自己 `FillRect` 铺底**，
+    不依赖擦除消息；另外主窗口必须带 `WS_CLIPCHILDREN`，否则铺底会连子控件的白底一起刷掉。
+    这类问题**静态截一张图看不出来**（每页单独看都正常），必须「真消息点击 → 再截图」才算验过。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -1873,7 +1902,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M3 总验收 | ✅ **2026-10-23 自动化通过（154 例）**（§4.17：`tests/corpus/mixed.tsv` 分层取样语料 + `tests/mixed_corpus.rs` 四项断言；顺带把 `SEGMENT_LIMIT` 16→32——「悟」在 `wu` 排第 17 让 `wu'ntgg` 出不了窗） |
 | M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
-| M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23，D79 + D80，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
+| M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
