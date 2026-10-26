@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 heinrich-log.workspace = true
+heinrich-font.workspace = true
 heinrich-proto.workspace = true
 heinrich-core.workspace = true
 rusqlite = { version = "0.40.2", features = ["bundled"] }

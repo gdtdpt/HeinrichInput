@@ -68,16 +68,26 @@ heinrich-setup.exe shortcut     # 补开始菜单快捷方式（不需要管理�
 - 用的不是 `Ctrl+Shift`：那是 Windows 切换输入法的热键，按一次弹图就把输入法切走了。
   同理，没有候选窗时这些组合一律还给程序本身。
 
-## 词组 emoji
+## emoji 候选
 
-词组候选的末尾会带一个彩色 emoji，告诉你这个词大概是什么意思——打 `wqvb` 出「你好 👋」、
-`gany` 出「开心 ☺」、`agjs` 出「苹果 🍏」。
+打 `wqvb` 出的是 **`1 你好　2 👋　3 您好 …`**——emoji 自己占一个位号，按 `2`（或者点它）
+**上屏的就是那枚 emoji**。文字是文字，emoji 是 emoji，两者互不干扰：
 
-- **只有词组带，单字不带**。单字候选一行好几个，每个都挂一枚 emoji，行宽会翻倍。
-- **一个词只带一枚**，超过一屏宽时**先丢 emoji、不缩词**——emoji 是装饰，字才是你要的。
+- 按 `1` / 空格：还是正常的「你好」；
+- 按 `2` / 点图标：文档里出现 👋；
+- 每个有 emoji 的词后面都会跟一条，编号紧挨着它。
+
+几条规矩：
+
+- **只有词组有，单字没有**。单字候选一行好几个，每条后面再跟一枚 emoji，行宽会翻倍。
+- **一个词最多一枚**，同一个 emoji 可以挂在很多词上。
 - 内置表约 2400 条，来自 Unicode 官方的中文注音表（CLDR）与词库求交，不是手写的。
+- **本机字体画不出来的会自动跳过**：Win10 自带的 emoji 字体到 Emoji 12 为止，更新的那些
+  （例如 Emoji 13 的 🫂）在候选窗里只会是一块方块，所以装载时就整条丢掉了。换台新系统
+  重启输入法，能用的会更多。
+- 选中 emoji **不算「打过这个词」**，不会影响候选排序与学习数据。
 
-想改绑、想过自己的一套，就编辑用户层 `%APPDATA%\Heinrich\emoji.user.toml`（**保存即生效，不用重启**）：
+想改绑、想自己配一套，就编辑用户层 `%APPDATA%\Heinrich\emoji.user.toml`（**保存即生效，不用重启**）：
 
 ```toml
 [[emoji]]
@@ -85,23 +95,25 @@ word = "好评"      # 按词绑：只影响这一个候选
 emoji = "👍"
 
 [[emoji]]
-code = "vbyg"      # 按码绑：这个码下的候选都带（vbyg = 好评）
+code = "vbyg"      # 按码绑：这个码下的候选都跟这枚（vbyg = 好评）
 emoji = "👏"
 
 [[emoji]]
 word = "开心"
 emoji = "😊"
-enabled = false    # 停用内置表里的那条
+enabled = false    # 停用内置表里的那条：这个词后面不再出现 emoji 候选
 ```
 
 - 按词绑优先于按码绑；一个词同时命中两者时用按词的那条。
-- 不想看 emoji 就在 `config.toml` 里写 `emoji.enabled = false`（一秒内生效，候选行宽回到没有 emoji 的样子）。
+- 不想看 emoji 就在 `config.toml` 里写 `emoji.enabled = false`（一秒内生效，候选里就没有 emoji
+  条目了，行宽与没有这个功能时完全一样）。
 - 查一查、改错了想重来：
 
 ```
 heinrich-cli emoji list --limit 20          → 现在生效的映射（含你自己的用户层）
 heinrich-cli emoji check --file %APPDATA%\Heinrich\emoji.user.toml
                                             → 校验：词在不在词库、码在不在码表、值是不是单个 emoji
+heinrich-cli emoji check                    → 顺带告诉你本机字体能显示多少条（如 2018 / 2395）
 heinrich-cli emoji reset                    → 备份用户层（带时间戳）后清空
 ```
 
@@ -209,7 +221,7 @@ ranking.learning_gain = 0.35
 # 半衰期（天）。想让旧习惯更快退场就调小
 ranking.half_life_days = 45
 
-# 词组 emoji。false = 候选不戴 emoji（行宽回到没有这功能时的样子）
+# emoji 候选。false = 候选里不出现 emoji 条目（行宽回到没有这功能时的样子）
 emoji.enabled = true
 ```
 

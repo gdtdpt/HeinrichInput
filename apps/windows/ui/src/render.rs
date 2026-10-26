@@ -190,7 +190,22 @@ impl Renderer {
                     item.label_rect,
                     label_ink,
                 )?;
-                text_in(target, &item.text, &formats.text, item.text_rect, text_ink)?;
+                // emoji 候选（v8/D83）：**必须**开 `ENABLE_COLOR_FONT`。不开时
+                // Segoe UI Emoji 会退化成单色轮廓（M4c 的探针实测：同一位图
+                // 彩色 105 种颜色 / 单色 13 种）。颜色刷子对彩色字形不起作用，
+                // 但 API 要求传，就传文字色。
+                if item.is_emoji {
+                    text_in_with(
+                        target,
+                        &item.text,
+                        &formats.text,
+                        item.text_rect,
+                        text_ink,
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                    )?;
+                } else {
+                    text_in(target, &item.text, &formats.text, item.text_rect, text_ink)?;
+                }
                 // 词中 chip 的后截文字（D64）：chip 右边还有半截词。
                 if !item.text2.is_empty() {
                     text_in(
@@ -227,20 +242,6 @@ impl Renderer {
                         chip.h,
                     );
                     text_in(target, hint, &formats.hint, inner, &secondary)?;
-                }
-                // emoji（§6.4）排在词尾。必须开 `ENABLE_COLOR_FONT`：不开时
-                // Segoe UI Emoji 会退化成单色轮廓（M4c 的探针实测：同一位图
-                // 彩色 105 种颜色 / 单色 13 种）。颜色刷子对彩色字形不起作用，
-                // 但 API 要求传，就传文字色——缺字形时至少还能看出是个方框。
-                if let Some(emoji) = &item.emoji {
-                    text_in_with(
-                        target,
-                        emoji,
-                        &formats.text,
-                        item.emoji_rect,
-                        text_ink,
-                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                    )?;
                 }
             }
             for arrow in [layout.prev.as_ref(), layout.next.as_ref()]

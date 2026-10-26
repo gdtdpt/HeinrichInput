@@ -42,8 +42,11 @@ pub struct Cands {
     codes: Vec<String>,
     /// 与 `words` 等长的 chip 词中位置（D64）。`0` = 词尾。
     hint_ats: Vec<u8>,
-    /// 与 `words` 等长的 emoji（§6.4）。空串 = 这条不挂。
-    emojis: Vec<String>,
+    /// 与 `words` 等长：这条是不是 emoji 候选（v8/D83）。
+    ///
+    /// 存 `bool` 而不是协议的 `u8`：这层只关心一个问题「是不是 emoji」，
+    /// 多留一个种类枚举就是多一处要跟着协议改的地方。
+    is_emoji: Vec<bool>,
     /// 折叠区第一条的全局序号（D48）。`== words.len()` 表示只有一段。
     split: usize,
     /// 页码、本页区间、两端箭头。
@@ -80,7 +83,7 @@ impl Cands {
             words: Vec::new(),
             codes: Vec::new(),
             hint_ats: Vec::new(),
-            emojis: Vec::new(),
+            is_emoji: Vec::new(),
             split: 0,
             pager: Pager::new(PAGE_SIZE),
             highlight: 0,
@@ -108,14 +111,15 @@ impl Cands {
     ///
     /// `hint_ats` 与 `words` 等长（D64）：chip 挂在第几个字符之后，`0` = 词尾。
     ///
-    /// `emojis` 与 `words` 等长（§6.4）：空串表示这条不挂。挂不挂由 server 裁决。
+    /// `kinds` 与 `words` 等长（v8）：`1` = 这条是 emoji 候选。给不给由 server
+    /// 裁决；这里只把它压成 `bool`，顺带按 `words` 对齐长度。
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         words: Vec<String>,
         mut codes: Vec<String>,
         mut hint_ats: Vec<u8>,
-        mut emojis: Vec<String>,
+        mut kinds: Vec<u8>,
         split: usize,
     ) {
         // 长度对齐：协议与 UI 之间多一道防线。少了补空串（不画），多了直接丢掉——
@@ -124,15 +128,15 @@ impl Cands {
         codes.truncate(words.len());
         hint_ats.resize(words.len(), 0);
         hint_ats.truncate(words.len());
-        emojis.resize(words.len(), String::new());
-        emojis.truncate(words.len());
+        kinds.resize(words.len(), 0);
+        kinds.truncate(words.len());
         self.pager.reset(words.len());
         self.highlight = 0;
         self.split = split.min(words.len());
         self.words = words;
         self.codes = codes;
         self.hint_ats = hint_ats;
-        self.emojis = emojis;
+        self.is_emoji = kinds.iter().map(|k| *k == 1).collect();
         tsf_debug!(
             "#{} 候选 {} 条（{} 条带码提示），共 {} 页",
             self.seq,
@@ -147,7 +151,7 @@ impl Cands {
         self.words.clear();
         self.codes.clear();
         self.hint_ats.clear();
-        self.emojis.clear();
+        self.is_emoji.clear();
         self.split = 0;
         self.pager.reset(0);
         self.highlight = 0;
@@ -200,6 +204,17 @@ impl Cands {
     pub fn current(&self) -> Option<String> {
         let global = self.pager.global(self.highlight)?;
         self.words.get(global).cloned()
+    }
+
+    /// 当前高亮的那条是不是 emoji 候选（v8）。
+    ///
+    /// 上屏路径靠它决定**要不要上报学习数据**：`👋` 不是「`wqvb` 的一个词」，
+    /// 记进去会把词频、候选序一起带偏。
+    pub fn current_is_emoji(&self) -> bool {
+        self.pager
+            .global(self.highlight)
+            .and_then(|g| self.is_emoji.get(g).copied())
+            .unwrap_or(false)
     }
 
     /// 按光标矩形显示/重画。候选为空时等价于 [`Self::hide`]。
@@ -255,7 +270,7 @@ impl Cands {
             texts: &self.words,
             hints: &self.codes,
             hint_ats: &self.hint_ats,
-            emojis: &self.emojis,
+            is_emoji: &self.is_emoji,
             page: self.pager.page(),
             page_size: self.pager.page_size(),
             highlight: self.highlight,

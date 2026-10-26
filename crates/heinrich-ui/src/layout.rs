@@ -33,13 +33,11 @@ pub struct CandidateText {
     pub pre_width: f32,
     /// `hint_at > 0` 时 chip 后那截文字的宽度（量测层量好）。
     pub post_width: f32,
-    /// 词组右侧的 emoji（§6.4 / D66）。`None` / 空串 = 不画。
+    /// 这条是 **emoji 候选**（v8/D83）：`text` 里就是那枚 emoji。
     ///
-    /// 宽度由量测层给：emoji 走的是彩色字形（Segoe UI Emoji 回退），它的
-    /// 前进宽度**不等于**一个汉字宽，按字号估会在候选行里留下一条缝。
-    pub emoji: Option<String>,
-    /// emoji 的宽度（物理像素）。`emoji` 为 `None` 时忽略。
-    pub emoji_width: f32,
+    /// 布局对它**没有任何特殊待遇**——它就是一条宽度等于字形的普通条目。这个
+    /// 标记只往下传（[`ItemBox::is_emoji`]），让渲染端改用彩色字形绘制。
+    pub is_emoji: bool,
 }
 
 impl CandidateText {
@@ -52,19 +50,16 @@ impl CandidateText {
             hint_at: 0,
             pre_width: 0.0,
             post_width: 0.0,
-            emoji: None,
-            emoji_width: 0.0,
+            is_emoji: false,
         }
     }
 
-    /// 带 emoji 的候选（§6.4）。emoji 排在词尾（有 chip 时排在 chip 之后）。
-    pub fn with_emoji(mut self, emoji: impl Into<String>, width: f32) -> Self {
-        let emoji = emoji.into();
-        if emoji.is_empty() {
-            return self;
-        }
-        self.emoji = Some(emoji);
-        self.emoji_width = width.max(0.0);
+    /// 把这条标记成 emoji 候选。
+    ///
+    /// 宽度仍由调用方给——而且必须用 `measure_emoji` 量：彩色字形的自然前进宽度
+    /// 不等于一个汉字宽，按字号估会在候选行里留下一条缝。
+    pub fn as_emoji(mut self) -> Self {
+        self.is_emoji = true;
         self
     }
 
@@ -142,9 +137,6 @@ pub struct Metrics {
     /// chip 是「一小块底 + 里面几个字母」，文字紧贴底边会显得挤；这个值同时决定
     /// 命中区与视觉区，所以只在这里算一次。
     pub hint_padding_x: f32,
-    /// 词（或 chip）与 emoji 之间的间隔（§6.4）。与 `hint_gap` 同尺度：
-    /// 两者都是「主文字后面的小标签」，间距不一致会看起来像两套排版。
-    pub emoji_gap: f32,
     /// 翻页箭头的宽度。
     pub arrow_width: f32,
     /// 箭头与候选之间。
@@ -175,7 +167,6 @@ impl Metrics {
             label_width: (font_size * 0.62).round(),
             hint_gap: (font_size * 0.22).round(),
             hint_padding_x: (font_size * 0.22).round(),
-            emoji_gap: (font_size * 0.22).round(),
             // 一个字号宽：字形在这里居中绘制，留一点余量比正好贴边安全
             // （量出来的字形宽度在 100%/150% DPI 下不会完全等于字号）。
             arrow_width: (font_size * 1.0).round(),
@@ -200,7 +191,6 @@ impl Metrics {
             label_width: self.label_width * s,
             hint_gap: self.hint_gap * s,
             hint_padding_x: self.hint_padding_x * s,
-            emoji_gap: self.emoji_gap * s,
             arrow_width: self.arrow_width * s,
             arrow_gap: self.arrow_gap * s,
             corner_radius: self.corner_radius * s,
@@ -215,29 +205,16 @@ impl Metrics {
     }
 
     /// 带码提示时的整项宽度。`hint_width` 含 chip 自己的左右内边距。
+    ///
+    /// 追加件（chip）不参与压窄，所以宽度公式只有这一处，压窄只改 `text_width`。
+    /// emoji 候选没有 chip，走的是同一条公式——它在这层只是一根普通文字。
     pub fn item_width_with_hint(&self, text_width: f32, hint_width: f32) -> f32 {
-        self.item_width_full(text_width, hint_width, 0.0)
-    }
-
-    /// 整项宽度（§6.4 起多一枚 emoji）。三块追加件（chip / emoji）都不参与
-    /// 压窄，所以宽度公式只有这一处，压窄只改 `text_width`。
-    pub fn item_width_full(&self, text_width: f32, hint_width: f32, emoji_width: f32) -> f32 {
         let chip = if hint_width > 0.0 {
             self.hint_gap + hint_width + self.hint_padding_x * 2.0
         } else {
             0.0
         };
-        let emoji = if emoji_width > 0.0 {
-            self.emoji_gap + emoji_width
-        } else {
-            0.0
-        };
-        self.item_padding_x * 2.0
-            + self.label_width
-            + self.label_gap
-            + text_width.max(0.0)
-            + chip
-            + emoji
+        self.item_padding_x * 2.0 + self.label_width + self.label_gap + text_width.max(0.0) + chip
     }
 }
 
@@ -315,10 +292,9 @@ pub struct ItemBox {
     pub hint: Option<String>,
     /// chip 的矩形（**含**左右内边距，渲染端画底与写字都用它）。
     pub hint_rect: Rect,
-    /// 词组 emoji（§6.4 / D66）。`None` = 这条不挂，或本次被压窄丢掉了。
-    pub emoji: Option<String>,
-    /// emoji 的矩形。`emoji` 为 `None` 时无效（宽高都是 0）。
-    pub emoji_rect: Rect,
+    /// 这条是 emoji 候选（v8/D83）：渲染端要用彩色字形（`ENABLE_COLOR_FONT`）画
+    /// [`Self::text`]，否则彩色 emoji 会退化成单色轮廓。
+    pub is_emoji: bool,
     /// 这条的文字宽度被压窄过。
     pub elided: bool,
     /// 属于折叠区（另一门语言的补段）。渲染端应当把它画淡一档。
@@ -437,35 +413,13 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
             }
         })
         .collect();
-    // emoji 的宽度单独一列：它**会被整行丢掉**（见下面的压窄顺序），所以要能单独清零。
-    let mut emoji_w: Vec<f32> = input
-        .page
-        .iter()
-        .map(|c| {
-            if c.emoji.is_some() {
-                c.emoji_width.max(0.0)
-            } else {
-                0.0
-            }
-        })
-        .collect();
-
     // 箭头只在真有候选的那个方向占地方：第 1 页没有左箭头，窗口就不必为此变宽。
     let arrow = m.arrow_width + m.arrow_gap;
     let reserved =
         if input.has_prev { arrow } else { 0.0 } + if input.has_next { arrow } else { 0.0 };
 
     // 先按自然宽度算一遍总宽。
-    let mut total = sum_width(&m, &widths, &hint_w, &emoji_w, reserved);
-
-    // 压窄的**顺序**是硬约定（M4c 验收 ①）：先丢 emoji，再压词。
-    // emoji 是装饰、词是内容——把「好评」压成「好…」去保住一枚 👍 是本末倒置。
-    if m.max_width > 0.0 && total > m.max_width && emoji_w.iter().any(|w| *w > 0.0) {
-        for w in emoji_w.iter_mut() {
-            *w = 0.0;
-        }
-        total = sum_width(&m, &widths, &hint_w, &emoji_w, reserved);
-    }
+    let mut total = sum_width(&m, &widths, &hint_w, reserved);
 
     // 超过上限时按各自宽度**成比例**压窄：长候选让得多、短候选让得少，
     // 视觉上比「每条均摊」更不容易把短词挤成一条缝。
@@ -491,7 +445,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
                     *w = next;
                 }
             }
-            total = sum_width(&m, &widths, &hint_w, &emoji_w, reserved);
+            total = sum_width(&m, &widths, &hint_w, reserved);
         }
     }
 
@@ -512,7 +466,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     }
 
     for (i, cand) in input.page.iter().enumerate() {
-        let item_w = m.item_width_full(widths[i], hint_w[i], emoji_w[i]);
+        let item_w = m.item_width_with_hint(widths[i], hint_w[i]);
         let rect = Rect::new(x, y, item_w, m.line_height);
         let label_rect = Rect::new(x + m.item_padding_x, y, m.label_width, m.line_height);
 
@@ -539,21 +493,18 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
                 Rect::new(cx, y, 0.0, 0.0)
             };
             let post_rect = Rect::new(cx, y, post_w, m.line_height);
-            cx = post_rect.right();
             let hint = has_hint.then(|| cand.hint.clone()).flatten();
             (pre_str, pre_rect, post_str, post_rect, hint, hint_rect)
         } else {
             let text_rect = Rect::new(cx, y, widths[i], m.line_height);
             cx = text_rect.right();
             let hint_rect = if has_hint {
-                let r = Rect::new(
+                Rect::new(
                     cx + m.hint_gap,
                     y,
                     hint_w[i] + m.hint_padding_x * 2.0,
                     m.line_height,
-                );
-                cx = r.right();
-                r
+                )
             } else {
                 Rect::new(cx, y, 0.0, 0.0)
             };
@@ -566,16 +517,6 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
                 hint,
                 hint_rect,
             )
-        };
-
-        // emoji 排在最后（词尾 / chip 之后）。被压窄丢掉时 `emoji_w` 是 0，
-        // 这里自然一个矩形都不给——与「本来就没挂」在布局上完全等价（验收 ⑥）。
-        let (emoji, emoji_rect) = match &cand.emoji {
-            Some(e) if emoji_w[i] > 0.0 => (
-                Some(e.clone()),
-                Rect::new(cx + m.emoji_gap, y, emoji_w[i], m.line_height),
-            ),
-            _ => (None, Rect::new(cx, y, 0.0, 0.0)),
         };
 
         let index = input.page_start + i;
@@ -592,8 +533,7 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
             text2_rect,
             hint,
             hint_rect,
-            emoji,
-            emoji_rect,
+            is_emoji: cand.is_emoji,
             elided: clipped && widths[i] < cand.width.max(0.0) - 0.01,
             secondary: input.split.is_some_and(|s| index >= s),
         });
@@ -624,17 +564,11 @@ pub fn layout(input: &LayoutInput<'_>) -> Layout {
     }
 }
 
-fn sum_width(m: &Metrics, widths: &[f32], hint_w: &[f32], emoji_w: &[f32], reserved: f32) -> f32 {
+fn sum_width(m: &Metrics, widths: &[f32], hint_w: &[f32], reserved: f32) -> f32 {
     let items: f32 = widths
         .iter()
         .enumerate()
-        .map(|(i, w)| {
-            m.item_width_full(
-                *w,
-                hint_w.get(i).copied().unwrap_or(0.0),
-                emoji_w.get(i).copied().unwrap_or(0.0),
-            )
-        })
+        .map(|(i, w)| m.item_width_with_hint(*w, hint_w.get(i).copied().unwrap_or(0.0)))
         .sum();
     let gaps = if widths.is_empty() {
         0.0
@@ -1112,110 +1046,47 @@ mod tests {
         );
     }
 
-    // ---- emoji（§6.4 / D66） ----
+    // ---- emoji 候选（v8 / D83） ----
 
-    /// emoji 排在词尾，计入整项宽度——否则会盖到隔壁候选上。
+    /// emoji 候选在这层就是**一条普通条目**：宽度按字形宽度算，命中照常。
+    ///
+    /// 它没有 chip、没有序号以外的任何东西——这正是「emoji 是候选而不是装饰」
+    /// 在几何层的全部体现（特殊待遇只剩渲染端的彩色字体）。
     #[test]
-    fn emoji_排在词尾并计入整项宽度() {
+    fn emoji_候选是普通条目() {
         let m = Metrics::new(16.0);
-        let page = [cand("好评", 32.0).with_emoji("👍", 18.0)];
+        let page = [cand("好评", 32.0), cand("👍", 18.0).as_emoji()];
         let out = layout(&input(&page));
 
-        let it = &out.items[0];
-        assert_eq!(it.emoji.as_deref(), Some("👍"));
-        assert!((it.emoji_rect.x - (it.text_rect.right() + m.emoji_gap)).abs() < 0.01);
-        assert!((it.emoji_rect.w - 18.0).abs() < 0.01);
+        let it = &out.items[1];
+        assert!(it.is_emoji);
+        assert_eq!(it.text, "👍");
+        assert!(it.hint.is_none(), "emoji 候选不该有码提示");
         assert!(
-            (it.rect.w - (m.item_width(32.0) + m.emoji_gap + 18.0)).abs() < 0.01,
-            "整项宽 = v6 基线 + emoji 一块"
+            (it.text_rect.w - 18.0).abs() < 0.01,
+            "宽度就是量出来的字形宽"
         );
-        assert!(it.text_rect.right() <= it.emoji_rect.x);
-        // 点在 emoji 上也算选中这条
-        assert_eq!(
-            out.hit(it.emoji_rect.x + 1.0, it.emoji_rect.y + 1.0),
-            Some(0)
+        assert!(
+            (it.rect.w - m.item_width(18.0)).abs() < 0.01,
+            "整项宽与同等宽度的词完全一致"
         );
+
+        // 点 emoji 命中它自己，不是前一条。
+        assert_eq!(out.hit(it.text_rect.x + 1.0, it.text_rect.y + 1.0), Some(1));
     }
 
-    /// emoji 在 chip 之后：`好评 vbyg 👍`，不能插在词与码之间。
+    /// 标记只影响渲染，不影响任何几何量：同宽度、同文字的两条候选，区别只在
+    /// `is_emoji` 上，布局必须逐字段相同（否则改绘制会悄悄挪位置）。
     #[test]
-    fn emoji_排在_chip_之后() {
-        let m = Metrics::new(16.0);
-        let page = [cand("好评", 32.0)
-            .with_hint("vbyg", 24.0)
-            .with_emoji("👍", 18.0)];
-        let out = layout(&input(&page));
-        let it = &out.items[0];
-        assert!((it.hint_rect.x - (it.text_rect.right() + m.hint_gap)).abs() < 0.01);
-        assert!(
-            (it.emoji_rect.x - (it.hint_rect.right() + m.emoji_gap)).abs() < 0.01,
-            "emoji 应排在 chip 右侧"
-        );
-    }
-
-    /// 验收 ⑥：没有 emoji 时布局与 v6 **逐字段一致**——空串 / `None` / 宽度 0
-    /// 三条路都必须完全等价，否则关掉 emoji 会悄悄改变行宽。
-    #[test]
-    fn 没有_emoji_时布局与_v6_完全一致() {
-        let plain = [cand("好评", 32.0), cand("好评如潮", 64.0)];
-        let base = layout(&input(&plain));
-        for it in &base.items {
-            assert!(it.emoji.is_none());
-            assert_eq!(it.emoji_rect.w, 0.0);
-        }
-
-        let empty = [
-            cand("好评", 32.0).with_emoji("", 18.0),
-            cand("好评如潮", 64.0).with_emoji("", 24.0),
-        ];
-        assert_eq!(layout(&input(&empty)), base, "空串等于不挂");
-
-        let zero = [
-            cand("好评", 32.0).with_emoji("👍", 0.0),
-            cand("好评如潮", 64.0).with_emoji("👍", 0.0),
-        ];
-        assert_eq!(layout(&input(&zero)), base, "宽度 0 等于量不出、等于不画");
-    }
-
-    /// 验收 ①：超宽时**先丢 emoji、不压词**。emoji 是装饰、词是内容。
-    #[test]
-    fn 超宽先丢_emoji_不压词() {
-        let plain = [cand("好评", 32.0)];
-        let with = [cand("好评", 32.0).with_emoji("👍", 18.0)];
-        let natural0 = layout(&input(&plain));
-        let natural1 = layout(&input(&with));
-        assert!(natural1.size.w > natural0.size.w, "emoji 确实占了宽度");
-
-        // 上限只比「带 emoji 的自然宽」少 1px：丢了 emoji 就够，不该动词。
-        let mut i = input(&with);
-        i.metrics.max_width = natural1.size.w - 1.0;
-        let out = layout(&i);
-        assert!(out.items[0].emoji.is_none(), "emoji 应被丢掉");
-        assert!(
-            (out.items[0].text_rect.w - 32.0).abs() < 0.01,
-            "词一点都不能压，实际 {}",
-            out.items[0].text_rect.w
-        );
-        assert!(!out.clipped, "没压词就不算 clipped（不出省略号）");
-        assert!((out.size.w - natural0.size.w).abs() < 0.01);
-    }
-
-    /// 丢了 emoji 还超宽，才轮到压词——顺序不能反。
-    #[test]
-    fn 丢了_emoji_仍超宽才压词() {
-        let page = [
-            cand("一一一一", 100.0).with_emoji("👍", 18.0),
-            cand("二二二二", 100.0).with_emoji("🎉", 18.0),
-        ];
-        let mut i = input(&page);
-        i.metrics.max_width = 200.0;
-        let out = layout(&i);
-        assert!(
-            out.items.iter().all(|it| it.emoji.is_none()),
-            "emoji 必须全部先丢"
-        );
-        assert!(out.clipped, "还超宽才压词");
-        assert!(out.items.iter().all(|it| it.text_rect.w < 100.0));
-        assert!(out.size.w <= 200.0 + 0.01);
+    fn emoji_标记不改动几何() {
+        let plain = [cand("👍", 18.0)];
+        let marked = [cand("👍", 18.0).as_emoji()];
+        let a = layout(&input(&plain));
+        let b = layout(&input(&marked));
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.items[0].rect, b.items[0].rect);
+        assert_eq!(a.items[0].text_rect, b.items[0].text_rect);
+        assert!(!a.items[0].is_emoji);
+        assert!(b.items[0].is_emoji);
     }
 }

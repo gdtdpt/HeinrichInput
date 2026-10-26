@@ -1,0 +1,13 @@
+[package]
+name = "heinrich-font"
+description = "亨利输入法：按本机字体判断码位有没有字形（只用来挡掉会画成方块的 emoji）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# 判据是 DirectWrite 的 `IDWriteFont::HasCharacter`，所以只有 Windows 形态。
+# 非 Windows 上 `detect` 返回「无法判断」，调用方按「全部放行」处理——这个 crate
+# 的职责**只是**别让人看到方块，判不出来时不该顺手关掉功能。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite"] }

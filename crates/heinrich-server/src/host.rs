@@ -18,8 +18,10 @@ use std::time::{Duration, Instant, SystemTime};
 use heinrich_core::scheme::user as user_words;
 use heinrich_core::scheme::{Config, EmojiLayer, EmojiMap, HintMode, PinyinLexicon, Roots, Scheme};
 use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
+use heinrich_font::EmojiSupport;
 use heinrich_proto::{
-    feature, source as proto_source, Entry, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES, PROTO_VERSION,
+    feature, source as proto_source, Entry, EntryKind, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES,
+    PROTO_VERSION,
 };
 
 use crate::store::SqliteStore;
@@ -149,7 +151,10 @@ struct EmojiState {
 
 impl EmojiState {
     fn new(builtin: EmojiLayer) -> Self {
-        let map = EmojiMap::build(&[&builtin]);
+        let (map, dropped) = merged_map(&builtin, &EmojiLayer::default());
+        if dropped > 0 {
+            srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过（候选里不会出现方块）");
+        }
         let count = map.word_len() + map.code_len();
         Self {
             builtin,
@@ -181,8 +186,11 @@ impl EmojiState {
         for w in &user.warnings {
             srv_error!("emoji 用户层 {}：{w}", path.display());
         }
-        self.map = EmojiMap::build(&[&self.builtin, &user]);
-        let count = self.map.word_len() + self.map.code_len();
+        let (map, dropped) = merged_map(&self.builtin, &user);
+        let count = map.word_len() + map.code_len();
+        if dropped > 0 {
+            srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过");
+        }
         if count != self.count {
             srv_info!(
                 "emoji：{} 条生效（内置 {} + 用户层 {}）· 用户层 {}",
@@ -193,6 +201,7 @@ impl EmojiState {
             );
             self.count = count;
         }
+        self.map = map;
     }
 
     /// 节流热检查：用户层改了就重建映射（≤1 秒生效）。
@@ -216,13 +225,36 @@ impl EmojiState {
         self.reload();
     }
 
-    /// 查一个候选该挂哪个 emoji；没有就空串（协议里空串 = 不画）。
-    fn lookup(&self, word: &str, code: &str) -> &str {
+    /// 查这个词后面要不要跟一条 emoji 候选；关掉总开关时恒为 `None`。
+    fn lookup(&self, word: &str, code: &str) -> Option<&str> {
         if !self.enabled {
-            return "";
+            return None;
         }
-        self.map.lookup(word, code).unwrap_or("")
+        self.map.lookup(word, code)
     }
+}
+
+/// 把内置层与用户层合并，再**按本机字体过一遍**。
+///
+/// 字体这一关只能在装载期做（`D83`）：`emoji.toml` 是按 CLDR 全量生成的，里面
+/// 有 Emoji 13/14/15 才加的码位，而 Win10 的 `Segoe UI Emoji` 只到 Emoji 12——
+/// 不过滤的话候选窗和文档里都会出现方块（实测本机 377 条）。
+///
+/// 返回被丢掉的键数，供日志说明「为什么某些词后面没有 emoji」。
+fn merged_map(builtin: &EmojiLayer, user: &EmojiLayer) -> (EmojiMap, usize) {
+    let mut map = EmojiMap::build(&[builtin, user]);
+    // 只探测真正会用到的码位（一两千个），顺手把借来的 `&str` 变成拥有的 `char`，
+    // 后面才能改 `map`。
+    let chars: Vec<char> = map
+        .words()
+        .iter()
+        .map(|(_, e)| *e)
+        .chain(map.codes().iter().map(|(_, e)| *e))
+        .flat_map(str::chars)
+        .collect();
+    let support = EmojiSupport::detect(chars);
+    let dropped = map.retain_supported(|e| support.supports(e));
+    (map, dropped)
 }
 
 /// 自定义词库的热更新状态（D65）。
@@ -823,24 +855,83 @@ impl Host {
                     label: c.kind_label.to_string(),
                     code,
                     hint_at,
-                    emoji: String::new(),
+                    kind: EntryKind::Word,
                 }
             })
             .collect();
-        // emoji 是**呈现层**：挂在候选建好之后，core 的排序与 `Candidate` 一个字段
-        // 都不动（D66 ④）。关掉总开关时这里整段不进，条目与 v6 逐字节一致。
-        let mut entries = entries;
-        if self.emoji.enabled {
-            for (e, code) in entries.iter_mut().zip(emoji_codes.iter()) {
-                e.emoji = self.emoji.lookup(&e.word, code).to_string();
-            }
-        }
+        // emoji 候选在**候选建好之后**插，core 的排序与 `Candidate` 一个字段都不动
+        // （D66 ④）。规则：哪个词有绑定，就在它后面紧跟一条 `kind = Emoji` 的候选，
+        // 它的 `word` 就是那枚 emoji 本身——选中它原样上屏（D83）。
+        //
+        // 折叠分界（`primary_len`）必须跟着一起挪：它是**全局序号**，插进去的条目
+        // 会让后面所有下标后移一位，不修的话最后一条主段词会被标成补段（实测过）。
+        let (entries, primary_len) = insert_emoji(
+            entries,
+            &emoji_codes,
+            limit,
+            primary_len as usize,
+            |word, code| self.emoji.lookup(word, code).map(str::to_string),
+        );
+        let primary_len = primary_len as u16;
         QueryReply {
             entries,
             source: proto_src,
             primary_len,
         }
     }
+}
+
+/// 把 emoji 候选插到各自的词后面，并返回新的折叠分界（D83）。
+///
+/// 抽成纯函数是为了能单测「分界跟着挪」这件事——它出错的形态很隐蔽：只是最后
+/// 一条主段候选被画淡了一档，看截图很难反应过来是下标错位。
+///
+/// - `words`：已经按 `limit` 截好的词候选；
+/// - `codes`：与 `words` 等长的查表码（按码绑定要用）；
+/// - `limit`：插入后总数上限（emoji 也算一条，否则一次按键吐出两倍候选）；
+/// - `primary_words`：`words` 里属于首屏（主段）的**词**条数。
+///
+/// 返回值第二项是「主段最后一个词连同它的 emoji」之后的全局序号：只要 emoji 跟在
+/// 主段词后面，它也是主段的一部分，不能被画淡。
+fn insert_emoji(
+    words: Vec<Entry>,
+    codes: &[String],
+    limit: usize,
+    primary_words: usize,
+    lookup: impl Fn(&str, &str) -> Option<String>,
+) -> (Vec<Entry>, usize) {
+    let mut out: Vec<Entry> = Vec::with_capacity(limit);
+    let mut boundary = None;
+    for (i, (word, code)) in words.into_iter().zip(codes.iter()).enumerate() {
+        if out.len() >= limit {
+            break;
+        }
+        let emoji = lookup(&word.word, code);
+        out.push(word);
+        if let Some(emoji) = emoji {
+            if out.len() < limit {
+                out.push(Entry {
+                    word: emoji,
+                    label: String::new(),
+                    code: String::new(),
+                    hint_at: 0,
+                    kind: EntryKind::Emoji,
+                });
+            }
+        }
+        // 分界记在「这个词以及它的 emoji」之后：emoji 属于主段。
+        if i + 1 == primary_words {
+            boundary = Some(out.len());
+        }
+    }
+    let primary_len = match boundary {
+        Some(n) => n,
+        // 没走到分界点就截断了 ⇒ 吐出来的全在主段；没有主段（`primary_words == 0`）
+        // 才是真的 0。
+        None if primary_words == 0 => 0,
+        None => out.len(),
+    };
+    (out, primary_len)
 }
 
 /// 一次查询的答复。
@@ -1498,30 +1589,46 @@ mod tests {
         p
     }
 
-    fn first_entry(h: &mut Host, code: &str) -> Entry {
+    fn all_entries(h: &mut Host, code: &str, limit: u8) -> Vec<Entry> {
         match h.handle(Frame::Query {
             code: code.into(),
-            limit: 9,
+            limit,
         }) {
-            Some(Frame::Result { mut entries, .. }) => entries.remove(0),
+            Some(Frame::Result { entries, .. }) => entries,
             other => panic!("期望 Result，得到 {other:?}"),
         }
     }
 
-    /// 验收 ①④：词组带 emoji，单字不带。挂载点只看「词长 ≥ 2」。
+    /// 某个词后面紧跟的那一条（用来断言「emoji 是它的邻居」）。
+    fn following(h: &mut Host, code: &str, word: &str) -> Option<Entry> {
+        let entries = all_entries(h, code, 9);
+        let i = entries.iter().position(|e| e.word == word)?;
+        entries.get(i + 1).cloned()
+    }
+
+    /// 验收 ①：有绑定的词后面紧跟一条 emoji 候选，`word` 就是那枚 emoji；
+    /// 单字候选一条都不产生（一行好几个单字，每条再跟一枚会把行宽撑成两倍）。
     #[test]
-    fn emoji_attaches_to_words_only() {
+    fn emoji_is_a_neighbour_candidate_of_its_word() {
         let dir = temp_scheme(
             "basic",
             Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"),
         );
         let mut h = Host::load(&dir).expect("夹具应可装载");
-        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👍");
-        assert_eq!(first_entry(&mut h, "vbg").emoji, "", "单字「好」不挂");
+        let next = following(&mut h, "vbvb", "好好").expect("好好 之后应有条目");
+        assert_eq!(next.word, "👍", "emoji 候选的 word 就是那枚 emoji");
+        assert_eq!(next.kind, EntryKind::Emoji);
+        assert!(next.code.is_empty(), "emoji 候选没有码，不该带 chip");
+
+        let singles = all_entries(&mut h, "vbg", 9);
+        assert!(
+            singles.iter().all(|e| e.kind == EntryKind::Word),
+            "单字不该产生 emoji 候选"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 验收 ②③：用户层改绑覆盖内置、`enabled = false` 吃掉内置值。
+    /// 验收 ②③：用户层改绑覆盖内置、`enabled = false` 吃掉内置值（emoji 候选随之消失）。
     #[test]
     fn emoji_user_layer_overrides_then_disables() {
         let dir = temp_scheme(
@@ -1531,7 +1638,7 @@ mod tests {
         let mut h = Host::load(&dir).expect("夹具应可装载");
         let user = temp_emoji_user("override", "[[emoji]]\nword = \"好好\"\nemoji = \"👏\"\n");
         h.configure_emoji(Some(user.clone()));
-        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👏");
+        assert_eq!(following(&mut h, "vbvb", "好好").unwrap().word, "👏");
 
         std::fs::write(
             &user,
@@ -1539,13 +1646,18 @@ mod tests {
         )
         .unwrap();
         h.configure_emoji(Some(user.clone()));
-        assert_eq!(first_entry(&mut h, "vbvb").emoji, "", "停用后应回落为不挂");
+        // 停用后 好好 后面要么是下一个词、要么什么都没有，绝不能再是 emoji 候选。
+        let after = following(&mut h, "vbvb", "好好");
+        assert!(
+            after.as_ref().map(|e| e.kind) != Some(EntryKind::Emoji),
+            "停用后 好好 后面不该还有 emoji 候选：{after:?}"
+        );
         let _ = std::fs::remove_file(&user);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 按码绑定：同一个码下的候选都带这个 emoji，且**不受 `hint.mode` 影响**
-    /// ——码提示关掉时 `Entry.code` 是空串，但 emoji 的查表用的是候选自己的码。
+    /// 按码绑定：这个码下的候选后面都跟同一枚 emoji，且**不受 `hint.mode` 影响**
+    /// ——码提示关掉时 `Entry.code` 是空串，但 emoji 查表用的是候选自己的码。
     #[test]
     fn emoji_code_binding_survives_hint_off() {
         let dir = temp_scheme(
@@ -1554,26 +1666,83 @@ mod tests {
         );
         let mut h = Host::load(&dir).expect("夹具应可装载");
         h.configure_hint(None, Some(HintMode::Off));
-        let e = first_entry(&mut h, "vbvb");
-        assert_eq!(e.word, "好好");
-        assert_eq!(e.code, "", "hint off 时不该有 chip");
-        assert_eq!(e.emoji, "🔥", "按码绑定与码提示是两件事");
+        let entries = all_entries(&mut h, "vbvb", 9);
+        assert_eq!(entries[0].word, "好好");
+        assert_eq!(entries[0].code, "", "hint off 时不该有 chip");
+        assert_eq!(entries[1].word, "🔥", "按码绑定与码提示是两件事");
+        assert_eq!(entries[1].kind, EntryKind::Emoji);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 验收 ⑥：`emoji.enabled = false` 时一条都不挂——布局输入因此与 v6 完全一致。
+    /// 验收 ⑥：`emoji.enabled = false` 时一条 emoji 候选都不插——布局输入因此与
+    /// v6 完全一致（这条是「关掉就等于没这功能」的唯一保证）。
     #[test]
     fn emoji_can_be_disabled_by_config() {
         let dir = temp_scheme("off", Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"));
         let mut h = Host::load(&dir).expect("夹具应可装载");
-        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👍");
+        assert_eq!(
+            following(&mut h, "vbvb", "好好").unwrap().kind,
+            EntryKind::Emoji
+        );
 
         let mut cfg = std::env::temp_dir();
         cfg.push(format!("heinrich-emoji-{}-off.toml", std::process::id()));
         std::fs::write(&cfg, "emoji.enabled = false\n").unwrap();
         h.configure_hint(Some(cfg.clone()), None);
-        assert_eq!(first_entry(&mut h, "vbvb").emoji, "");
+        let entries = all_entries(&mut h, "vbvb", 9);
+        assert!(
+            entries.iter().all(|e| e.kind == EntryKind::Word),
+            "关掉后不该有任何 emoji 候选：{entries:?}"
+        );
         let _ = std::fs::remove_file(&cfg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 折叠分界必须跟着 emoji 一起挪：它是全局序号，插进去一条后面就全错一位。
+    ///
+    /// 出错的形态很隐蔽——只是最后一条主段候选被画淡一档，看截图很难反应过来。
+    #[test]
+    fn emoji_insertion_shifts_the_fold_boundary() {
+        let word = |w: &str| Entry {
+            word: w.to_string(),
+            label: "全码".into(),
+            code: String::new(),
+            hint_at: 0,
+            kind: EntryKind::Word,
+        };
+        let words = vec![word("甲甲"), word("乙乙"), word("丙丙")];
+        let codes = vec![String::new(); 3];
+        let lookup =
+            |w: &str, _: &str| matches!(w, "甲甲" | "乙乙" | "丙丙").then(|| "👍".to_string());
+
+        // 主段 2 个词 ⇒ 输出 4 条（甲、👍、乙、👍），分界落在 4。
+        let (out, primary) = insert_emoji(words.clone(), &codes, 9, 2, lookup);
+        assert_eq!(out.len(), 6);
+        assert_eq!(primary, 4, "分界 = 主段两个词连同它们的 emoji 之后");
+
+        // 截断发生在主段内 ⇒ 吐出来的全是主段。
+        let (out, primary) = insert_emoji(words, &codes, 3, 2, lookup);
+        assert_eq!(out.len(), 3);
+        assert_eq!(primary, 3, "被截断时不能把主段标成补段");
+
+        // 没有主段（纯补段）时才是 0。
+        let (_, primary) = insert_emoji(Vec::new(), &[], 9, 0, |_, _| None);
+        assert_eq!(primary, 0);
+    }
+
+    /// emoji 候选**算进 `limit`**：`limit = 2` 时只回「词 + 它的 emoji」两条，
+    /// 不会因为插了一条就变成三条（否则一次按键吐出两倍候选，窗口宽度先崩）。
+    #[test]
+    fn emoji_candidate_counts_against_the_limit() {
+        let dir = temp_scheme(
+            "limit",
+            Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"),
+        );
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        let entries = all_entries(&mut h, "vbvb", 2);
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(entries[0].word, "好好");
+        assert_eq!(entries[1].kind, EntryKind::Emoji);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

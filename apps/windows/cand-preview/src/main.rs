@@ -42,8 +42,8 @@ const HINTS: [&str; 5] = ["vbg", "kgn", "vbyg", "itfh", "rn"];
 /// 单字拆不出「前截 + chip + 后截」，得多字候选才验得到。
 const MULTI_POOL: [&str; 5] = ["好吃", "好看", "好话", "好似", "好样"];
 
-/// `--emoji` 时轮流挂上的假 emoji（§6.4）。特意混一个非黄色、一个带变体选择符：
-/// 前者验彩色字形确实上了屏，后者验「基础字符 + FE0F」这种双码位值也能量准。
+/// `--emoji` 时轮流插上的假 **emoji 候选**（v8/D83）。特意混一个非黄色、一个带
+/// 变体选择符：前者验彩色字形确实上了屏，后者验「基础字符 + FE0F」也能量准。
 const EMOJIS: [&str; 4] = ["👍", "🎉", "❤\u{FE0F}", "🚀"];
 
 fn main() -> std::process::ExitCode {
@@ -77,52 +77,56 @@ fn run(args: &Args) -> windows::core::Result<bool> {
     // 把 chip 嵌进词里画——这才是多段组合的真实形状。
     let use_mid_word = args.hint && args.hint_at > 0;
     let source_pool: &[&str] = if use_mid_word { &MULTI_POOL } else { &POOL };
-    let texts: Vec<String> = source_pool
+    let words: Vec<String> = source_pool
         .iter()
         .cycle()
         .take(args.count.max(1))
         .map(|s| s.to_string())
         .collect();
 
+    // emoji 是**独立候选**（v8/D83）：`--emoji` 时每个词后面插一条，`text` 就是
+    // 那枚 emoji——这正是 server 合成出来的形状（`1 好评  2 👍  3 好看 …`）。
+    // 这样预览器验的不只是「画得出来」，还有「编号与命中落在正确的条目上」。
+    let mut texts: Vec<String> = Vec::new();
+    let mut is_emoji: Vec<bool> = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        texts.push(w.clone());
+        is_emoji.push(false);
+        if args.emoji {
+            texts.push(EMOJIS[i % EMOJIS.len()].to_string());
+            is_emoji.push(true);
+        }
+    }
+
     // 码提示：`--hint` 只给 split **之后**的条目加码——那正是「折叠区 = 拼音段」
     // 的真实形状（主段五笔不带码、补段拼音带码）。没给 split 时全部带码，
     // 相当于「整屏都是拼音查出来的」。`--hint-at` 模式下全部带码且不设折叠分界
     // （多段候选没有折叠区）。
     let hint_start = if use_mid_word { 0 } else { args.split };
-    let hints: Vec<String> = if args.hint {
-        (0..texts.len())
-            .map(|i| {
-                if i < hint_start {
-                    String::new()
-                } else {
-                    HINTS[i % HINTS.len()].to_string()
-                }
-            })
-            .collect()
-    } else {
-        vec![String::new(); texts.len()]
-    };
+    // emoji 条目永远不带码提示（它没有码），其余条目按原来的规则给。
+    let hints: Vec<String> = (0..texts.len())
+        .map(|i| {
+            if !args.hint || is_emoji[i] || i < hint_start {
+                String::new()
+            } else {
+                HINTS[i % HINTS.len()].to_string()
+            }
+        })
+        .collect();
     // 词中位置（D64）：`--hint-at N` 时带 chip 的条目都挂在第 N 个字符后。
     let hint_ats: Vec<u8> = if use_mid_word {
-        vec![args.hint_at as u8; texts.len()]
-    } else {
-        vec![0; texts.len()]
-    };
-
-    // emoji（§6.4）：`--emoji` 时逐条轮流挂一枚，用来验渲染与「行宽把它算进去」。
-    let emojis: Vec<String> = if args.emoji {
         (0..texts.len())
-            .map(|i| EMOJIS[i % EMOJIS.len()].to_string())
+            .map(|i| if is_emoji[i] { 0 } else { args.hint_at as u8 })
             .collect()
     } else {
-        vec![String::new(); texts.len()]
+        vec![0; texts.len()]
     };
 
     let candidates = Candidates {
         texts: &texts,
         hints: &hints,
         hint_ats: &hint_ats,
-        emojis: &emojis,
+        is_emoji: &is_emoji,
         page: args.page,
         page_size: args.page_size,
         highlight: 0,
@@ -190,9 +194,10 @@ fn run(args: &Args) -> windows::core::Result<bool> {
                 Some(h) => format!("[{h}]"),
                 None => String::new(),
             },
-            match &item.emoji {
-                Some(e) => format!(" {e}"),
-                None => String::new(),
+            if item.is_emoji {
+                "（emoji 候选）"
+            } else {
+                ""
             },
             if item.secondary { "（补段）" } else { "" },
             item.rect.x,
@@ -553,41 +558,45 @@ fn selftest(
         );
     }
 
-    // ⑧ emoji（§6.4）：挂了就得有矩形、且在整项之内（否则点不到，还会压到下一条）；
-    //    点在 emoji 上也必须命中该候选。
+    // ⑧ emoji 候选（v8/D83）：它是**独立的候选条目**，不是词尾的装饰。
+    //    验三件事：① 真的出现在这一屏且带 `is_emoji` 标记；② 宽度是量出来的字形宽、
+    //    整项落在窗口内；③ 点它命中的是它自己（编号没串位）。
     let marked: Vec<&heinrich_ui::ItemBox> = prepared
         .layout
         .items
         .iter()
-        .filter(|it| it.emoji.is_some())
+        .filter(|it| it.is_emoji)
         .collect();
     if marked.is_empty() {
         println!("（本次没有 emoji 候选，跳过 emoji 断言——加 --emoji 可验）");
     } else {
         let inside = marked.iter().all(|it| {
-            it.emoji_rect.w > 0.0
-                && it.emoji_rect.x >= it.text_rect.right() - 0.01
-                && it.emoji_rect.right() <= it.rect.right() + 0.01
-                && it.emoji_rect.y >= it.rect.y
-                && it.emoji_rect.bottom() <= it.rect.bottom()
+            it.text_rect.w > 0.0
+                && it.rect.right() <= prepared.layout.size.w + 0.01
+                && it.rect.y >= 0.0
+                && it.rect.bottom() <= prepared.layout.size.h + 0.01
         });
         check(
-            "emoji 有矩形、在整项内、不压住词",
+            "emoji 候选有自己的宽度且在窗口内",
             inside,
-            format!("{} 条带 emoji", marked.len()),
+            format!(
+                "{} 条 emoji 候选，首条宽 {:.1}",
+                marked.len(),
+                marked[0].text_rect.w
+            ),
         );
 
         let it = marked[0];
         let (x, y) = (
-            (it.emoji_rect.x + it.emoji_rect.w / 2.0) as i32,
-            (it.emoji_rect.y + it.emoji_rect.h / 2.0) as i32,
+            (it.text_rect.x + it.text_rect.w / 2.0) as i32,
+            (it.text_rect.y + it.text_rect.h / 2.0) as i32,
         );
         while rx.try_recv().is_ok() {}
         post_click(window.hwnd(), x, y);
         pump();
         let got = rx.try_recv().ok();
         check(
-            "点 emoji 命中该候选",
+            "点 emoji 候选命中它自己",
             got == Some(Event::Click(Hit::Candidate(it.index))),
             format!("点 ({x}, {y}) 得到 {got:?}"),
         );

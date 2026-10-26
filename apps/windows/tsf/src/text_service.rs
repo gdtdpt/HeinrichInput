@@ -450,7 +450,7 @@ impl Core {
                     reply.words,
                     reply.codes,
                     reply.hint_ats,
-                    reply.emojis,
+                    reply.kinds,
                     reply.primary_len,
                 );
                 self.show_candidates(context, fallback_caret);
@@ -658,10 +658,22 @@ impl Core {
     fn resolve(&self, code: &str) -> String {
         // 先问窗口：它手里那批候选正是用户刚刚看着的那一屏，用它才谈得上
         // 「所见即所得」。取完立刻离开借用，后面的 IPC 可能慢。
-        let shown = self.cands.borrow().current();
+        //
+        // **emoji 候选不上报**（v8/D83）：`👋` 不是「wqvb 的一个词」，记进去
+        // 会把词频与候选序一起带偏，下一次这个码可能先弹出 emoji。上屏照常。
+        let (shown, is_emoji) = {
+            let cands = self.cands.borrow();
+            (cands.current(), cands.current_is_emoji())
+        };
         if let Some(word) = shown {
-            tsf_info!("#{} 提交 {code} → {word}（候选窗）", self.seq);
-            ipc::record(code, &word);
+            tsf_info!(
+                "#{} 提交 {code} → {word}（候选窗{}）",
+                self.seq,
+                if is_emoji { "，emoji" } else { "" }
+            );
+            if !is_emoji {
+                ipc::record(code, &word);
+            }
             return word;
         }
         match ipc::query(code) {

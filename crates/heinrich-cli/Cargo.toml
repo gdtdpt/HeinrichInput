@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 heinrich-core.workspace = true
 heinrich-scheme.workspace = true
+heinrich-font.workspace = true
 
 [[bin]]
 name = "heinrich-cli"

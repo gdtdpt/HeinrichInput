@@ -14,13 +14,13 @@
 //! let hints: Vec<String> = vec!["vbg".into(), String::new()];
 //! // 与 texts 等长：chip 挂在第几个字符之后，0 = 词尾（D64）
 //! let hint_ats: Vec<u8> = vec![0, 0];
-//! // 与 texts 等长：空串表示这一条不挂 emoji（§6.4）
-//! let emojis: Vec<String> = vec![String::new(), String::new()];
+//! // 与 texts 等长：true 表示这一条是 emoji 候选（v8/D83），要用彩色字形画
+//! let is_emoji: Vec<bool> = vec![false, false];
 //! let prepared = win.prepare(&Candidates {
 //!     texts: &texts,
 //!     hints: &hints,
 //!     hint_ats: &hint_ats,
-//!     emojis: &emojis,
+//!     is_emoji: &is_emoji,
 //!     page: 0,
 //!     page_size: 5,
 //!     highlight: 0,
@@ -102,11 +102,12 @@ pub struct Candidates<'a> {
     /// 个字符之后，`0` = 词尾。多段组合的 chip 贴着拼音段的字，例如
     /// `好[vbg]吃`。缺省按词尾处理。
     pub hint_ats: &'a [u8],
-    /// 与 `texts` 等长的 emoji（§6.4）。空串 = 这条不挂。
+    /// 与 `texts` 等长：`true` = 这一条是 **emoji 候选**（v8/D83）。
     ///
-    /// 裁决同样在 server（词长、两层映射、总开关），这一层只量宽度、只画。
-    /// 长度不一致时按 `texts` 对齐，缺的部分当作不挂。
-    pub emojis: &'a [String],
+    /// 这种候选的 `texts[i]` 就是那枚 emoji 本身，量宽要用彩色字形那条路
+    /// （[`measure_emoji`](crate::Renderer)），渲染要开 `ENABLE_COLOR_FONT`。
+    /// 长度不一致时按 `texts` 对齐，缺的一律当普通词。
+    pub is_emoji: &'a [bool],
     pub page: usize,
     pub page_size: usize,
     /// 本页内的键盘选中项（0 起）。
@@ -239,12 +240,24 @@ impl CandidateWindow {
 
         let mut measured = Vec::with_capacity(c.texts.len());
         for (i, text) in c.texts.iter().enumerate() {
-            let w = self
-                .state
-                .renderer
-                .text_mut()
-                .measure(text, metrics.font_size)?;
+            let emoji = c.is_emoji.get(i).copied().unwrap_or(false);
+            // emoji 候选的文字**就是**那枚 emoji，量宽必须走彩色字形那条路：
+            // 它的自然前进宽度与汉字不等，按主字号量出来的矩形会差一条缝。
+            let w = if emoji {
+                self.state
+                    .renderer
+                    .text_mut()
+                    .measure_emoji(text, metrics.font_size)?
+            } else {
+                self.state
+                    .renderer
+                    .text_mut()
+                    .measure(text, metrics.font_size)?
+            };
             let mut item = CandidateText::new(text.clone(), w);
+            if emoji {
+                item = item.as_emoji();
+            }
             // 只有 chip 真会被画出来才去量它：量字要建 `IDWriteTextLayout`，
             // 给每条候选白量一次是纯粹的浪费（五笔段一条都不带 chip）。
             if let Some(hint) = c.hints.get(i).filter(|h| !h.is_empty()) {
@@ -273,16 +286,6 @@ impl CandidateWindow {
                 } else {
                     item = item.with_hint(hint.clone(), hw);
                 }
-            }
-            // emoji 同理：不挂就不量。它走的是彩色字形（Segoe UI Emoji 回退），
-            // 前进宽度与汉字不等，必须单独量（§6.4 的「不给候选行加宽」）。
-            if let Some(emoji) = c.emojis.get(i).filter(|e| !e.is_empty()) {
-                let ew = self
-                    .state
-                    .renderer
-                    .text_mut()
-                    .measure_emoji(emoji, metrics.font_size)?;
-                item = item.with_emoji(emoji.clone(), ew);
             }
             measured.push(item);
         }

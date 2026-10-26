@@ -1105,6 +1105,42 @@ fn emoji_check(
     let user_layer = user.as_ref().map(|(l, _)| l).unwrap_or(&empty);
     let map = EmojiMap::build(&[&builtin, user_layer]);
 
+    // ---- 本机字体能画出多少条 ----
+    //
+    // 这一行**不参与**「通过 / 未通过」：缺字形不是数据错，只是这台机器的
+    // `Segoe UI Emoji` 没那么新（Win10 只到 Emoji 12）。server 装载时会按同一份
+    // 判据把装不出来的 emoji 丢掉，候选窗里不会出现方块。
+    let chars: Vec<char> = map
+        .words()
+        .iter()
+        .map(|(_, e)| *e)
+        .chain(map.codes().iter().map(|(_, e)| *e))
+        .flat_map(str::chars)
+        .collect();
+    let support = heinrich_font::EmojiSupport::detect(chars);
+    let unshowable: Vec<&str> = map
+        .words()
+        .into_iter()
+        .filter(|(_, e)| !support.supports(e))
+        .map(|(w, _)| w)
+        .collect();
+    let total = map.word_len() + map.code_len();
+    if support.known().is_some() {
+        println!(
+            "本机字体：{} / {} 条可显示（缺字形 {} 条{}）",
+            total - unshowable.len(),
+            total,
+            unshowable.len(),
+            if unshowable.is_empty() {
+                String::new()
+            } else {
+                format!("；如 {}", sample(&unshowable))
+            }
+        );
+    } else {
+        println!("本机字体：探测不到 emoji 字体族，跳过覆盖检查");
+    }
+
     // ---- 交叉核对：词库 / 码表 ----
     let scheme =
         Scheme::load(data).map_err(|e| format!("装载方案 {} 失败：{e}", data.display()))?;

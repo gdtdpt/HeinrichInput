@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use heinrich_core::scheme::HintMode;
+use heinrich_proto::EntryKind;
 use host::Host;
 
 struct Args {
@@ -383,7 +384,7 @@ fn selftest_roots(host: &mut Host) -> i32 {
     failed
 }
 
-/// emoji 自测（§6.4 / D66）：词组戴、单字不戴。
+/// emoji 自测（§6.4 / D66 / D83）：emoji 是**独立候选**，紧跟在那条有绑定的词后面。
 ///
 /// 方案目录里没有 `emoji.toml` 不是失败——那是「这份数据没装」的正常降级，
 /// 与拼音词库缺失同一个口径：跳过并说清楚，不假装通过。
@@ -394,36 +395,40 @@ fn selftest_emoji(host: &mut Host) -> i32 {
         return 0;
     }
     let mut failed = 0;
-    println!("  emoji    → 生效 {count} 条");
+    println!("  emoji    → 生效 {count} 条（已按本机字体筛过）");
 
-    // ① 词组：`wqvb` → 你好，内置表里是 👋
-    let word = host.query("wqvb", 3);
-    let got = word
+    // ① 词组：`wqvb` → 你好，内置表里是 👋，候选里应当**跟在「你好」后面一位**。
+    let reply = host.query("wqvb", 5);
+    let after = reply
         .entries
         .iter()
-        .find(|e| e.word == "你好")
-        .map(|e| e.emoji.as_str());
+        .position(|e| e.word == "你好")
+        .and_then(|i| reply.entries.get(i + 1));
     failed += check(
-        "词组带 emoji",
-        got == Some("👋"),
-        format!("wqvb 你好 → {:?}", got.unwrap_or("（无此词）")),
+        "emoji 是自己的候选",
+        matches!(after, Some(e) if e.kind == EntryKind::Emoji && e.word == "👋"),
+        match after {
+            Some(e) => format!("wqvb 你好 之后 → {:?}（kind={:?}）", e.word, e.kind),
+            None => "wqvb 你好 之后没有任何候选".to_string(),
+        },
     );
 
-    // ② 单字：`vbg` → 好，一个字都不该挂（§6.4：一行好几个单字，挂上会加宽行）
+    // ② 单字：`vbg` → 好，一条 emoji 候选都不该有（§6.4：一行好几个单字，
+    //    每个后面再跟一枚 emoji 会把行宽撑成两倍）。
     let single = host.query("vbg", 9);
-    let dirty: Vec<&str> = single
+    let stray: Vec<&str> = single
         .entries
         .iter()
-        .filter(|e| !e.emoji.is_empty())
+        .filter(|e| e.kind == EntryKind::Emoji)
         .map(|e| e.word.as_str())
         .collect();
     failed += check(
-        "单字不挂 emoji",
-        dirty.is_empty(),
-        if dirty.is_empty() {
-            format!("{} 条单字候选全部无 emoji", single.entries.len())
+        "单字不产生 emoji 候选",
+        stray.is_empty(),
+        if stray.is_empty() {
+            format!("{} 条单字候选全部是词", single.entries.len())
         } else {
-            format!("不该挂的：{}", dirty.join(" / "))
+            format!("不该出现的 emoji 候选：{}", stray.join(" / "))
         },
     );
     failed

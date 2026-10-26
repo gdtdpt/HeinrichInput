@@ -47,14 +47,23 @@ use std::fmt;
 ///   多段组合（`hao'ktn` → 好吃）的 chip 必须贴着拼音段的字（`好[vbg]吃`），
 ///   挂词尾会被误读成整个词的五笔码。
 /// - v7：M4c/D66 emoji 标签。`Entry` 加 `emoji`（**字符串，追加在 `hint_at` 之后**）：
-///   词组候选右侧挂的那枚 emoji，空串 = 本次不挂（单字、用户停用、或总开关关掉）。
-///   emoji 由 server 裁决、DLL 只画——与 `code` 同一条纪律，规则只有一处实现。
+///   词组候选右侧挂的那枚 emoji，空串 = 本次不挂。
+///   这个字段只活了同一天：真机上跑起来才发现「装饰」不是要的东西——用户要的是
+///   **emoji 自己作为候选**、选中它上屏 emoji。于是 v8 把它整个换掉，v7 没有随
+///   任何一版分发出去。
+/// - v8：M4c 语义修正。`Entry` 去掉 `emoji` 字符串，换成 `kind`（**一个字节，
+///   位置不变**）：`0` = 普通词候选，`1` = emoji 候选。
+///   emoji 候选的 `word` 就是那枚 emoji 本身，选中它原样上屏——不再是「词的装饰」，
+///   而是「词的邻居」。上屏路径因此不需要任何 emoji 专用分支，客户端只要按 `kind`
+///   决定两件事：用彩色字体画（`ENABLE_COLOR_FONT`），以及**不上报学习数据**
+///   （否则 emoji 会被记成该编码的一个词）。
 ///
 /// **v7 之前那次「v7 没有发生」**：D65 自定义词组最初打算加一条 `Reload` 帧让 CLI
 /// 通知 server 重载词库，实现时发现 server 本来就有「按 mtime 热更新配置文件」的
 /// 机制，把 `words.tsv` 挂进同一条路径即可——改完文件，下一次按键就生效，而按键
-/// 本来就是看到候选的前提。那次没升版；M4c 的 emoji 字段才是真正的 v7。
-pub const PROTO_VERSION: u16 = 7;
+/// 本来就是看到候选的前提。那次没升版；M4c 的 emoji 字段才是真正的 v7，
+/// 而它随即被 v8 的 `kind` 取代。
+pub const PROTO_VERSION: u16 = 8;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -122,16 +131,47 @@ impl Mode {
 /// `hint_at` 个字符之后（`0` = 词尾）。多段组合 `hao'ktn` → 好吃 时 server 给
 /// `hint_at = 1`、`code = vbg`，DLL 画成 `好[vbg]吃`；单段候选与通配恒为 `0`。
 ///
-/// `emoji` 是词组右侧要挂的那枚 emoji（D66）：**单个字符**，空串 = 不挂。
-/// 挂不挂由 server 裁决（词长、两层映射、`emoji.enabled` 都在 server 侧），
-/// DLL 只负责「非空就画」——与 `code` 同一条纪律。
+/// `kind` 是**这一条是什么**（v8）：普通词候选，还是 emoji 候选。
+/// emoji 候选的 `word` 就是那枚 emoji，`code` / `label` / `hint_at` 全是空与 `0`；
+/// 它由 server 合成（紧跟在那条有 emoji 绑定的词后面），`limit` 记账时算一条。
+/// 是否给、给哪几枚，全在 server 裁决——DLL 只按 `kind` 决定画法与上报，
+/// 与 `code` 同一条纪律，规则只有一处实现。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub word: String,
     pub label: String,
     pub code: String,
     pub hint_at: u8,
-    pub emoji: String,
+    pub kind: EntryKind,
+}
+
+/// 候选的种类。
+///
+/// 只有两种：多一种就要同时改 DLL 的绘制、上屏与上报三处，而这三处目前
+/// 只关心「是不是 emoji」这一个问题。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind {
+    /// 普通的词候选。
+    Word,
+    /// emoji 候选：`word` 是一枚 emoji，上屏即 emoji，且**不写学习数据**。
+    Emoji,
+}
+
+impl EntryKind {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            EntryKind::Word => 0,
+            EntryKind::Emoji => 1,
+        }
+    }
+
+    pub fn from_u8(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(EntryKind::Word),
+            1 => Some(EntryKind::Emoji),
+            _ => None,
+        }
+    }
 }
 
 /// 一个键位上的字根（[`Frame::Roots`] 的一条）。
@@ -227,6 +267,8 @@ pub enum DecodeError {
     /// 长度前缀超出 [`MAX_PAYLOAD`]。
     TooLarge(usize),
     BadMode(u8),
+    /// 候选的种类字节不认识（v8）。
+    BadEntryKind(u8),
     /// 帧尾有多余字节。
     Trailing(usize),
     TooManyEntries(usize),
@@ -252,6 +294,7 @@ impl fmt::Display for DecodeError {
             DecodeError::BadKeyPrimary => write!(f, "键位的一级简码不是单个字符"),
             DecodeError::BadKeyRoots => write!(f, "主字根个数超过字根总数"),
             DecodeError::BadUtf8 => write!(f, "字符串不是合法 UTF-8"),
+            DecodeError::BadEntryKind(raw) => write!(f, "候选种类字节 {raw} 不认识"),
         }
     }
 }
@@ -318,8 +361,9 @@ impl Frame {
                     put_str(&mut body, &e.code);
                     // v6 的追加字段：chip 的词中位置（D64）。
                     body.push(e.hint_at);
-                    // v7 的追加字段：emoji 标签（D66）。
-                    put_str(&mut body, &e.emoji);
+                    // v8 的追加字段：候选种类（一个字节）。位置沿用 v7 的
+                    // emoji 字段——字段换掉了，但尾巴的长度与顺序没动。
+                    body.push(e.kind.as_u8());
                 }
             }
             Frame::SetMode { mode } => body.push(mode.as_u8()),
@@ -428,7 +472,10 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
                     label: r.string()?,
                     code: r.string()?,
                     hint_at: r.u8()?,
-                    emoji: r.string()?,
+                    kind: {
+                        let raw = r.u8()?;
+                        EntryKind::from_u8(raw).ok_or(DecodeError::BadEntryKind(raw))?
+                    },
                 });
             }
             Frame::Result {
@@ -582,14 +629,14 @@ mod tests {
                     label: "全码".into(),
                     code: "vbg".into(),
                     hint_at: 0,
-                    emoji: String::new(),
+                    kind: EntryKind::Word,
                 },
                 Entry {
                     word: "好玩".into(),
                     label: "全码".into(),
                     code: "vbgf".into(),
                     hint_at: 0,
-                    emoji: String::new(),
+                    kind: EntryKind::Word,
                 },
             ],
         });
@@ -737,7 +784,7 @@ mod tests {
                 label: "三级简码".into(),
                 code: "vbgf".into(),
                 hint_at: 0,
-                emoji: String::new(),
+                kind: EntryKind::Word,
             }],
         };
         let bytes = f.encode();
@@ -759,14 +806,14 @@ mod tests {
                     label: "全码".into(),
                     code: "vb".into(),
                     hint_at: 0,
-                    emoji: String::new(),
+                    kind: EntryKind::Word,
                 },
                 Entry {
                     word: "号".into(),
                     label: "全码".into(),
                     code: "kgn".into(),
                     hint_at: 0,
-                    emoji: String::new(),
+                    kind: EntryKind::Word,
                 },
             ],
         };
@@ -794,7 +841,7 @@ mod tests {
                 label: "全码".into(),
                 code: String::new(),
                 hint_at: 0,
-                emoji: String::new(),
+                kind: EntryKind::Word,
             }],
         };
         assert_eq!(Frame::decode(&f.encode()).unwrap(), f);
@@ -814,7 +861,7 @@ mod tests {
                 label: "多段".into(),
                 code: "vbg".into(),
                 hint_at: 1,
-                emoji: String::new(),
+                kind: EntryKind::Word,
             }],
         };
         let back = Frame::decode(&f.encode()).unwrap();
@@ -827,11 +874,11 @@ mod tests {
         }
     }
 
-    /// v7 的 emoji 标签（D66）：emoji 是 4 字节 UTF-8，且常与 chip 同时出现
-    /// ——两个追加字段的**先后顺序**必须与解码一致，否则 chip 位置会被读成 emoji
-    /// 的第一个字节。
+    /// v8 的候选种类：emoji 候选的 `word` 是多字节 UTF-8，而且常常紧跟在一个
+    /// 带 chip 的词后面——三个追加字段（`code` / `hint_at` / `kind`）的**先后
+    /// 顺序**必须与解码一致，否则 chip 的词中位置会被读成 emoji 的第一个字节。
     #[test]
-    fn entry_emoji_roundtrips() {
+    fn entry_kind_roundtrips() {
         let f = Frame::Result {
             code: "vbyg".into(),
             source: source::WUBI,
@@ -841,15 +888,15 @@ mod tests {
                     word: "好评".into(),
                     label: "全码".into(),
                     code: "vbyg".into(),
-                    hint_at: 0,
-                    emoji: "👍".into(),
+                    hint_at: 2,
+                    kind: EntryKind::Word,
                 },
                 Entry {
-                    word: "好评如潮".into(),
-                    label: "全码".into(),
-                    code: "vbyg".into(),
-                    hint_at: 2,
-                    emoji: "👏".into(),
+                    word: "👍".into(),
+                    label: String::new(),
+                    code: String::new(),
+                    hint_at: 0,
+                    kind: EntryKind::Emoji,
                 },
             ],
         };
@@ -857,11 +904,37 @@ mod tests {
         assert_eq!(f, back);
         match back {
             Frame::Result { entries, .. } => {
-                assert_eq!(entries[0].emoji, "👍");
-                assert_eq!(entries[1].hint_at, 2, "chip 位置不能被 emoji 顶掉");
-                assert_eq!(entries[1].emoji, "👏");
+                assert_eq!(
+                    entries[0].hint_at, 2,
+                    "chip 位置不能被 emoji 的种类字节顶掉"
+                );
+                assert_eq!(entries[0].kind, EntryKind::Word);
+                assert_eq!(entries[1].word, "👍");
+                assert_eq!(entries[1].kind, EntryKind::Emoji);
             }
             other => panic!("解出了别的帧：{other:?}"),
         }
+    }
+
+    /// 不认识的种类字节必须报错，不能猜成词——猜错的话 emoji 会被当词上报学习。
+    #[test]
+    fn unknown_entry_kind_is_rejected() {
+        let f = Frame::Result {
+            code: "vbyg".into(),
+            source: source::WUBI,
+            primary_len: 1,
+            entries: vec![Entry {
+                word: "好评".into(),
+                label: "全码".into(),
+                code: "vbyg".into(),
+                hint_at: 0,
+                kind: EntryKind::Word,
+            }],
+        };
+        let mut bytes = f.encode();
+        // 帧尾就是那条候选的 kind 字节：把它改成 9 再解。
+        let last = bytes.len() - 1;
+        bytes[last] = 9;
+        assert_eq!(Frame::decode(&bytes), Err(DecodeError::BadEntryKind(9)));
     }
 }

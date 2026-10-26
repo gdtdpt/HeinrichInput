@@ -1494,28 +1494,44 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 滚动条是带箭头的 Win95 灰条，`SetWindowTheme` 也救不了——视觉样式没激活时它全是空操作。
 
 
-### 4.23 词组 emoji（M4c / D66、D82）
+### 4.23 emoji 候选（M4c / D83，协议 v8）
 
-**一句话架构**：emoji 是**呈现层**。`Candidate` 与 `heinrich-core` 的排序一个字段都没动，
-`Host::query` 把候选建好之后才逐条附加 `emoji`；DLL 拿到空串就不画。这与 `code`（D51）是同一条
-纪律：**裁决在 server，DLL 只画**。
+**一句话架构**：emoji 是**候选**，不是装饰。`heinrich-core` 的 `Candidate` 与排序一个字段都没动，
+`Host::query` 把词候选建好之后，才在**有绑定的那条后面插一条** `kind = Emoji` 的条目；它的
+`word` 就是那枚 emoji，选中即上屏。裁决在 server、DLL 只画——与 `code`（D51）同一条纪律。
+
+> v1.58 第一版做的是「词尾装饰」（`Entry.emoji` 挂在词上、上屏只有词）。真机上跑起来才发现
+> 那不是要的东西（原话见 D83 的理由），v1.59 改成独立候选，协议升到 v8 并把装饰字段删掉。
 
 | 环节 | 文件 | 说明 |
 |---|---|---|
 | 渲染探针 | `apps/windows/ui/examples/emoji_probe.rs` | 判「D2D 1.0 能不能出彩色」。结论：能，**不需要 D2D 1.1 DeviceContext** |
+| 覆盖探针 | `apps/windows/ui/examples/emoji_coverage.rs` | 判「本机 `Segoe UI Emoji` 有哪几个字形」。判据是 DWrite，不是 GDI（见下） |
 | 生成器 | `crates/heinrich-gen/src/emoji.rs`（`--kind emoji`） | CLDR `zh.xml` → `data/wubi86/emoji.toml` + `out/m4c-emoji-report.md` |
-| 映射层 | `crates/heinrich-scheme/src/emoji.rs` | `EmojiLayer` 解析 / `EmojiMap` 两层叠加 / `is_emoji` / `valid_emoji` |
-| 挂载 | `crates/heinrich-server/src/host.rs` 的 `EmojiState` | 1 秒 mtime 热重载（与 `words.tsv` 同一套）+ 总开关 |
-| 协议 | `crates/heinrich-proto`（v7） | `Entry.emoji`，**在 `hint_at` 之后**，encode/decode 必须同序 |
-| 布局 | `crates/heinrich-ui/src/layout.rs` | `emoji_w` 独立列、`emoji_gap = 0.22 字号`、压窄先丢 emoji |
+| 映射层 | `crates/heinrich-scheme/src/emoji.rs` | `EmojiLayer` 解析 / `EmojiMap` 两层叠加 / `retain_supported` / `is_emoji` / `valid_emoji` |
+| 字体层 | `crates/heinrich-font` | DWrite `IDWriteFont::HasCharacter` → `HashSet<char>`（普通值，可跨线程） |
+| 合成 | `crates/heinrich-server/src/host.rs`：`EmojiState` + `insert_emoji` | 1 秒 mtime 热重载（与 `words.tsv` 同一套）+ 总开关 + 插入时顺移折叠分界 |
+| 协议 | `crates/heinrich-proto`（v8） | `Entry.kind`（`0` 词 / `1` emoji 候选），**在 `hint_at` 之后**，encode/decode 必须同序 |
+| 布局 | `crates/heinrich-ui/src/layout.rs` | 没有特殊待遇：`CandidateText::as_emoji()` → `ItemBox.is_emoji` |
 | 绘制 | `apps/windows/ui/src/{text,render}.rs` | `measure_emoji`（实测前进宽度）+ `ENABLE_COLOR_FONT` |
-| 透传 | `apps/windows/tsf/src/{ipc,cand,text_service}.rs` | `Reply.emojis` → `Cands.emojis` → `Candidates.emojis`（与 `texts` 等长） |
+| 透传 | `apps/windows/tsf/src/{ipc,cand,text_service}.rs` | `Reply.kinds` → `Cands.is_emoji` → `Candidates.is_emoji`；`resolve()` 对 emoji 跳过 `ipc::record` |
 | CLI | `crates/heinrich-cli`（`emoji check/list/reset`） | 见下 |
 
 **为什么不用 D2D 1.1**：探针拿同一个 `ID2D1DCRenderTarget` 画两行「👍🎉😊 彩色?」，一行带
 `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`、一行不带，数「不同的颜色个数」：**105 vs 13**。
 升 1.1 要换 `ID2D1DeviceContext` + 全链路改 `D2D1_BITMAP`，收益为零。判据不要用「看起来像不像彩色」，
 用颜色计数——灰度抗锯齿也会产生几十种灰。
+
+**本机字体门槛（D83 新增）**：`emoji.toml` 按 CLDR 全量生成，里面混着 Emoji 13/14/15/16 才有的码位，
+而 Win10 的 `Segoe UI Emoji` 只到 Emoji 12。装不出来的 emoji 在候选窗和文档里都是**方块**（实测
+`您好 → 🫂` = U+1FAC2）。处理方式：
+
+- 装载期用 `heinrich_font::EmojiSupport::detect(码位集合)` 问一次本机字体，`EmojiMap::retain_supported`
+  把装不出来的条目**连键一起丢掉**（只丢显示的话，用户选中它上屏仍是方块）；
+- 探测一次就丢掉 COM 对象，只留 `HashSet<char>`——`IDWriteFont` 不是 `Send`，而 server 是按连接开线程的；
+- 判据**只能是 DWrite**：GDI 的 `GetGlyphIndicesW` 按 UTF-16 **码元**查，非 BMP 字符（也就是全部彩色
+  emoji）一律报缺，实测 2395 条只剩 228 条——假阴性，会让人误以为字体缺得离谱；
+- 探测不到字体族时一律放行（`supports` 返回 `true`）：探测失败不该顺手把功能关掉。
 
 **数据管线（CLDR `common/annotations/zh.xml`，292 KB，Unicode License）**：
 
@@ -1526,12 +1542,12 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 
 | 规则 | 为什么 |
 |---|---|
-| 只收**单码位** emoji（跳过 ZWJ / 旗帜 / 肤色修饰） | 多码位序列在候选行里撑两三个字宽，§6.4 的约束是「不给候选行加宽」 |
-| 关键词 ≥2 字、全汉字、且**在拼音词库里** | 「赞 | 顶」这种单字关键词会把「赞」绑上 👍，而单字本来就不挂；不在词库的关键词配不出可打的词 |
+| 只收**单码位** emoji（跳过 ZWJ / 旗帜 / 肤色修饰） | 多码位序列在候选行里撑两三个字宽 |
+| 关键词 ≥2 字、全汉字、且**在拼音词库里** | 「赞 / 顶」这种单字关键词会把「赞」绑上 👍，而单字本来就不出候选 |
 | 同一个词命中多个 emoji 时取 `(词库名次, 码位)` 最小 | 结果与 `HashMap` 遍历顺序无关 ⇒ 两次生成字节级相同 |
-| 头部写 `entry_count` + 正文 `sha256`（只覆盖 `词\temoji\n`） | 装载期 `verify()` 自校验；手改过就报「与声明不符」，不静默 |
+| 头部写 `entry_count` + 正文 `sha256`（只覆盖 `词<TAB>emoji<LF>`） | 装载期 `verify()` 自校验；手改过就报「与声明不符」，不静默 |
 
-产物 **2395 条**（生成两次 `sha256` 完全相同）。重新生成：
+产物 **2395 条**（生成两次 `sha256` 完全相同），本机字形筛后 **2018 条**生效。重新生成：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\fetch-data.ps1 -Only cldr   # 缺 zh.xml 时
@@ -1553,37 +1569,54 @@ powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind emoji
 实现上要注意顺序：`wubi` / `code` 在 `match` 里会被 move 进 `Entry`，`emoji_codes` 必须在
 `match` **之前** clone 出来。
 
-**布局（验收 ① 与 ⑥）**：
+**合成（`insert_emoji`，纯函数，单测全靠它）**：
 
-- emoji 单开一列：`emoji_w` 不计入词宽，位置在词尾（有 chip 时在 chip 之后），间距 `0.22 × 字号`；
-- **压窄顺序**：整行超宽 → 先把所有 `emoji_w` 清零重算 → 还超才按比例压词。
-  没走到「压词」这一步就不算 `clipped`（`clipped` 的语义是「词被截了」，emoji 掉了不算）；
-- 关掉 emoji 时布局必须与 v6 **逐字段一致**：`None` / 空串 / 宽度 0 三条路径都有单测。
+```
+fn insert_emoji(words, codes, limit, primary_words, lookup) -> (Vec<Entry>, usize)
+```
 
-**绘制**：`text_in_with(target, text, format, rect, color, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT)`。
-宽度用 `measure_emoji`（走主字号 format 的 `GetMetrics`），**不能按「字号 × 1.0」估**：
-emoji 落到彩色字体（Segoe UI Emoji）后前进宽度与正文字体不同，估出来的值和实际差 1–2dp，
-一列五个候选就会看到间距忽宽忽窄。
+- 逐个词 push，紧接着 push 它的 emoji 候选（`word` = 那枚 emoji，`label` / `code` 空、`hint_at` 为 0）；
+- **插入的条目也算一条 `limit`**：不封顶的话一次按键吐出两倍候选，窗口宽度先崩；
+- **返回新的折叠分界**（`primary_len`）：它是全局序号，插一条后面全错一位。写错的形态特别隐蔽
+  ——只是最后一条主段候选被画淡一档（预览器里截到过），看截图根本反应不过来；
+- emoji 跟在主段词后面时**也算主段**，不能被画淡。
+
+**布局与绘制**：
+
+- 这一层**没有 emoji 专用几何**：`CandidateText::as_emoji()` 只是给 `ItemBox.is_emoji` 传个标记，
+  宽度仍然由量测层给。v1.58 那套「emoji 单开一列 + 超宽先丢 emoji」已经删干净——
+  独立候选之后，它自己就是一条宽度等于字形的普通条目。
+- 量宽用 `measure_emoji`（走主字号 format 的 `GetMetrics`），**不能按「字号 × 1.0」估**：
+  emoji 落到彩色字体后前进宽度与正文字体不同，估出来的值和实际差 1–2dp，一列五个候选就会看到
+  间距忽宽忽窄。
+- 绘制：`text_in_with(target, text, format, rect, color, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT)`。
+  普通词仍走 `text_in`（不带选项），两条分支只差一个选项位。
+
+**上屏**：走与词完全相同的 `SetText` 路径（`resolve()` 取当前高亮条目）。唯一的分支是
+`current_is_emoji()` 为真时**跳过 `ipc::record`**——`👋` 不是「`wqvb` 的一个词」，记进学习库会把
+词频与候选序一起带偏，下次这个码可能先弹 emoji。
 
 **开关与热更新**：`config.toml` 里 `emoji.enabled = false`（也认 `on/off`、`1/0`；写坏按「开」处理并警告）。
 `HintState` 每秒随 config 一起读，`EmojiState.refresh()` 按 mtime 重装用户层，整份重建映射
-（不做原地改）。日志里能看到 `emoji：N 条生效（内置 X + 用户层 Y）`。
+（不做原地改）。关掉时**一条 emoji 候选都不插**，布局与 v6 逐字段一致（单测钉住）。
+日志里能看到 `emoji：N 条生效（内置 X + 用户层 Y）` 与 `emoji：M 条本机字体缺字形，已跳过`。
 
 **CLI**：
 
 | 命令 | 行为 |
 |---|---|
-| `emoji check [--file <用户层>]` | 内置层可读/规模/哈希/条目数/坏行 + 合并后「按词绑定是否都在词库」「按码绑定是否都在码表」「重复键」。**默认不读 `%APPDATA%`**（回归要机器无关），要查自己的绑定就显式 `--file` |
+| `emoji check [--file <用户层>]` | 内置层可读/规模/哈希/条目数/坏行 + 一行「本机字体：2018 / 2395 条可显示」+ 合并后「按词绑定是否都在词库」「按码绑定是否都在码表」「重复键」。**默认不读 `%APPDATA%`**（回归要机器无关），要查自己的绑定就显式 `--file` |
 | `emoji list [--file] [--limit n]` | 反过来：默认读用户层（这就是「我现在生效的是什么」）。`--limit 0` 看全部 |
 | `emoji reset [--file]` | 备份成 `emoji.user.toml.bak-<本地时间戳>`，再写回带注释样例的空文件（删掉的话用户下次还得自己摸格式） |
 
 **怎么验**：
 
 ```powershell
-cargo run --release -p heinrich-cli -- emoji check
+cargo run --release -p heinrich-cli -- emoji check        # 里有「本机字体：2018 / 2395」
 cargo run --release -p heinrich-cli -- emoji list --limit 10
-cargo run --release -p heinrich-server -- --selftest           # 里有「emoji → 生效 2395 条」
+cargo run --release -p heinrich-server -- --selftest      # 里有「emoji 是自己的候选」
 cargo run --release -p heinrich-cand-preview -- --emoji --hint --selftest --save-bmp out\cand.bmp
+cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/emoji.toml
 ```
 
 `cand-preview --save-bmp` 落的 BMP 是 **top-down（高度字段为负）+ 24 位 BGR**：转 PNG 时必须
@@ -1594,8 +1627,12 @@ cargo run --release -p heinrich-cand-preview -- --emoji --hint --selftest --save
 
 - `usize::to_le_bytes()` 是 **8 字节**。BMP 头字段是 `u32`，直接写会整体错位 4 字节（探针第一版
   写出来的图打不开）。写完 BMP 用 `xxd -l 64` 看一眼偏移 0x0A（数据起点）= 54、0x12（宽）、0x16（高）。
-- 彩色字形**只在 DC 渲染目标上验过**：`ID2D1DCRenderTarget::BindDC` + DIB 的路径没变，
-  `UpdateLayeredWindow` 的预乘 alpha 也不受影响（emoji 自身不透明）。
+- **GDI 判字形是假阴性**：`GetGlyphIndicesW` 按 UTF-16 码元查，非 BMP 全报缺。用它筛 CLDR 表会
+  得出「只剩 228 条可用」的错误结论。判据用 `IDWriteFont::HasCharacter`。
+- **`windows` 0.62 的原始绑定**：`GetSystemFontCollection(&mut Option<IDWriteFontCollection>, false)`、
+  `FindFamilyName(name, &mut index, &mut BOOL)` 都是原始指针风格，别按返回值直接接。
+  `HasCharacter` 在 `IDWriteFont` 上（`Result<BOOL>`），不在 `IDWriteFontFace` 上。
+- **插入 emoji 后折叠分界**：`primary_len` 是全局序号，插入会整体后移（见上）。
 - 单字 gate 在**两处**：解析期（`word` 少于 2 字丢条目）与查表期（`lookup` 再看一次词长）。
   只留一处的话，`enabled = false` 的删 key 路径会绕过解析期的检查。
 
@@ -2009,7 +2046,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
-| M4c emoji 引擎 | ✅ **已实现（2026-10-26，D66 / D82，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色，不升 1.1；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`Host::query` 之后挂载 + 1 秒热重载 + `emoji.enabled`；协议 v7 `Entry.emoji`；布局 `emoji_w` 独立列且**先丢 emoji 再压词**；CLI `emoji check/list/reset`；`cand-preview --emoji` 自测 12 项） |
+| M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |

@@ -302,6 +302,20 @@ impl EmojiMap {
         self.by_code.get(code).map(String::as_str)
     }
 
+    /// 按「这枚 emoji 本机画得出来吗」把映射筛一遍，返回被丢掉的键数。
+    ///
+    /// 判据由调用方给（server 传本机字体探测的结果）：本 crate 平台中立，
+    /// 不认识 DirectWrite，只认识「保留还是丢掉」这个布尔。
+    ///
+    /// 丢掉的是**键**，不只是那一条显示：装不出来的 emoji 连候选都不该出现，
+    /// 否则用户选中它，文档里就是一排方块。
+    pub fn retain_supported(&mut self, supported: impl Fn(&str) -> bool) -> usize {
+        let before = self.by_word.len() + self.by_code.len();
+        self.by_word.retain(|_, e| supported(e));
+        self.by_code.retain(|_, e| supported(e));
+        before - (self.by_word.len() + self.by_code.len())
+    }
+
     pub fn word_len(&self) -> usize {
         self.by_word.len()
     }
@@ -388,6 +402,21 @@ fn unquote(v: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 装不出来的 emoji 必须连键一起丢掉：只丢显示的话，用户选中它就是方块。
+    #[test]
+    fn retain_supported_drops_keys_entirely() {
+        let builtin = EmojiLayer::parse(
+            "[[emoji]]\nword = \"你好\"\nemoji = \"👋\"\n\n[[emoji]]\nword = \"您好\"\nemoji = \"🫂\"\n",
+        );
+        let mut map = EmojiMap::build(&[&builtin]);
+        assert_eq!(map.word_len(), 2);
+
+        let dropped = map.retain_supported(|e| e != "🫂");
+        assert_eq!(dropped, 1);
+        assert_eq!(map.lookup("你好", ""), Some("👋"));
+        assert_eq!(map.lookup("您好", ""), None);
+    }
 
     fn layer(text: &str) -> EmojiLayer {
         EmojiLayer::parse(text)
