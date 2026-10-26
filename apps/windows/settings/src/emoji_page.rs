@@ -76,6 +76,27 @@ impl EmojiRow {
     }
 }
 
+/// 校验「新 emoji」框里填的东西，通过就返回去掉首尾空白的那一枚。
+///
+/// 三种不合格各有各的说法，**不能合成一句「要单个 emoji」**：真机上用户往框里
+/// 敲了「好」，界面先跑去探字形、报「本机字体画不出来（候选窗里会是方块）」，
+/// 于是「点了改绑没反应」——他填的压根不是一个 emoji，报的却是字形问题。
+pub fn check_input(text: &str) -> Result<String, String> {
+    let s = text.trim();
+    if s.is_empty() {
+        return Err("还没填 emoji：点「浏览 emoji…」选一枚，或粘贴一个 emoji".into());
+    }
+    if !valid_emoji(s) {
+        let n = s.chars().count();
+        return Err(if n > 1 {
+            format!("「{s}」是 {n} 个字符：一条绑定只挂一枚 emoji（如 👍）")
+        } else {
+            format!("「{s}」不是 emoji：一条绑定只挂一枚 emoji（如 👍），点「浏览 emoji…」选")
+        });
+    }
+    Ok(s.to_string())
+}
+
 /// emoji 页模型：两份层 + 指向它们的路径。
 pub struct EmojiPage {
     /// 内置表路径（保留给错误信息与将来的「打开内置表」入口）
@@ -252,13 +273,7 @@ impl EmojiPage {
 
     /// 改绑 / 新增：把 key 指到 `emoji`。校验不过就返回人话，**不写盘**。
     pub fn rebind(&mut self, key: &Key, emoji: &str) -> Result<(), String> {
-        let emoji = emoji.trim();
-        if emoji.is_empty() {
-            return Err("emoji 不能为空".into());
-        }
-        if !valid_emoji(emoji) {
-            return Err("要单个 emoji（两个拼一起、ZWJ 序列都不行）".into());
-        }
+        let emoji = check_input(emoji)?;
         // 词与码里出现引号/反斜杠时直接拒绝：解析层的 TOML 子集不认转义
         // （中文词、a–y 的码本来就不会有），写出去一个解析不回的文件才是事故。
         let text = match key {
@@ -272,7 +287,7 @@ impl EmojiPage {
         self.user.entries.push(EmojiEntry {
             word: key.word().map(str::to_string),
             code: key.code().map(str::to_string),
-            emoji: emoji.to_string(),
+            emoji,
             enabled: true,
             line: 0,
         });
@@ -417,6 +432,31 @@ pub fn default_user_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 输入框的三种不合格（v1.64）：空、不是 emoji、多枚。文案要说得清是哪一种——
+    /// 真机上把「好」报成「本机字体画不出来」，用户以为自己操作对了却没反应。
+    #[test]
+    fn check_input_says_which_kind_of_wrong() {
+        assert!(check_input("  ").unwrap_err().contains("还没填"));
+        let e = check_input("好").unwrap_err();
+        assert!(e.contains("不是 emoji"), "{e}");
+        let e = check_input("👍👍").unwrap_err();
+        assert!(e.contains("是 2 个字符"), "{e}");
+        assert_eq!(check_input(" 👍 ").unwrap(), "👍", "两端空白要吃掉");
+        assert_eq!(check_input("❤️").unwrap(), "❤️", "变体选择符算一枚");
+    }
+
+    /// `rebind` 也必须走同一条校验：两个字符拼一起、ZWJ 序列都不收。
+    #[test]
+    fn rebind_rejects_non_emoji_input() {
+        let d = temp_dir("rebind-check");
+        let mut page = EmojiPage::load(d.join("emoji.toml"), d.join("user.toml"));
+        let key = Key::Word("好评".into());
+        assert!(page.rebind(&key, "好").is_err());
+        assert!(page.rebind(&key, "👍👍").is_err());
+        assert!(page.rebind(&key, "").is_err());
+        assert!(page.rebind(&key, "👍").is_ok());
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         // 计数器：测试并行跑，同名目录会被另一个线程 remove_dir_all 掉

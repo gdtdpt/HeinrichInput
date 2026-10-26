@@ -339,11 +339,18 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     // D42 原本让它「吃掉不动」，理由是「`z` 不是字根键，进了缓冲没人解释」。
     // 现在 server 会解释，那条理由失效——而「吃掉不动」的代价是 `vbz` 永远打不出来。
     //
-    // 两条例外放行：空缓冲（没有组合串可打断，`z` 就是个普通字母）、`Shift+z`
-    // （临时英文，要输出大写 `Z`）。组合态内的 `z` 一律不放行——放行会让宿主在
-    // 组合串中间插字符、终止组合串，把已经打出的编码当残留删掉。
+    // 两条例外放行：**没装拼音词库时空缓冲**、`Shift+z`（临时英文，要输出大写 `Z`）。
+    // 组合态内的 `z` 一律不放行——放行会让宿主在组合串中间插字符、终止组合串，
+    // 把已经打出的编码当残留删掉。
+    //
+    // **装了拼音时空缓冲也必须进缓冲**（v1.64，真机 `zhenbang` → 只查到「henbang」
+    // → 出了「很棒」）。D42 说「空缓冲时没有组合串可打断，`z` 就是个普通字母」，
+    // 那个前提只在「`z` 不可能是一个码的首键」时成立：五笔里它确实不是字根键，
+    // 而拼音里 `zhe` / `zhang` / `zuo` / `zai` 全以它开头。放行的后果是 `z` 被宿主
+    // 当普通字符上屏、拼音里少一个字母——用户看到的是「拼音匹配错了字」。
+    // 没装拼音时保持 D42：进缓冲只会挂一个永远查不到东西的组合串。
     if vk == VK_Z && !mods.shift {
-        return if empty {
+        return if empty && !input.pinyin {
             Action::Pass
         } else {
             Action::Buffer('z')
@@ -561,18 +568,25 @@ mod tests {
     }
 
     /// `z` 是万能学习键（M3.5 / D62）：**组合态内一律进缓冲**，由 server 判断
-    /// 它是拼音声母还是末位通配。与装没装拼音词库无关——D42 的「吃掉不动」
-    /// 让 `vbz` 永远打不出来，现在那条前提已经失效。
+    /// 它是拼音声母还是末位通配。
+    ///
+    /// 空缓冲是唯一看「装没装拼音」的地方（v1.64）：装了拼音就必须进缓冲，
+    /// 否则 `zhe` / `zhang` / `zhenbang` 这一类整片打不出来；没装拼音时
+    /// 进缓冲只会挂一个查不到东西的组合串，保持 D42 的放行。
     #[test]
-    fn z_always_enters_the_buffer() {
+    fn z_enters_the_buffer_once_pinyin_is_installed() {
         for has_pinyin in [false, true] {
             let base = zh(0);
             let input = if has_pinyin { base.with_pinyin() } else { base };
+            let want = if has_pinyin {
+                Action::Buffer('z')
+            } else {
+                Action::Pass
+            };
             assert_eq!(
                 decide(input, Z, m()),
-                Action::Pass,
-                "空缓冲放行：这时 `z` 就是个普通字母，进缓冲只会挂一个空组合串 \
-                 （`vbz` 的第一个键是 `v`，轮不到空缓冲）（pinyin={has_pinyin}）"
+                want,
+                "空缓冲（pinyin={has_pinyin}）：装了拼音时 z 是声母，放行会丢字母"
             );
             assert_eq!(
                 decide(input.with_buffer(3), Z, m()),
@@ -586,6 +600,30 @@ mod tests {
             decide(Input::new(Mode::English).with_pinyin(), Z, m()),
             Action::Pass
         );
+    }
+
+    /// v1.64 真机回归：`zhenbang` 的第一键不能漏掉。
+    ///
+    /// 曾经的判据是「空缓冲就放行」，于是 `z` 被宿主当普通字符上屏、进组合串的
+    /// 只剩 `henbang`——拼音侧查到的是「很棒」。这条测试直接照抄那一串按键。
+    #[test]
+    fn pinyin_starting_with_z_keeps_its_first_letter() {
+        let mut input = zh(0).with_pinyin();
+        let mut buf = String::new();
+        for ch in "zhenbang".chars() {
+            let vk = match ch {
+                'z' => Z,
+                c => c.to_ascii_uppercase() as u16,
+            };
+            match decide(input, vk, m()) {
+                Action::Buffer(c) => {
+                    buf.push(c);
+                    input = input.with_buffer(buf.chars().count());
+                }
+                other => panic!("`{ch}` 的判定是 {other:?}，应当进缓冲"),
+            }
+        }
+        assert_eq!(buf, "zhenbang", "组合串必须与敲进去的一模一样");
     }
 
     /// `wubi_letter` 只管 25 个五笔字根键，`z` 不归它——`z` 走 `decide` 里单独一支。

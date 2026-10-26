@@ -1728,6 +1728,42 @@ emoji 取**格子边长的比例**而不是写死字号：改一次格子尺寸�
 一个进程里做完「起 → 等窗口 → 截图 → 真鼠标点击 → 再截图 → kill」，或者用
 `win-ui-selfscreenshot` 那套（给程序加一个「直接开某个窗口」的开关 + `PrintWindow` 只截那一窗）。
 
+### 4.25 emoji 页改绑反馈与列表彩色自绘（D89，v1.64）
+
+**改绑「点了没反应」的根因是校验顺序错了**：原实现先 `probe_one` 字形探测再校验输入——
+框里填的是汉字「好」时，用户得到的是「这枚 emoji 本机字体画不出来」，答非所问，且提示
+只写在窗口底部一行小灰字里，等于没有反馈。修正为两层：
+
+- **输入校验前置**：`emoji_page::check_input(text) -> Result<String, String>`，空 / 不是 emoji /
+  多枚三种各给一句人话（「「好」不是 emoji：一条绑定只挂一枚 emoji（如 👍），点「浏览 emoji…」选」）。
+  校验不通过就不碰磁盘、不给 `probe_one`。
+- **错误写在编辑面板行 1**（红色），不再走窗口底部的 status 行——那里离操作区太远，用户看不见。
+
+**校验结论在绘制时现算，不在 `EN_CHANGE` 里存**。这条坑很隐蔽：`SetWindowText` 触发的
+`EN_CHANGE` 到达时，控件文本可能还是**旧值**（消息排队与 `GetWindowText` 的时序），在处理器里
+「读文本 → 算结论 → 存下来」会把过期结论一直挂着——自测「填回合法 emoji 后提示应当消失」
+当场抓出来。现在 `EN_CHANGE` 只做三件事：更新按钮可用态、清掉保存时留下的 `emoji_msg`、
+重绘；「现在该显示什么提示」由 paint 路径的 `emoji_panel_alert()` 现场对当前文本算。
+
+**列表 emoji 列改 D2D 彩色**（`emoji_draw.rs` 的 `ColorEmoji`）。GDI 只能画 `Segoe UI Emoji`
+的单色轮廓（坑 62），列表里单色、选择器里彩色，用户判定「匹配不上」。把选择器那套
+`ID2D1DCRenderTarget` + `DrawText(ENABLE_COLOR_FONT)` 搬进 `NM_CUSTOMDRAW` 时又踩了三条：
+
+1. **`BindDC(hdc, &rect)` 后，绘制坐标以绑定矩形左上角为原点**——不是 DC 原点。文字画在
+   `(rect.left + …)` 会偏出一格。
+2. **DC 渲染目标不做 alpha 混合**（`D2D1_ALPHA_MODE_IGNORE`），画 emoji 前必须先 `Clear(行底色)`，
+   否则格子背景是黑/未定义色。
+3. **`IDWriteTextFormat` 的字号创建时固定**（`SetFontSize` 只在 `IDWriteTextLayout` 上），字号变了
+   要重建 format——按字号缓存（差 < 0.5 复用），列表行高固定时几乎不重建。
+
+D2D 初始化失败时回落 GDI 单色轮廓（列表功能不因 D2D 挂掉）；emoji 表现在**全行**自绘
+（停用行整行淡一档），不再只画选中行。
+
+**验证约束**：桌面锁定时动态状态（红字提示、选中行）拍不到截图——`PrintWindow` 返回上一次
+合成好的画面，屏幕 BitBlt 抓到的是锁屏壁纸。静态画面（列表彩色 emoji）能拍。动态断言用
+`--selftest-ui` 走真消息链：`SetWindowText` 填「好」→ 真实 `WM_COMMAND(EN_CHANGE)` → 断言
+`emoji_panel_alert()` 含「不是 emoji」→ 点改绑断言文件不变 → 填回「👍」→ 断言提示消失。
+
 ## 5. 数据管线
 
 ```
@@ -2122,6 +2158,27 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     给自测加一条「当前页可见的子控件 ⊆ 本页集合」（白名单只留给刻意共用的状态栏），
     比事后逐页截图便宜得多——它第一次跑就抓出了自己白名单漏写的状态栏。
 
+64. **「空缓冲放行」这类键判定，前提必须跟着词库配置走。** `z` 键的「空缓冲放行」（D42）被
+    D62 原样保留进代码；装上拼音词库（D47 能力位）后前提就塌了——拼音里 `zhe / zhang /
+    zhenbang` 全以 `z` 开头，空缓冲的 `z` 被放行上屏，组合串只剩 `henbang`，用户打
+    `zhenbang` 出「很棒」。判据写成 `empty && !input.pinyin → Pass`（D88）。**排查路径**值得记：
+    CLI `look` 正确 → 排除 core / 词库 → server 日志发现「组合串被外部终止，已删除残留
+    "henbang"」→ 指向 DLL 按键判定。**凡是「同一物理键在两种配置下语义不同」的分支，
+    判据必须挂在能力位上**，与 D47 码长上限同一条纪律。
+
+65. **D2D 画进 ListView 自绘行（`NM_CUSTOMDRAW`）的三个独立坑。** ① `BindDC(hdc, &rect)` 之后
+    绘制坐标以**绑定矩形左上角**为原点，不是 DC 原点；② DC 渲染目标是
+    `D2D1_ALPHA_MODE_IGNORE`，不做 alpha 混合，每格先 `Clear(行底色)` 否则背景是未定义色；
+    ③ `IDWriteTextFormat` 字号创建后不可变（`SetFontSize` 只在 `IDWriteTextLayout` 上），
+    字号变了要重建——按字号缓存（差 < 0.5 复用）。
+
+66. **`EN_CHANGE` 处理器里读文本可能是旧值，校验结论别在那里存。** `SetWindowText` 触发的
+    `EN_CHANGE` 到达时 `GetWindowText` 可能还读到旧内容，「读文本 → 算结论 → 存下来」会把
+    过期结论一直挂着（表现：填回合法值后错误提示不消失）。**模式**：`EN_CHANGE` 只更新
+    按钮态 + 清暂存错误 + 重绘；「此刻该显示什么」由 paint 路径对当前文本**现算**
+    （本项目 `emoji_panel_alert()`）。自测断言「填坏 → 有提示 → 填好 → 提示消失」的往返
+    才能抓住这类坑，只断言单向抓不住。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -2157,7 +2214,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M2.4 学习落库 | ✅ 已真机验收（2026-10-22 三轮日志：连打不跳位 / 换码后升位 / 原首位上屏一次不夺回；交叉点 n=23 与解析解一致）。真实库与日志已核（177 词 / 累计 400+ 次）；按实测三次修正：D54 绝对分差 → **D58 废除门槛、第一次上屏不计分** → **D59 抖动区写成规格**；连打缓存判据 D55 → **D57 提交别的码才失效**（`store.rs` 的 SQLite + WAL + 每 60 秒 checkpoint、单向 `Frame::Record`、DLL 有界队列补发、安装器先收旧 server。见 §4.9 / §4.13） |
 | M3.1 拼音数据 | ✅ 完成（`data/pinyin/`，`rime/rime-pinyin-simp` Apache-2.0，65,125 条 / 415 音节；常用字 100% 覆盖。见 §4.10） |
 | M3.2 混输裁决 | ✅ 已验收（`PinyinLexicon` + `core::pinyin::query` 单段判定与折叠 + `rank_inputs` 共用排序；CLI `--pinyin` / `check-pinyin`。判定已在 v1.20 按 D48 反转成五笔优先，见 §4.10） |
-| M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 24 码上限（`z` 的归属在 v1.31 由 D62 改为「一律进缓冲」，不再看能力位）；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
+| M3.3 接进 TSF | ✅ 已验收（真机验过 `hao` / 带 `'` 的纯拼音 / `-` `=` 翻页 / 组合态符号不进文档）（协议 v3：`features` / `source` / `primary_len`；`Host::query` 返回 `QueryReply`；DLL 侧 `ipc::Reply` + 能力位驱动 24 码上限（`z` 的归属在 v1.31 由 D62 改为「一律进缓冲」；**v1.64 由 D88 再修**：空缓冲放行必须带能力位判据 `empty && !input.pinyin`，装了拼音时空缓冲的 `z` 也进缓冲——否则 `zhenbang` 的首字母 `z` 上屏、组合串只剩 `henbang`）；`dist\data\pinyin` 由 `build.ps1` 一并拷。**v1.20 追加**：D48 五笔优先 + `'` 强制拼音 + 补段淡一档（`Candidates.split` → `Theme.secondary`）；D49 `-`/`=` 翻页 + 组合态内吞字符键。见 §4.11） |
 | M3.4a 码提示 chip | ✅ 已验收（§6.3 / D51：协议 v4 的 `Entry.code`；`PinyinEntry.wubi` 装载期反查（单字 100% / 词组 58.5%）；`hint.mode` 三档 + `config.toml` 热更新；几何层 `CandidateText.hint` / `ItemBox.hint_rect`，绘制端 `Theme.chip_bg`；`cand-preview --hint`。随验收一并落地 D52（撤销 `Ctrl+Shift+/`）与 D53（Tab 组合态内吞掉）。见 §4.12） |
 | M3.4b 码位键位图 | ✅ **2026-10-22 真机验收通过**（D50 / D60 / D61 / §6.7 / §4.14：`roots.toml` 25 键 130 字根 + `heinrich-cli roots` 五项校验 + 协议 v5 下发 + `KeycapWindow` 点击穿透 + `Ctrl+Alt+1..9` 入口（仅中文模式且候选窗存在时接管；v1.29 由 `Ctrl+Shift` 改过来，且键帽不再画一级简码）。`Ctrl+Shift+/` 入口已按 D52 撤销） |
 | M3.5 `z` 通配 + 段级多段 | ✅ **2026-10-23 真机验收通过**（D62 / D64 / §6.5 / §6.8 / §4.15：`wildcard_stem` + `split_segments`；`z` 从「吃掉不动」改为进缓冲；`MAX_EXTENDED_CODE_LEN = 9`；多段只出词典真词 + 词中 chip（协议 v6 `hint_at`，D64）；多段不记学习分；`heinrich-cli look` 与 `check.ps1` 通配/多段自测；`cand-preview --save-bmp` 无头视觉验收。验收中发现词表缺新词，转 D65 预研——见 §8 后继） |
@@ -2167,7 +2224,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
-| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属） |
+| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属；v1.64 再补（D88/D89）：改绑输入校验前置（`check_input` 三种人话，红色错误写在面板行 1、绘制时现算）、列表 emoji 列改 D2D 彩色自绘（§4.25）） |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 

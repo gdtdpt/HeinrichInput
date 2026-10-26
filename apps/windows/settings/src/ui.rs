@@ -319,6 +319,13 @@ pub struct App {
     emoji_sel: Option<usize>,
     /// 本机字形覆盖：列表标灰与「能不能保存」共用同一份判据
     emoji_support: heinrich_font::EmojiSupport,
+    /// 面板行 1 的临时提示（红色）。`None` 时显示选中信息。
+    ///
+    /// 存在的理由（v1.64）：改绑被拒时只往窗口底部那行灰字写一句话，用户看不到，
+    /// 反馈成「点了改绑没有任何反应」。提示要出现在他眼睛正盯着的地方——输入框上方。
+    emoji_msg: Option<String>,
+    /// 列表里画彩色 emoji 的 D2D 画笔（懒建：只有 emoji 页用得上）
+    glyph: Option<crate::emoji_draw::ColorEmoji>,
 }
 
 impl App {
@@ -446,6 +453,8 @@ impl App {
             emoji_rows: Vec::new(),
             emoji_sel: None,
             emoji_support,
+            emoji_msg: None,
+            glyph: None,
         })
     }
 
@@ -2096,17 +2105,46 @@ impl App {
     }
 
     /// 面板：「新 emoji」框回填当前值 + 信息行 + 按钮态。
-    fn fill_emoji_panel(&self, idx: Option<usize>) {
+    fn fill_emoji_panel(&mut self, idx: Option<usize>) {
         let emoji = idx
             .and_then(|i| self.emoji_rows.get(i))
             .map(|r| r.emoji.clone())
             .unwrap_or_default();
         set_text(self.e_emoji_new, &emoji);
+        // 换选一行 = 上一次的提示已经过期，不能让它挂在新行头上
+        self.emoji_msg = None;
         self.update_emoji_note();
         self.update_emoji_buttons();
         // 面板行 1 是**自绘**文字（原生 Edit 会自己刷，文字不会）：不重绘的话
         // 选了行之后那句话还停在上一句，看着像「点了没反应」
         self.repaint();
+    }
+
+    /// 「新 emoji」框内容变化（`EN_CHANGE`）：按钮态要跟着变，旧提示要作废。
+    ///
+    /// **输入本身合不合格不在这里算**，而是绘制时现算（[`Self::emoji_panel_alert`]）。
+    /// 理由是踩过的坑：`EN_CHANGE` 到达时窗口文本还不一定是新的（`SetWindowText`
+    /// 那条路径上读到过旧值），存下来的结论会一直挂着——自测里「填回合法 emoji
+    /// 提示还在」就是这么来的。绘制时读、绘制时算，永远和框里看到的一致。
+    fn on_emoji_new_changed(&mut self) {
+        self.update_emoji_buttons();
+        self.emoji_msg = None;
+        self.repaint();
+    }
+
+    /// 面板行 1 要不要报警、报什么（`None` = 正常，画选中信息）。
+    ///
+    /// 两条来源，顺序固定：**输入不合格**优先（用户正在看框），其次是上次
+    /// 「改绑被拒」的原因（字形画不出之类）。
+    fn emoji_panel_alert(&self) -> Option<String> {
+        let text = get_text(self.e_emoji_new);
+        // 空框不报错：用户可能正在从零敲一枚，先清空是正常动作
+        if !text.trim().is_empty() {
+            if let Err(e) = crate::emoji_page::check_input(&text) {
+                return Some(e);
+            }
+        }
+        self.emoji_msg.clone()
     }
 
     /// 列表行自绘：选中行由我们整行画（浅蓝底 + 深色字）。
@@ -2118,7 +2156,7 @@ impl App {
     ///
     /// 与列表**同进程**，所以 `LVM_GETITEMTEXTW` 可以直接传结构指针（跨进程
     /// 传指针会立刻崩，验收脚本踩过这个坑）。
-    fn list_custom_draw(&self, lparam: LPARAM) -> LRESULT {
+    fn list_custom_draw(&mut self, lparam: LPARAM) -> LRESULT {
         const CDDS_PREPAINT: u32 = 0x0000_0001;
         const CDDS_ITEMPREPAINT: u32 = 0x0001_0001;
         const CDRF_DODEFAULT: isize = 0;
@@ -2129,6 +2167,8 @@ impl App {
         const LVIF_TEXT_ONLY: u32 = 0x0001;
         // #E8F0FB（COLORREF 是 0x00BBGGRR）
         const SEL_BG: COLORREF = COLORREF(0x00FB_F0E8);
+        /// emoji 表里 emoji 那一列的序号（`create_emoji_page` 的列序）
+        const EMOJI_COL: usize = 2;
 
         let cd = unsafe { &mut *(lparam.0 as *mut NMLVCUSTOMDRAW) };
         let stage = cd.nmcd.dwDrawStage.0;
@@ -2151,14 +2191,33 @@ impl App {
             )
         }
         .0;
-        if sel < 0 || cd.nmcd.dwItemSpec as isize != sel {
+        let selected = sel >= 0 && cd.nmcd.dwItemSpec as isize == sel;
+        // emoji 表**每一行**都自绘（v1.64）：它有一列要画彩色 emoji，而 GDI 只会
+        // 画单色轮廓；顺带让选中行与普通行的内衬、字号、行高完全一致——只自绘
+        // 选中行的时候，两套排版并排看得出错位（真机反馈「感觉匹配不上」）。
+        // 另外两张表没有这个需求，继续走系统绘制。
+        let is_emoji = list == self.emoji_list;
+        if !is_emoji && !selected {
             return LRESULT(CDRF_DODEFAULT);
         }
 
         let hdc = cd.nmcd.hdc;
         let rc = cd.nmcd.rc;
+        let row = if is_emoji {
+            self.emoji_rows.get(cd.nmcd.dwItemSpec as usize)
+        } else {
+            None
+        };
+        // 停用的行整行淡一档：状态列写着「已停用」，颜色再给一个不看字也能认的信号
+        let enabled = row.is_none_or(|r| r.enabled);
+        let bg = if selected { SEL_BG } else { self.colors.card };
+        let text_color = if enabled {
+            self.colors.text1
+        } else {
+            self.colors.text3
+        };
         unsafe {
-            let brush = CreateSolidBrush(SEL_BG);
+            let brush = CreateSolidBrush(bg);
             if !brush.0.is_null() {
                 FillRect(hdc, &rc, brush);
                 let _ = DeleteObject(brush.into());
@@ -2172,7 +2231,7 @@ impl App {
                 HGDIOBJ::default()
             };
             let _ = SetBkMode(hdc, TRANSPARENT);
-            let _ = SetTextColor(hdc, self.colors.text1);
+            let _ = SetTextColor(hdc, text_color);
 
             let mut x = rc.left;
             for col in 0..4 {
@@ -2205,13 +2264,33 @@ impl App {
                         right: x + w - 8,
                         bottom: rc.bottom,
                     };
-                    let mut wide = text.encode_utf16().collect::<Vec<u16>>();
-                    DrawTextW(
-                        hdc,
-                        &mut wide,
-                        &mut cell,
-                        DRAW_TEXT_FORMAT(DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
-                    );
+                    if is_emoji && col == EMOJI_COL {
+                        // 彩色字形只能走 D2D：边留给我们自己刷（DC 目标的
+                        // Clear 不做 alpha 混合），右边用不到就铺到底
+                        let done = self.emoji_glyph(hdc, cell, &text, bg);
+                        if !done {
+                            // D2D 失败时退回 GDI 的单色轮廓：难看，但至少不是空白
+                            let mut wide = text.encode_utf16().collect::<Vec<u16>>();
+                            DrawTextW(
+                                hdc,
+                                &mut wide,
+                                &mut cell,
+                                DRAW_TEXT_FORMAT(
+                                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                                ),
+                            );
+                        }
+                    } else {
+                        let mut wide = text.encode_utf16().collect::<Vec<u16>>();
+                        DrawTextW(
+                            hdc,
+                            &mut wide,
+                            &mut cell,
+                            DRAW_TEXT_FORMAT(
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                            ),
+                        );
+                    }
                 }
                 x += w;
             }
@@ -2220,6 +2299,21 @@ impl App {
             }
         }
         LRESULT(CDRF_SKIPDEFAULT)
+    }
+
+    /// 用 D2D 在 `cell` 里画一枚彩色 emoji；画笔懒建（一次窗活一个）。
+    ///
+    /// 字号取行高的 0.78：`Segoe UI Emoji` 的字身比汉字矮，取和行高一样大会被
+    /// 行切掉上下；0.78 是让它在行里既饱满又不碰边的一档（与候选窗同一条经验）。
+    fn emoji_glyph(&mut self, hdc: HDC, cell: RECT, emoji: &str, bg: COLORREF) -> bool {
+        if self.glyph.is_none() {
+            self.glyph = crate::emoji_draw::ColorEmoji::new().ok();
+        }
+        let Some(g) = self.glyph.as_mut() else {
+            return false;
+        };
+        let px = (cell.bottom - cell.top) as f32 * 0.78;
+        g.draw(hdc, cell, emoji, px, crate::emoji_draw::from_colorref(bg))
     }
 
     /// 面板行 1 的信息文字（绘制取，也给说明行复用）。
@@ -2303,10 +2397,26 @@ impl App {
             .map(|r| r.key_cell())
             .unwrap_or_default();
         let emoji = get_text(self.e_emoji_new);
-        // 本机字形门槛：画不出来的 emoji 不让存——存了就是候选窗里一排方块
-        if heinrich_font::probe_one(&emoji) == Some(false) {
-            self.set_status("这枚 emoji 本机字体画不出来（候选窗里会是方块），换一枚吧");
-            return;
+        // 校验顺序是有讲究的：先问「这是不是一枚 emoji」，再问「本机画不画得出来」。
+        // 反过来的话，框里填了「好」会得到「本机字体画不出来（候选窗里会是方块）」——
+        // 那句提示答错了问题，用户读到的结论是「点了没反应」。
+        match crate::emoji_page::check_input(&emoji) {
+            Err(e) => {
+                self.emoji_msg = Some(e.clone());
+                self.set_status(&e);
+                self.repaint();
+                set_focus(self.e_emoji_new);
+                return;
+            }
+            // 本机字形门槛：画不出来的 emoji 不让存——存了就是候选窗里一排方块
+            Ok(one) if heinrich_font::probe_one(&one) == Some(false) => {
+                let m = format!("{one} 本机字体画不出来（候选窗里会是方块），换一枚吧");
+                self.emoji_msg = Some(m.clone());
+                self.set_status(&m);
+                self.repaint();
+                return;
+            }
+            Ok(_) => {}
         }
         match self.emoji.rebind(&key, &emoji) {
             Ok(()) => {
@@ -2679,7 +2789,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     // emoji 页：搜索框实时过滤，新 emoji 框只管按钮态
                     (EN_CHANGE, ID_E_EMOJI_SEARCH) => app.refresh_emoji(),
-                    (EN_CHANGE, ID_E_EMOJI_NEW) => app.update_emoji_buttons(),
+                    (EN_CHANGE, ID_E_EMOJI_NEW) => app.on_emoji_new_changed(),
                     // CBN_SELCHANGE = 1（与 EN_ 段相邻的通知码）
                     (0, ID_BE_BROWSE) => app.on_emoji_browse(),
                     (0, ID_B_CLEAR) => app.on_clear(),
@@ -3264,13 +3374,18 @@ impl App {
             self.s(8),
             self.s(1),
         );
-        // 面板行 1：选中信息（文字较长，左对齐铺到卡片右内衬）
+        // 面板行 1：临时提示（改绑被拒 / 输入不合格）压过选中信息——它才是
+        // 用户下一次动作要看的；错误红字，与「应用」页非法输入同一个颜色。
+        let (msg, msg_color) = match self.emoji_panel_alert() {
+            Some(m) => (m, self.colors.error),
+            None => (self.emoji_info_text(), self.colors.text2),
+        };
         draw_text(
             hdc,
-            &self.emoji_info_text(),
+            &msg,
             self.geo.emoji_sel_label,
             self.fonts.caption,
-            self.colors.text2,
+            msg_color,
         );
         // 面板行 2：标签 + 新 emoji 框描边（无边框 Edit 的框画在卡片上）
         draw_text_align(
@@ -4096,7 +4211,7 @@ pub fn selftest_ui(_data: Option<PathBuf>) -> Result<(), String> {
         switch_page(&mut app, PAGE_EMOJI);
         check_z_order(hwnd, PAGE_EMOJI)?;
         check_page_scope(&app, PAGE_EMOJI)?;
-        check_emoji_page(&app, &emoji_path)?;
+        check_emoji_page(&mut app, &emoji_path)?;
 
         switch_page(&mut app, PAGE_LEARN);
         check_z_order(hwnd, PAGE_LEARN)?;
@@ -4202,7 +4317,7 @@ fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
 ///
 /// 落盘断言看**磁盘上的文件**（与 `check_panel_flow` 同一口径）：
 /// 消息链通了但文件没写等于没做。
-fn check_emoji_page(app: &App, emoji_path: &std::path::Path) -> Result<(), String> {
+fn check_emoji_page(app: &mut App, emoji_path: &std::path::Path) -> Result<(), String> {
     let click = |b: HWND| unsafe {
         send(b, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
     };
@@ -4239,6 +4354,36 @@ fn check_emoji_page(app: &App, emoji_path: &std::path::Path) -> Result<(), Strin
     }
     set_text(app.e_emoji_search, "");
     drain_messages();
+
+    // 输入不是 emoji 时的反馈（v1.64）：提示要写在面板行 1（红字），不能只在
+    // 窗口底部那行灰字——真机上用户看着输入框，那句提示他没看见，反馈成
+    // 「点了改绑没有任何反应」。
+    set_text(app.e_emoji_new, "好");
+    drain_messages();
+    let msg = app.emoji_panel_alert().unwrap_or_default();
+    if !msg.contains("不是 emoji") {
+        return Err(format!(
+            "框里填「好」时面板行 1 应当红字说明「不是 emoji」，实际 {msg:?}"
+        ));
+    }
+    let before = std::fs::read_to_string(emoji_path).unwrap_or_default();
+    click(app.b_emoji_save);
+    drain_messages();
+    let after = std::fs::read_to_string(emoji_path).unwrap_or_default();
+    if before != after {
+        return Err("填了非 emoji 时「改绑」不该写盘".into());
+    }
+    if app.emoji_panel_alert().is_none() {
+        return Err("点「改绑」被拒后提示不该消失（那正是用户说的「没反应」）".into());
+    }
+    set_text(app.e_emoji_new, "👍");
+    drain_messages();
+    if let Some(m) = app.emoji_panel_alert() {
+        return Err(format!(
+            "填回一枚合法 emoji 后提示应当消失，实际还在：{m}（框里 {:?}）",
+            get_text(app.e_emoji_new)
+        ));
+    }
 
     // 改绑：点中「好评」（内置条目）→ 面板回填 → 换 emoji → 改绑 → 文件里变新值
     select_item(app.emoji_list, 2);

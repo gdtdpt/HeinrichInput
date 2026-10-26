@@ -19,6 +19,7 @@
 // 命令行窗口，看起来像程序没退干净（真机反馈就是这个）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod emoji_draw;
 mod emoji_page;
 mod emoji_picker;
 mod general;
