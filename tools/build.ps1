@@ -111,6 +111,14 @@ $dataOut = Join-Path $DistDir 'data\wubi86'
 New-Item -ItemType Directory -Force -Path $dataOut | Out-Null
 Copy-Item (Join-Path $root 'data\wubi86\*') -Destination $dataOut -Force
 
+# 词组 emoji 内置表（M4c / D66）随 `data\wubi86\*` 一起拷过去了，但缺了它只降级
+# （候选照常出，只是不戴 emoji）——这种「静默少了个功能」的降级必须在构建时吼一声。
+$emojiSrc = Join-Path $root 'data\wubi86\emoji.toml'
+if (-not (Test-Path $emojiSrc)) {
+    Write-Host '  未找到 data\wubi86\emoji.toml，dist 里将没有 emoji（候选不带 emoji）' -ForegroundColor Yellow
+    Write-Host '  需要 emoji 请先跑：powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind emoji' -ForegroundColor DarkGray
+}
+
 # 拼音数据（M3 混输）。**可选**：server 找不到这一份就按纯五笔跑，
 # 所以缺了只警告、不中断构建——但它确实是发版该带的东西，得吼一声。
 $pinyinSrc = Join-Path $root 'data\pinyin'

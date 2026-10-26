@@ -24,9 +24,10 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_FACTORY_TYPE_MULTI_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_MULTI_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
+    D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -227,6 +228,20 @@ impl Renderer {
                     );
                     text_in(target, hint, &formats.hint, inner, &secondary)?;
                 }
+                // emoji（§6.4）排在词尾。必须开 `ENABLE_COLOR_FONT`：不开时
+                // Segoe UI Emoji 会退化成单色轮廓（M4c 的探针实测：同一位图
+                // 彩色 105 种颜色 / 单色 13 种）。颜色刷子对彩色字形不起作用，
+                // 但 API 要求传，就传文字色——缺字形时至少还能看出是个方框。
+                if let Some(emoji) = &item.emoji {
+                    text_in_with(
+                        target,
+                        emoji,
+                        &formats.text,
+                        item.emoji_rect,
+                        text_ink,
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                    )?;
+                }
             }
             for arrow in [layout.prev.as_ref(), layout.next.as_ref()]
                 .into_iter()
@@ -396,6 +411,26 @@ fn text_in(
     rect: Rect,
     color: &ID2D1SolidColorBrush,
 ) -> Result<()> {
+    text_in_with(
+        target,
+        text,
+        format,
+        rect,
+        color,
+        D2D1_DRAW_TEXT_OPTIONS_NONE,
+    )
+}
+
+/// 同 [`text_in`]，但可以指定 `DrawText` 的选项。目前只有 emoji 需要
+/// `ENABLE_COLOR_FONT`——彩色字形与普通文字的绘制路径完全一样，差别只在选项位。
+fn text_in_with(
+    target: &ID2D1DCRenderTarget,
+    text: &str,
+    format: &windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
+    rect: Rect,
+    color: &ID2D1SolidColorBrush,
+    options: windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS,
+) -> Result<()> {
     if text.is_empty() || rect.w <= 0.0 {
         return Ok(());
     }
@@ -408,7 +443,7 @@ fn text_in(
             format,
             &d2d,
             color,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
+            options,
             DWRITE_MEASURING_MODE_NATURAL,
         );
         target.PopAxisAlignedClip();

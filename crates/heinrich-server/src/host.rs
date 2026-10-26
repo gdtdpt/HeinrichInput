@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use heinrich_core::scheme::user as user_words;
-use heinrich_core::scheme::{Config, HintMode, PinyinLexicon, Roots, Scheme};
+use heinrich_core::scheme::{Config, EmojiLayer, EmojiMap, HintMode, PinyinLexicon, Roots, Scheme};
 use heinrich_core::{pinyin, MemoryStore, RankingConfig, Source, Tier, Usage, UsageStore};
 use heinrich_proto::{
     feature, source as proto_source, Entry, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES, PROTO_VERSION,
@@ -35,6 +35,9 @@ const HINT_RECHECK: Duration = Duration::from_secs(1);
 
 /// 自定义词库的最短重查间隔（D65）。与配置文件同一条理由：按键路径上不能每次 stat。
 const WORDS_RECHECK: Duration = Duration::from_secs(1);
+
+/// emoji 用户层的最短重查间隔（D66）。同上：查询发生在每个字母键上。
+const EMOJI_RECHECK: Duration = Duration::from_secs(1);
 
 /// 学习数据的两种落地形态。
 ///
@@ -118,6 +121,108 @@ pub struct Host {
     roots: Option<Roots>,
     /// 自定义词组（D65），带词库文件热更新。
     words: WordsState,
+    /// 词组 emoji（§6.4 / D66），两层映射 + 用户层热更新。
+    emoji: EmojiState,
+}
+
+/// 词组 emoji 的两层映射（D66）。
+///
+/// **内置层在装载时读一次**（随方案目录发布、升级会整份替换），`stamp` 只盯用户层
+/// ——与 `words.tsv` 同一条节流与重载打法。合并是**整份重建**而非原地改：
+/// `enabled = false` 的语义是「删掉同 key」，增量改会在「先删后加」的交错里出错。
+struct EmojiState {
+    /// 内置层（`<scheme-dir>/emoji.toml`）。没装成时是空层，`enabled` 仍为真。
+    builtin: EmojiLayer,
+    /// 用户层路径。`None` = 不读（单测、`--no-emoji`）。
+    user_path: Option<PathBuf>,
+    /// 上次看到的用户层 `(长度, 修改时间)`。
+    stamp: Option<(u64, Option<SystemTime>)>,
+    checked_at: Instant,
+    /// 总开关（`emoji.enabled`，默认开）。关掉时 `lookup` 恒为 `None`，
+    /// 于是布局输入与 v6 完全一致（M4c 验收 ⑥）。
+    enabled: bool,
+    /// 合并后的生效表。
+    map: EmojiMap,
+    /// 生效条目数（日志用）。
+    count: usize,
+}
+
+impl EmojiState {
+    fn new(builtin: EmojiLayer) -> Self {
+        let map = EmojiMap::build(&[&builtin]);
+        let count = map.word_len() + map.code_len();
+        Self {
+            builtin,
+            user_path: None,
+            stamp: None,
+            checked_at: Instant::now(),
+            enabled: true,
+            map,
+            count,
+        }
+    }
+
+    fn configure(&mut self, path: Option<PathBuf>) {
+        self.user_path = path;
+        self.stamp = None;
+        self.reload();
+    }
+
+    /// 重读用户层并重建生效表。文件不存在是正常状态（等于「不覆盖内置」）。
+    fn reload(&mut self) {
+        let Some(path) = self.user_path.clone() else {
+            return;
+        };
+        let (user, err) = EmojiLayer::load(&path);
+        if let Some(e) = err {
+            srv_error!("emoji 用户层：{e}；保留上一份");
+            return;
+        }
+        for w in &user.warnings {
+            srv_error!("emoji 用户层 {}：{w}", path.display());
+        }
+        self.map = EmojiMap::build(&[&self.builtin, &user]);
+        let count = self.map.word_len() + self.map.code_len();
+        if count != self.count {
+            srv_info!(
+                "emoji：{} 条生效（内置 {} + 用户层 {}）· 用户层 {}",
+                count,
+                self.builtin.entries.len(),
+                user.entries.len(),
+                path.display()
+            );
+            self.count = count;
+        }
+    }
+
+    /// 节流热检查：用户层改了就重建映射（≤1 秒生效）。
+    fn refresh(&mut self) {
+        let Some(path) = &self.user_path else {
+            return;
+        };
+        if self.checked_at.elapsed() < EMOJI_RECHECK {
+            return;
+        }
+        self.checked_at = Instant::now();
+        let meta = std::fs::metadata(path).ok();
+        let stamp = meta
+            .as_ref()
+            .map(|m| (m.len(), m.modified().ok()))
+            .unwrap_or((0, None));
+        if self.stamp.as_ref() == Some(&stamp) {
+            return;
+        }
+        self.stamp = Some(stamp);
+        self.reload();
+    }
+
+    /// 查一个候选该挂哪个 emoji；没有就空串（协议里空串 = 不画）。
+    fn lookup(&self, word: &str, code: &str) -> &str {
+        if !self.enabled {
+            return "";
+        }
+        self.map.lookup(word, code).unwrap_or("")
+    }
 }
 
 /// 自定义词库的热更新状态（D65）。
@@ -180,6 +285,8 @@ struct HintState {
     /// `None` = 没写，沿用当前值（§5 / D58）。
     ranking_gain: Option<f64>,
     ranking_half_life: Option<f64>,
+    /// `emoji.enabled`（§6.4 / D66）。没写就是 `true`：默认开。
+    emoji_enabled: bool,
     /// 上次检查文件的时刻（节流，见 [`HINT_RECHECK`]）。
     checked_at: Instant,
     /// 上次看到的 `(长度, 修改时间)`。**只有它变了才重读内容**：stat 比 read 便宜得多，
@@ -195,6 +302,7 @@ impl HintState {
             mode: forced.unwrap_or_default(),
             ranking_gain: None,
             ranking_half_life: None,
+            emoji_enabled: true,
             checked_at: Instant::now(),
             stamp: None,
         };
@@ -251,6 +359,7 @@ impl HintState {
         // 否则用户删掉这行会以为「恢复默认」，实际是被静默改成 0（永不学习）。
         self.ranking_gain = cfg.ranking_gain();
         self.ranking_half_life = cfg.ranking_half_life_days();
+        self.emoji_enabled = cfg.emoji_enabled();
     }
 }
 
@@ -320,6 +429,30 @@ impl Host {
                 None
             }
         };
+        // 词组 emoji（D66）与方案同目录。装不上只降级：没有 emoji 不影响打字，
+        // 而「候选行凭空变宽」才是真的坏事——空层正好什么都不挂。
+        let emoji_layer = {
+            let path = dir.join("emoji.toml");
+            let (layer, err) = EmojiLayer::load(&path);
+            if let Some(e) = err {
+                srv_error!("{e}；本次不挂 emoji");
+            } else if layer.entries.is_empty() {
+                srv_info!("emoji：{} 不存在或为空，本次不挂 emoji", path.display());
+            } else {
+                if let Some(note) = layer.verify() {
+                    srv_error!("{note}（文件被手改过？）");
+                }
+                srv_info!(
+                    "emoji：内置 {} 条 · {}",
+                    layer.entries.len(),
+                    path.display()
+                );
+            }
+            for w in &layer.warnings {
+                srv_error!("emoji {}：{w}", path.display());
+            }
+            layer
+        };
         Ok(Self {
             scheme,
             pinyin,
@@ -331,6 +464,7 @@ impl Host {
             hint: HintState::new(None, None),
             roots,
             words: WordsState::new(),
+            emoji: EmojiState::new(emoji_layer),
         })
     }
 
@@ -385,6 +519,19 @@ impl Host {
         }
         self.words.count = count;
         count
+    }
+
+    /// 接上 emoji 用户层：`path` 为 `None` 表示不读（单测与 `--selftest` 的默认）。
+    ///
+    /// 与 `configure_words` 同一条理由——不把「读用户目录」写进 `open`，否则单测
+    /// 会吃到开发机上的绑定。
+    pub fn configure_emoji(&mut self, path: Option<PathBuf>) {
+        self.emoji.configure(path);
+    }
+
+    /// 当前生效的 emoji 条目数（内置 + 用户层，`--selftest` 与日志用）。
+    pub fn emoji_count(&self) -> usize {
+        self.emoji.count
     }
 
     /// 接上码提示配置：`path` 为 `None` 表示不读文件，`forced` 压过文件值。
@@ -585,6 +732,10 @@ impl Host {
         // 所以必须在排序之前调用，否则这一拍仍在用上一份配置。
         let hint = self.hint.mode();
         self.sync_ranking();
+        // emoji 的热检查（D66）：总开关跟配置文件走，用户层跟自己的 mtime 走。
+        // 必须排在查询之前，否则这一拍仍在用旧映射。
+        self.emoji.enabled = self.hint.emoji_enabled;
+        self.emoji.refresh();
         // 自定义词库的热检查（D65）。必须排在查询之前，否则这一拍仍在用旧词表。
         if self.words.checked_at.elapsed() >= WORDS_RECHECK {
             self.words.checked_at = Instant::now();
@@ -626,6 +777,11 @@ impl Host {
         //   多段的拼音字本身就是「用户不会拆」的那半个词，这正是教学时刻。
         let show_codes = mixed.show_codes;
         let primary_is_pinyin = source == Source::Pinyin;
+        // emoji 查表要「这个词自己的五笔码」（§6.4 的按码绑定），而它**与码提示的
+        // 开关无关**——`hint.mode = off` 时 `Entry.code` 是空串，但用户绑在码上的
+        // emoji 仍该出现。所以在建条目的同时另存一份查表用的码：
+        // 拼音候选的 `wubi`（装载期反查的全码）优先，五笔候选的 `code` 就是它自己。
+        let mut emoji_codes: Vec<String> = Vec::with_capacity(limit);
         let entries: Vec<Entry> = mixed
             .into_all()
             .into_iter()
@@ -647,6 +803,12 @@ impl Host {
                             HintMode::FirstTime => self.store.usage(&c.word).n == 0,
                             HintMode::Off => false,
                         };
+                // 先取走查表用的码，再让下面的 `match` 移动 `c.wubi` / `c.code`。
+                emoji_codes.push(if c.wubi.is_empty() {
+                    c.code.clone()
+                } else {
+                    c.wubi.clone()
+                });
                 // 词中 chip（D64）压过一切常规路径：位置与内容都由 core 算好。
                 let (code, hint_at) = match c.chip {
                     Some(chip) => (chip.code, chip.chars_before.min(u8::MAX as usize) as u8),
@@ -661,9 +823,18 @@ impl Host {
                     label: c.kind_label.to_string(),
                     code,
                     hint_at,
+                    emoji: String::new(),
                 }
             })
             .collect();
+        // emoji 是**呈现层**：挂在候选建好之后，core 的排序与 `Candidate` 一个字段
+        // 都不动（D66 ④）。关掉总开关时这里整段不进，条目与 v6 逐字节一致。
+        let mut entries = entries;
+        if self.emoji.enabled {
+            for (e, code) in entries.iter_mut().zip(emoji_codes.iter()) {
+                e.emoji = self.emoji.lookup(&e.word, code).to_string();
+            }
+        }
         QueryReply {
             entries,
             source: proto_src,
@@ -1302,5 +1473,107 @@ mod tests {
             "重载后旧词应消失"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- emoji（§6.4 / D66） ----
+
+    /// 造一个方案目录：迷你夹具 + 可选的 `emoji.toml`（模拟内置层）。
+    fn temp_scheme(tag: &str, emoji: Option<&str>) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("heinrich-emoji-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["scheme.toml", "lexicon.tsv"] {
+            std::fs::copy(fixture().join(f), dir.join(f)).unwrap();
+        }
+        if let Some(body) = emoji {
+            std::fs::write(dir.join("emoji.toml"), body).unwrap();
+        }
+        dir
+    }
+
+    fn temp_emoji_user(tag: &str, body: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("heinrich-emoji-{}-{tag}.toml", std::process::id()));
+        std::fs::write(&p, body).expect("写临时用户层失败");
+        p
+    }
+
+    fn first_entry(h: &mut Host, code: &str) -> Entry {
+        match h.handle(Frame::Query {
+            code: code.into(),
+            limit: 9,
+        }) {
+            Some(Frame::Result { mut entries, .. }) => entries.remove(0),
+            other => panic!("期望 Result，得到 {other:?}"),
+        }
+    }
+
+    /// 验收 ①④：词组带 emoji，单字不带。挂载点只看「词长 ≥ 2」。
+    #[test]
+    fn emoji_attaches_to_words_only() {
+        let dir = temp_scheme(
+            "basic",
+            Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"),
+        );
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👍");
+        assert_eq!(first_entry(&mut h, "vbg").emoji, "", "单字「好」不挂");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 验收 ②③：用户层改绑覆盖内置、`enabled = false` 吃掉内置值。
+    #[test]
+    fn emoji_user_layer_overrides_then_disables() {
+        let dir = temp_scheme(
+            "override",
+            Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"),
+        );
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        let user = temp_emoji_user("override", "[[emoji]]\nword = \"好好\"\nemoji = \"👏\"\n");
+        h.configure_emoji(Some(user.clone()));
+        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👏");
+
+        std::fs::write(
+            &user,
+            "[[emoji]]\nword = \"好好\"\nemoji = \"👏\"\nenabled = false\n",
+        )
+        .unwrap();
+        h.configure_emoji(Some(user.clone()));
+        assert_eq!(first_entry(&mut h, "vbvb").emoji, "", "停用后应回落为不挂");
+        let _ = std::fs::remove_file(&user);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 按码绑定：同一个码下的候选都带这个 emoji，且**不受 `hint.mode` 影响**
+    /// ——码提示关掉时 `Entry.code` 是空串，但 emoji 的查表用的是候选自己的码。
+    #[test]
+    fn emoji_code_binding_survives_hint_off() {
+        let dir = temp_scheme(
+            "bycode",
+            Some("[[emoji]]\ncode = \"vbvb\"\nemoji = \"🔥\"\n"),
+        );
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        h.configure_hint(None, Some(HintMode::Off));
+        let e = first_entry(&mut h, "vbvb");
+        assert_eq!(e.word, "好好");
+        assert_eq!(e.code, "", "hint off 时不该有 chip");
+        assert_eq!(e.emoji, "🔥", "按码绑定与码提示是两件事");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 验收 ⑥：`emoji.enabled = false` 时一条都不挂——布局输入因此与 v6 完全一致。
+    #[test]
+    fn emoji_can_be_disabled_by_config() {
+        let dir = temp_scheme("off", Some("[[emoji]]\nword = \"好好\"\nemoji = \"👍\"\n"));
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        assert_eq!(first_entry(&mut h, "vbvb").emoji, "👍");
+
+        let mut cfg = std::env::temp_dir();
+        cfg.push(format!("heinrich-emoji-{}-off.toml", std::process::id()));
+        std::fs::write(&cfg, "emoji.enabled = false\n").unwrap();
+        h.configure_hint(Some(cfg.clone()), None);
+        assert_eq!(first_entry(&mut h, "vbvb").emoji, "");
+        let _ = std::fs::remove_file(&cfg);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

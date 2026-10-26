@@ -1,0 +1,9587 @@
+# 亨利 / Heinrich —— 词组 emoji 映射（生成物，请勿手改）
+# 重新生成：powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind emoji
+# source: Unicode CLDR common/annotations/zh.xml（Unicode License）
+# 用户改绑 / 停用请写 %APPDATA%\Heinrich\emoji.user.toml，本文件升级会被覆盖
+# sha256 只覆盖下方条目正文（word<TAB>emoji），供装载期比对本文件是否被改过
+entry_count = 2395
+sha256 = "fc6f6e979f222a2b6f1b0fb2f951124daef0e968b6fe7873283f90662e6035a8"
+
+[[emoji]]
+word = "一点"
+emoji = "🤏"
+
+[[emoji]]
+word = "一点点"
+emoji = "🤏"
+
+[[emoji]]
+word = "一男一女"
+emoji = "👫"
+
+[[emoji]]
+word = "七夕"
+emoji = "🎋"
+
+[[emoji]]
+word = "七点"
+emoji = "🕖"
+
+[[emoji]]
+word = "万圣节"
+emoji = "🍫"
+
+[[emoji]]
+word = "三明治"
+emoji = "🥪"
+
+[[emoji]]
+word = "三点"
+emoji = "🕒"
+
+[[emoji]]
+word = "三种"
+emoji = "🤟"
+
+[[emoji]]
+word = "三角"
+emoji = "⏭"
+
+[[emoji]]
+word = "三角形"
+emoji = "🔺"
+
+[[emoji]]
+word = "上升"
+emoji = "📈"
+
+[[emoji]]
+word = "上学"
+emoji = "🎒"
+
+[[emoji]]
+word = "上扬"
+emoji = "💹"
+
+[[emoji]]
+word = "上涨"
+emoji = "💹"
+
+[[emoji]]
+word = "上班"
+emoji = "💼"
+
+[[emoji]]
+word = "上衣"
+emoji = "🎽"
+
+[[emoji]]
+word = "下跌"
+emoji = "📉"
+
+[[emoji]]
+word = "下跪"
+emoji = "🧎"
+
+[[emoji]]
+word = "下降"
+emoji = "📉"
+
+[[emoji]]
+word = "下雨"
+emoji = "☔"
+
+[[emoji]]
+word = "下雪"
+emoji = "⛄"
+
+[[emoji]]
+word = "不准"
+emoji = "🚫"
+
+[[emoji]]
+word = "不好意思"
+emoji = "🙇"
+
+[[emoji]]
+word = "不安"
+emoji = "😨"
+
+[[emoji]]
+word = "不屑"
+emoji = "😒"
+
+[[emoji]]
+word = "不懂"
+emoji = "😕"
+
+[[emoji]]
+word = "不服"
+emoji = "😒"
+
+[[emoji]]
+word = "不满"
+emoji = "☹"
+
+[[emoji]]
+word = "不爽"
+emoji = "😠"
+
+[[emoji]]
+word = "不行"
+emoji = "🙅"
+
+[[emoji]]
+word = "不许"
+emoji = "🚫"
+
+[[emoji]]
+word = "不说"
+emoji = "🤭"
+
+[[emoji]]
+word = "丑小鸭"
+emoji = "🦢"
+
+[[emoji]]
+word = "专家"
+emoji = "🤓"
+
+[[emoji]]
+word = "专注"
+emoji = "😣"
+
+[[emoji]]
+word = "专辑"
+emoji = "💿"
+
+[[emoji]]
+word = "世界"
+emoji = "🌍"
+
+[[emoji]]
+word = "东京"
+emoji = "🗼"
+
+[[emoji]]
+word = "丝带"
+emoji = "🎀"
+
+[[emoji]]
+word = "两个女人"
+emoji = "👭"
+
+[[emoji]]
+word = "两个男人"
+emoji = "👬"
+
+[[emoji]]
+word = "两点"
+emoji = "🕑"
+
+[[emoji]]
+word = "严禁"
+emoji = "🈲"
+
+[[emoji]]
+word = "个人电脑"
+emoji = "💻"
+
+[[emoji]]
+word = "中国"
+emoji = "🐉"
+
+[[emoji]]
+word = "中心"
+emoji = "💠"
+
+[[emoji]]
+word = "中性"
+emoji = "🧑"
+
+[[emoji]]
+word = "中指"
+emoji = "🖕"
+
+[[emoji]]
+word = "中暑"
+emoji = "🥵"
+
+[[emoji]]
+word = "中止"
+emoji = "🫷"
+
+[[emoji]]
+word = "中秋"
+emoji = "🎑"
+
+[[emoji]]
+word = "中秋节"
+emoji = "🥮"
+
+[[emoji]]
+word = "中等"
+emoji = "🔉"
+
+[[emoji]]
+word = "中餐"
+emoji = "🍴"
+
+[[emoji]]
+word = "为什么"
+emoji = "❓"
+
+[[emoji]]
+word = "主意"
+emoji = "💡"
+
+[[emoji]]
+word = "主食"
+emoji = "🍚"
+
+[[emoji]]
+word = "举手"
+emoji = "✋"
+
+[[emoji]]
+word = "举起"
+emoji = "🤚"
+
+[[emoji]]
+word = "举重"
+emoji = "🏋"
+
+[[emoji]]
+word = "乌龙茶"
+emoji = "🍵"
+
+[[emoji]]
+word = "乌龟"
+emoji = "🐢"
+
+[[emoji]]
+word = "乐器"
+emoji = "🎷"
+
+[[emoji]]
+word = "乐谱"
+emoji = "🎵"
+
+[[emoji]]
+word = "乐队"
+emoji = "🪈"
+
+[[emoji]]
+word = "乒乓"
+emoji = "🏓"
+
+[[emoji]]
+word = "乒乓球"
+emoji = "🏓"
+
+[[emoji]]
+word = "九点"
+emoji = "🕘"
+
+[[emoji]]
+word = "九点半"
+emoji = "🕤"
+
+[[emoji]]
+word = "书包"
+emoji = "🎒"
+
+[[emoji]]
+word = "书呆子"
+emoji = "🤓"
+
+[[emoji]]
+word = "书本"
+emoji = "📕"
+
+[[emoji]]
+word = "书签"
+emoji = "📑"
+
+[[emoji]]
+word = "书籍"
+emoji = "📚"
+
+[[emoji]]
+word = "乳制品"
+emoji = "🧈"
+
+[[emoji]]
+word = "乳房"
+emoji = "🤱"
+
+[[emoji]]
+word = "乳液"
+emoji = "🧴"
+
+[[emoji]]
+word = "争论"
+emoji = "🫯"
+
+[[emoji]]
+word = "云彩"
+emoji = "☁"
+
+[[emoji]]
+word = "云朵"
+emoji = "☁"
+
+[[emoji]]
+word = "互联网"
+emoji = "🛜"
+
+[[emoji]]
+word = "五指"
+emoji = "✋"
+
+[[emoji]]
+word = "五点"
+emoji = "🕔"
+
+[[emoji]]
+word = "井盖"
+emoji = "🕳"
+
+[[emoji]]
+word = "亚军"
+emoji = "🥈"
+
+[[emoji]]
+word = "亚洲"
+emoji = "🌏"
+
+[[emoji]]
+word = "交叉"
+emoji = "⚔"
+
+[[emoji]]
+word = "交叉口"
+emoji = "🚦"
+
+[[emoji]]
+word = "交警"
+emoji = "👮"
+
+[[emoji]]
+word = "交通"
+emoji = "⛔"
+
+[[emoji]]
+word = "交通工具"
+emoji = "🛻"
+
+[[emoji]]
+word = "亮度"
+emoji = "🔅"
+
+[[emoji]]
+word = "亲亲"
+emoji = "💗"
+
+[[emoji]]
+word = "亲吻"
+emoji = "💋"
+
+[[emoji]]
+word = "亲子"
+emoji = "👪"
+
+[[emoji]]
+word = "人像"
+emoji = "👤"
+
+[[emoji]]
+word = "人物"
+emoji = "👲"
+
+[[emoji]]
+word = "人鱼"
+emoji = "🧜"
+
+[[emoji]]
+word = "亿万富翁"
+emoji = "🚤"
+
+[[emoji]]
+word = "介绍"
+emoji = "💁"
+
+[[emoji]]
+word = "仓鼠"
+emoji = "🐹"
+
+[[emoji]]
+word = "付钱"
+emoji = "💰"
+
+[[emoji]]
+word = "仙人掌"
+emoji = "🌵"
+
+[[emoji]]
+word = "仙女"
+emoji = "🧚"
+
+[[emoji]]
+word = "仙子"
+emoji = "🧚"
+
+[[emoji]]
+word = "企鹅"
+emoji = "🐧"
+
+[[emoji]]
+word = "伊斯兰"
+emoji = "☪"
+
+[[emoji]]
+word = "休闲"
+emoji = "👖"
+
+[[emoji]]
+word = "优雅"
+emoji = "🌹"
+
+[[emoji]]
+word = "会计"
+emoji = "🧾"
+
+[[emoji]]
+word = "会面"
+emoji = "🤝"
+
+[[emoji]]
+word = "传动"
+emoji = "⚙"
+
+[[emoji]]
+word = "传唤"
+emoji = "👮"
+
+[[emoji]]
+word = "传播"
+emoji = "📰"
+
+[[emoji]]
+word = "传真"
+emoji = "📠"
+
+[[emoji]]
+word = "传真机"
+emoji = "📠"
+
+[[emoji]]
+word = "伤口"
+emoji = "🩹"
+
+[[emoji]]
+word = "伤心"
+emoji = "💔"
+
+[[emoji]]
+word = "伦敦"
+emoji = "💂"
+
+[[emoji]]
+word = "伪装"
+emoji = "🥸"
+
+[[emoji]]
+word = "伸手"
+emoji = "🫱"
+
+[[emoji]]
+word = "位子"
+emoji = "💺"
+
+[[emoji]]
+word = "位置"
+emoji = "📍"
+
+[[emoji]]
+word = "低落"
+emoji = "🙎"
+
+[[emoji]]
+word = "住宅"
+emoji = "🏘"
+
+[[emoji]]
+word = "住家"
+emoji = "🏠"
+
+[[emoji]]
+word = "佐料"
+emoji = "🧄"
+
+[[emoji]]
+word = "体操"
+emoji = "🤸"
+
+[[emoji]]
+word = "体育"
+emoji = "⛹"
+
+[[emoji]]
+word = "体育馆"
+emoji = "🏟"
+
+[[emoji]]
+word = "佛教"
+emoji = "🪷"
+
+[[emoji]]
+word = "你好"
+emoji = "👋"
+
+[[emoji]]
+word = "佳节"
+emoji = "🎑"
+
+[[emoji]]
+word = "侠客"
+emoji = "🥷"
+
+[[emoji]]
+word = "侦探"
+emoji = "🕵"
+
+[[emoji]]
+word = "便便"
+emoji = "🪠"
+
+[[emoji]]
+word = "便利店"
+emoji = "🏪"
+
+[[emoji]]
+word = "便当"
+emoji = "🍱"
+
+[[emoji]]
+word = "便携"
+emoji = "💾"
+
+[[emoji]]
+word = "保密"
+emoji = "㊙"
+
+[[emoji]]
+word = "保护"
+emoji = "🪬"
+
+[[emoji]]
+word = "保留"
+emoji = "🈯"
+
+[[emoji]]
+word = "保龄球"
+emoji = "🎳"
+
+[[emoji]]
+word = "信仰"
+emoji = "🪯"
+
+[[emoji]]
+word = "信件"
+emoji = "✉"
+
+[[emoji]]
+word = "信号"
+emoji = "📶"
+
+[[emoji]]
+word = "信封"
+emoji = "✉"
+
+[[emoji]]
+word = "信息"
+emoji = "✉"
+
+[[emoji]]
+word = "信用"
+emoji = "💳"
+
+[[emoji]]
+word = "信用卡"
+emoji = "💳"
+
+[[emoji]]
+word = "信箱"
+emoji = "📪"
+
+[[emoji]]
+word = "修剪"
+emoji = "✂"
+
+[[emoji]]
+word = "修理"
+emoji = "🔨"
+
+[[emoji]]
+word = "俱乐部"
+emoji = "🍷"
+
+[[emoji]]
+word = "倔强"
+emoji = "🫏"
+
+[[emoji]]
+word = "借记卡"
+emoji = "💳"
+
+[[emoji]]
+word = "倦容"
+emoji = "😫"
+
+[[emoji]]
+word = "倾倒"
+emoji = "🫗"
+
+[[emoji]]
+word = "做好"
+emoji = "☑"
+
+[[emoji]]
+word = "做菜"
+emoji = "🍽"
+
+[[emoji]]
+word = "停止"
+emoji = "⏸"
+
+[[emoji]]
+word = "停车"
+emoji = "🅿"
+
+[[emoji]]
+word = "健康"
+emoji = "🍎"
+
+[[emoji]]
+word = "健身房"
+emoji = "💪"
+
+[[emoji]]
+word = "偷看"
+emoji = "🫣"
+
+[[emoji]]
+word = "偷窥"
+emoji = "🫣"
+
+[[emoji]]
+word = "傲慢"
+emoji = "😤"
+
+[[emoji]]
+word = "傻瓜"
+emoji = "🪿"
+
+[[emoji]]
+word = "傻笑"
+emoji = "🤭"
+
+[[emoji]]
+word = "僵尸"
+emoji = "🧟"
+
+[[emoji]]
+word = "儿童"
+emoji = "👦"
+
+[[emoji]]
+word = "兄弟"
+emoji = "👨"
+
+[[emoji]]
+word = "充满"
+emoji = "🫃"
+
+[[emoji]]
+word = "光亮"
+emoji = "🧨"
+
+[[emoji]]
+word = "光头"
+emoji = "🦲"
+
+[[emoji]]
+word = "光环"
+emoji = "😇"
+
+[[emoji]]
+word = "光盘"
+emoji = "💿"
+
+[[emoji]]
+word = "光碟"
+emoji = "📀"
+
+[[emoji]]
+word = "光线"
+emoji = "☀"
+
+[[emoji]]
+word = "免费"
+emoji = "🈚"
+
+[[emoji]]
+word = "兑换"
+emoji = "💱"
+
+[[emoji]]
+word = "兔子"
+emoji = "🐇"
+
+[[emoji]]
+word = "入场券"
+emoji = "🎟"
+
+[[emoji]]
+word = "入睡"
+emoji = "🛌"
+
+[[emoji]]
+word = "全球"
+emoji = "🌎"
+
+[[emoji]]
+word = "八卦"
+emoji = "💁"
+
+[[emoji]]
+word = "八戒"
+emoji = "🐷"
+
+[[emoji]]
+word = "八点"
+emoji = "🕗"
+
+[[emoji]]
+word = "八点半"
+emoji = "🕣"
+
+[[emoji]]
+word = "公主"
+emoji = "👸"
+
+[[emoji]]
+word = "公交"
+emoji = "🚌"
+
+[[emoji]]
+word = "公交车"
+emoji = "🚌"
+
+[[emoji]]
+word = "公共汽车"
+emoji = "🚎"
+
+[[emoji]]
+word = "公园"
+emoji = "🏞"
+
+[[emoji]]
+word = "公墓"
+emoji = "🪦"
+
+[[emoji]]
+word = "公安"
+emoji = "👮"
+
+[[emoji]]
+word = "公平"
+emoji = "⚖"
+
+[[emoji]]
+word = "公文包"
+emoji = "💼"
+
+[[emoji]]
+word = "公正"
+emoji = "⚖"
+
+[[emoji]]
+word = "公牛"
+emoji = "♉"
+
+[[emoji]]
+word = "公路"
+emoji = "🛣"
+
+[[emoji]]
+word = "公鸡"
+emoji = "🐓"
+
+[[emoji]]
+word = "六点"
+emoji = "🕕"
+
+[[emoji]]
+word = "六点半"
+emoji = "🕡"
+
+[[emoji]]
+word = "关机"
+emoji = "📴"
+
+[[emoji]]
+word = "关闭"
+emoji = "📴"
+
+[[emoji]]
+word = "兴奋"
+emoji = "🎉"
+
+[[emoji]]
+word = "兴建"
+emoji = "🏗"
+
+[[emoji]]
+word = "内向"
+emoji = "🫥"
+
+[[emoji]]
+word = "内裤"
+emoji = "🩳"
+
+[[emoji]]
+word = "内部"
+emoji = "💠"
+
+[[emoji]]
+word = "再次"
+emoji = "🔄"
+
+[[emoji]]
+word = "再生"
+emoji = "♻"
+
+[[emoji]]
+word = "再见"
+emoji = "👋"
+
+[[emoji]]
+word = "冒汗"
+emoji = "😓"
+
+[[emoji]]
+word = "写作"
+emoji = "📔"
+
+[[emoji]]
+word = "写字"
+emoji = "✒"
+
+[[emoji]]
+word = "写字楼"
+emoji = "🏢"
+
+[[emoji]]
+word = "军事"
+emoji = "🪖"
+
+[[emoji]]
+word = "军用"
+emoji = "🪖"
+
+[[emoji]]
+word = "军警"
+emoji = "🔰"
+
+[[emoji]]
+word = "军队"
+emoji = "🫡"
+
+[[emoji]]
+word = "农作物"
+emoji = "🌽"
+
+[[emoji]]
+word = "冠军"
+emoji = "🏆"
+
+[[emoji]]
+word = "冥想"
+emoji = "🧘"
+
+[[emoji]]
+word = "冬天"
+emoji = "🪾"
+
+[[emoji]]
+word = "冬季"
+emoji = "🪾"
+
+[[emoji]]
+word = "冰冷"
+emoji = "🧊"
+
+[[emoji]]
+word = "冰块"
+emoji = "🧊"
+
+[[emoji]]
+word = "冰山"
+emoji = "🧊"
+
+[[emoji]]
+word = "冰淇淋"
+emoji = "🍦"
+
+[[emoji]]
+word = "冰激凌"
+emoji = "🍨"
+
+[[emoji]]
+word = "冲泡"
+emoji = "🫖"
+
+[[emoji]]
+word = "冲浪"
+emoji = "🏄"
+
+[[emoji]]
+word = "冷冰冰"
+emoji = "🥶"
+
+[[emoji]]
+word = "冷却"
+emoji = "🧊"
+
+[[emoji]]
+word = "冷汗"
+emoji = "😅"
+
+[[emoji]]
+word = "冷漠"
+emoji = "😐"
+
+[[emoji]]
+word = "冷笑"
+emoji = "🫠"
+
+[[emoji]]
+word = "冷饮"
+emoji = "🧊"
+
+[[emoji]]
+word = "净化"
+emoji = "⚗"
+
+[[emoji]]
+word = "凉快"
+emoji = "🪭"
+
+[[emoji]]
+word = "凉鞋"
+emoji = "👡"
+
+[[emoji]]
+word = "凋谢"
+emoji = "🥀"
+
+[[emoji]]
+word = "凝视"
+emoji = "🫣"
+
+[[emoji]]
+word = "几何"
+emoji = "🔲"
+
+[[emoji]]
+word = "凭据"
+emoji = "🧾"
+
+[[emoji]]
+word = "凭证"
+emoji = "🪪"
+
+[[emoji]]
+word = "出入口"
+emoji = "🚪"
+
+[[emoji]]
+word = "出境"
+emoji = "🛫"
+
+[[emoji]]
+word = "出汗"
+emoji = "😅"
+
+[[emoji]]
+word = "出租车"
+emoji = "🚕"
+
+[[emoji]]
+word = "分隔"
+emoji = "🗂"
+
+[[emoji]]
+word = "创意"
+emoji = "🎨"
+
+[[emoji]]
+word = "删除"
+emoji = "🪌"
+
+[[emoji]]
+word = "别墅"
+emoji = "🏡"
+
+[[emoji]]
+word = "别看"
+emoji = "🙈"
+
+[[emoji]]
+word = "到站"
+emoji = "🚆"
+
+[[emoji]]
+word = "到达"
+emoji = "🛬"
+
+[[emoji]]
+word = "制作"
+emoji = "⏺"
+
+[[emoji]]
+word = "制服"
+emoji = "🥋"
+
+[[emoji]]
+word = "刷卡"
+emoji = "💳"
+
+[[emoji]]
+word = "刷子"
+emoji = "🪥"
+
+[[emoji]]
+word = "刷新"
+emoji = "🔃"
+
+[[emoji]]
+word = "刺客"
+emoji = "🥷"
+
+[[emoji]]
+word = "刺猬"
+emoji = "🦔"
+
+[[emoji]]
+word = "剃刀"
+emoji = "🪒"
+
+[[emoji]]
+word = "剃须刀"
+emoji = "🪒"
+
+[[emoji]]
+word = "前台"
+emoji = "💁"
+
+[[emoji]]
+word = "前门"
+emoji = "🚪"
+
+[[emoji]]
+word = "剧院"
+emoji = "🎦"
+
+[[emoji]]
+word = "剪刀"
+emoji = "✂"
+
+[[emoji]]
+word = "剪影"
+emoji = "👥"
+
+[[emoji]]
+word = "剪裁"
+emoji = "✂"
+
+[[emoji]]
+word = "剪贴板"
+emoji = "📋"
+
+[[emoji]]
+word = "剽窃"
+emoji = "🦜"
+
+[[emoji]]
+word = "办公"
+emoji = "📁"
+
+[[emoji]]
+word = "办公室"
+emoji = "💼"
+
+[[emoji]]
+word = "办公楼"
+emoji = "🏢"
+
+[[emoji]]
+word = "加号"
+emoji = "➕"
+
+[[emoji]]
+word = "加油"
+emoji = "⛽"
+
+[[emoji]]
+word = "加油站"
+emoji = "⛽"
+
+[[emoji]]
+word = "动物"
+emoji = "☣"
+
+[[emoji]]
+word = "动物园"
+emoji = "🐅"
+
+[[emoji]]
+word = "动车"
+emoji = "🚄"
+
+[[emoji]]
+word = "勋章"
+emoji = "🎖"
+
+[[emoji]]
+word = "勤劳"
+emoji = "🐝"
+
+[[emoji]]
+word = "勺子"
+emoji = "🥄"
+
+[[emoji]]
+word = "勾选"
+emoji = "☑"
+
+[[emoji]]
+word = "包包"
+emoji = "👜"
+
+[[emoji]]
+word = "包工头"
+emoji = "👷"
+
+[[emoji]]
+word = "包装"
+emoji = "🧳"
+
+[[emoji]]
+word = "包裹"
+emoji = "📦"
+
+[[emoji]]
+word = "匆忙"
+emoji = "🏃"
+
+[[emoji]]
+word = "匕首"
+emoji = "🗡"
+
+[[emoji]]
+word = "化妆"
+emoji = "💄"
+
+[[emoji]]
+word = "化妆品"
+emoji = "💄"
+
+[[emoji]]
+word = "化学"
+emoji = "🧪"
+
+[[emoji]]
+word = "化疗"
+emoji = "🦲"
+
+[[emoji]]
+word = "匮乏"
+emoji = "🤌"
+
+[[emoji]]
+word = "医学"
+emoji = "⚕"
+
+[[emoji]]
+word = "医生"
+emoji = "🏥"
+
+[[emoji]]
+word = "医疗"
+emoji = "🩸"
+
+[[emoji]]
+word = "医药"
+emoji = "🏥"
+
+[[emoji]]
+word = "医院"
+emoji = "🏥"
+
+[[emoji]]
+word = "十一点"
+emoji = "🕚"
+
+[[emoji]]
+word = "十二点"
+emoji = "🕛"
+
+[[emoji]]
+word = "十亿"
+emoji = "💰"
+
+[[emoji]]
+word = "十字"
+emoji = "⛑"
+
+[[emoji]]
+word = "十字架"
+emoji = "✝"
+
+[[emoji]]
+word = "十点"
+emoji = "🕙"
+
+[[emoji]]
+word = "升天"
+emoji = "🪽"
+
+[[emoji]]
+word = "午餐"
+emoji = "🍴"
+
+[[emoji]]
+word = "半身"
+emoji = "👥"
+
+[[emoji]]
+word = "华丽"
+emoji = "🦩"
+
+[[emoji]]
+word = "协议"
+emoji = "🤝"
+
+[[emoji]]
+word = "单板"
+emoji = "🏂"
+
+[[emoji]]
+word = "单独"
+emoji = "🔘"
+
+[[emoji]]
+word = "单车"
+emoji = "🚲"
+
+[[emoji]]
+word = "卖弄"
+emoji = "🦚"
+
+[[emoji]]
+word = "卖点"
+emoji = "🪝"
+
+[[emoji]]
+word = "南极"
+emoji = "🐧"
+
+[[emoji]]
+word = "南瓜"
+emoji = "🎃"
+
+[[emoji]]
+word = "博物馆"
+emoji = "🎨"
+
+[[emoji]]
+word = "卡片"
+emoji = "📇"
+
+[[emoji]]
+word = "卡车"
+emoji = "🚚"
+
+[[emoji]]
+word = "卧底"
+emoji = "👮"
+
+[[emoji]]
+word = "卫兵"
+emoji = "💂"
+
+[[emoji]]
+word = "卫士"
+emoji = "💂"
+
+[[emoji]]
+word = "卫星"
+emoji = "🛰"
+
+[[emoji]]
+word = "卫生"
+emoji = "🪥"
+
+[[emoji]]
+word = "卫生纸"
+emoji = "🧻"
+
+[[emoji]]
+word = "卫生间"
+emoji = "🚹"
+
+[[emoji]]
+word = "印度"
+emoji = "🕉"
+
+[[emoji]]
+word = "危险"
+emoji = "⚡"
+
+[[emoji]]
+word = "卷发"
+emoji = "🦱"
+
+[[emoji]]
+word = "卷曲"
+emoji = "📃"
+
+[[emoji]]
+word = "卷烟"
+emoji = "🚬"
+
+[[emoji]]
+word = "卷起"
+emoji = "🗞"
+
+[[emoji]]
+word = "卷轴"
+emoji = "📜"
+
+[[emoji]]
+word = "压制"
+emoji = "🧯"
+
+[[emoji]]
+word = "压缩"
+emoji = "🗜"
+
+[[emoji]]
+word = "厌倦"
+emoji = "🫩"
+
+[[emoji]]
+word = "厕所"
+emoji = "🚹"
+
+[[emoji]]
+word = "原子"
+emoji = "⚛"
+
+[[emoji]]
+word = "原木"
+emoji = "🪵"
+
+[[emoji]]
+word = "及格"
+emoji = "🈴"
+
+[[emoji]]
+word = "友谊"
+emoji = "🫂"
+
+[[emoji]]
+word = "双子"
+emoji = "♊"
+
+[[emoji]]
+word = "双子座"
+emoji = "♊"
+
+[[emoji]]
+word = "双峰"
+emoji = "🐫"
+
+[[emoji]]
+word = "双手"
+emoji = "👐"
+
+[[emoji]]
+word = "双眼"
+emoji = "👀"
+
+[[emoji]]
+word = "双胞胎"
+emoji = "👯"
+
+[[emoji]]
+word = "双鱼"
+emoji = "♓"
+
+[[emoji]]
+word = "双鱼座"
+emoji = "🐟"
+
+[[emoji]]
+word = "反对"
+emoji = "👎"
+
+[[emoji]]
+word = "反射"
+emoji = "🪞"
+
+[[emoji]]
+word = "反弹"
+emoji = "🪃"
+
+[[emoji]]
+word = "反手"
+emoji = "👆"
+
+[[emoji]]
+word = "发信"
+emoji = "📤"
+
+[[emoji]]
+word = "发光"
+emoji = "🌟"
+
+[[emoji]]
+word = "发出"
+emoji = "📩"
+
+[[emoji]]
+word = "发型"
+emoji = "💇"
+
+[[emoji]]
+word = "发夹"
+emoji = "🪮"
+
+[[emoji]]
+word = "发射"
+emoji = "🚀"
+
+[[emoji]]
+word = "发火"
+emoji = "😡"
+
+[[emoji]]
+word = "发烧"
+emoji = "🦟"
+
+[[emoji]]
+word = "发热"
+emoji = "🦟"
+
+[[emoji]]
+word = "发票"
+emoji = "🧾"
+
+[[emoji]]
+word = "发芽"
+emoji = "🌱"
+
+[[emoji]]
+word = "发言"
+emoji = "💬"
+
+[[emoji]]
+word = "发誓"
+emoji = "🤬"
+
+[[emoji]]
+word = "发财"
+emoji = "🤑"
+
+[[emoji]]
+word = "发送"
+emoji = "📨"
+
+[[emoji]]
+word = "发邮件"
+emoji = "📤"
+
+[[emoji]]
+word = "发酵"
+emoji = "🫝"
+
+[[emoji]]
+word = "发飙"
+emoji = "😡"
+
+[[emoji]]
+word = "取消"
+emoji = "✖"
+
+[[emoji]]
+word = "受伤"
+emoji = "🤕"
+
+[[emoji]]
+word = "变化"
+emoji = "🫌"
+
+[[emoji]]
+word = "变现"
+emoji = "💰"
+
+[[emoji]]
+word = "口水"
+emoji = "😋"
+
+[[emoji]]
+word = "口红"
+emoji = "👄"
+
+[[emoji]]
+word = "口罩"
+emoji = "😷"
+
+[[emoji]]
+word = "古典"
+emoji = "🏛"
+
+[[emoji]]
+word = "古建筑"
+emoji = "🏛"
+
+[[emoji]]
+word = "古板"
+emoji = "🧐"
+
+[[emoji]]
+word = "召唤"
+emoji = "🧙"
+
+[[emoji]]
+word = "叮当"
+emoji = "🔔"
+
+[[emoji]]
+word = "可以"
+emoji = "👌"
+
+[[emoji]]
+word = "可怕"
+emoji = "😝"
+
+[[emoji]]
+word = "可接受"
+emoji = "🉑"
+
+[[emoji]]
+word = "可爱"
+emoji = "🩵"
+
+[[emoji]]
+word = "台式"
+emoji = "🖥"
+
+[[emoji]]
+word = "台式电脑"
+emoji = "🖥"
+
+[[emoji]]
+word = "台球"
+emoji = "🎱"
+
+[[emoji]]
+word = "台阶"
+emoji = "🪜"
+
+[[emoji]]
+word = "台风"
+emoji = "🌀"
+
+[[emoji]]
+word = "右侧"
+emoji = "🫺"
+
+[[emoji]]
+word = "右手"
+emoji = "🫱"
+
+[[emoji]]
+word = "叶子"
+emoji = "🍃"
+
+[[emoji]]
+word = "号角"
+emoji = "🥳"
+
+[[emoji]]
+word = "吃惊"
+emoji = "😮"
+
+[[emoji]]
+word = "吃早餐"
+emoji = "🍴"
+
+[[emoji]]
+word = "吃药"
+emoji = "💊"
+
+[[emoji]]
+word = "吃饭"
+emoji = "🍴"
+
+[[emoji]]
+word = "吉他"
+emoji = "🎸"
+
+[[emoji]]
+word = "吊牌"
+emoji = "🏷"
+
+[[emoji]]
+word = "同好"
+emoji = "👯"
+
+[[emoji]]
+word = "同志"
+emoji = "🌈"
+
+[[emoji]]
+word = "同情"
+emoji = "😮"
+
+[[emoji]]
+word = "同意"
+emoji = "👍"
+
+[[emoji]]
+word = "名牌"
+emoji = "📛"
+
+[[emoji]]
+word = "后门"
+emoji = "🚪"
+
+[[emoji]]
+word = "向上"
+emoji = "🔝"
+
+[[emoji]]
+word = "向下"
+emoji = "🔽"
+
+[[emoji]]
+word = "向前"
+emoji = "⏩"
+
+[[emoji]]
+word = "向右"
+emoji = "⏯"
+
+[[emoji]]
+word = "向左"
+emoji = "🫲"
+
+[[emoji]]
+word = "向日葵"
+emoji = "🌻"
+
+[[emoji]]
+word = "吓人"
+emoji = "👹"
+
+[[emoji]]
+word = "吓死"
+emoji = "😱"
+
+[[emoji]]
+word = "君主"
+emoji = "🫅"
+
+[[emoji]]
+word = "否决"
+emoji = "👎"
+
+[[emoji]]
+word = "听力"
+emoji = "🧏"
+
+[[emoji]]
+word = "听筒"
+emoji = "📞"
+
+[[emoji]]
+word = "吵架"
+emoji = "🫯"
+
+[[emoji]]
+word = "吸引"
+emoji = "🧲"
+
+[[emoji]]
+word = "吸引力"
+emoji = "🧲"
+
+[[emoji]]
+word = "吸收"
+emoji = "🧽"
+
+[[emoji]]
+word = "吸气"
+emoji = "🫁"
+
+[[emoji]]
+word = "吸水"
+emoji = "🧽"
+
+[[emoji]]
+word = "吸烟"
+emoji = "🚬"
+
+[[emoji]]
+word = "吸管"
+emoji = "🧃"
+
+[[emoji]]
+word = "吸血鬼"
+emoji = "🦇"
+
+[[emoji]]
+word = "告别"
+emoji = "🫂"
+
+[[emoji]]
+word = "告示"
+emoji = "🪧"
+
+[[emoji]]
+word = "呕吐"
+emoji = "🤮"
+
+[[emoji]]
+word = "呜呜"
+emoji = "🚆"
+
+[[emoji]]
+word = "周年纪念"
+emoji = "💐"
+
+[[emoji]]
+word = "周末"
+emoji = "👖"
+
+[[emoji]]
+word = "味道"
+emoji = "🧂"
+
+[[emoji]]
+word = "呵呵"
+emoji = "☺"
+
+[[emoji]]
+word = "呼吸"
+emoji = "🫁"
+
+[[emoji]]
+word = "呼喊"
+emoji = "📣"
+
+[[emoji]]
+word = "呼噜"
+emoji = "💤"
+
+[[emoji]]
+word = "呼气"
+emoji = "🫁"
+
+[[emoji]]
+word = "命中"
+emoji = "🎯"
+
+[[emoji]]
+word = "命运"
+emoji = "🔮"
+
+[[emoji]]
+word = "和平"
+emoji = "☮"
+
+[[emoji]]
+word = "和服"
+emoji = "👘"
+
+[[emoji]]
+word = "咒骂"
+emoji = "🤬"
+
+[[emoji]]
+word = "咖啡"
+emoji = "☕"
+
+[[emoji]]
+word = "咖喱"
+emoji = "🍛"
+
+[[emoji]]
+word = "咬牙切齿"
+emoji = "😬"
+
+[[emoji]]
+word = "哀伤"
+emoji = "😢"
+
+[[emoji]]
+word = "哇塞"
+emoji = "🫢"
+
+[[emoji]]
+word = "哈哈"
+emoji = "😃"
+
+[[emoji]]
+word = "哈密瓜"
+emoji = "🍈"
+
+[[emoji]]
+word = "哈欠"
+emoji = "🥱"
+
+[[emoji]]
+word = "哎呀"
+emoji = "🤭"
+
+[[emoji]]
+word = "哎哟"
+emoji = "🪼"
+
+[[emoji]]
+word = "哭泣"
+emoji = "🥹"
+
+[[emoji]]
+word = "哺乳"
+emoji = "🤱"
+
+[[emoji]]
+word = "哺乳动物"
+emoji = "🫎"
+
+[[emoji]]
+word = "唇膏"
+emoji = "💄"
+
+[[emoji]]
+word = "唱歌"
+emoji = "🎤"
+
+[[emoji]]
+word = "商务"
+emoji = "🕴"
+
+[[emoji]]
+word = "商场"
+emoji = "🏬"
+
+[[emoji]]
+word = "商店"
+emoji = "🏪"
+
+[[emoji]]
+word = "啤酒"
+emoji = "🍺"
+
+[[emoji]]
+word = "啤酒节"
+emoji = "🍺"
+
+[[emoji]]
+word = "喂奶"
+emoji = "🤱"
+
+[[emoji]]
+word = "喇叭"
+emoji = "📢"
+
+[[emoji]]
+word = "喜庆"
+emoji = "🏮"
+
+[[emoji]]
+word = "喜悦"
+emoji = "🥲"
+
+[[emoji]]
+word = "喜欢"
+emoji = "😻"
+
+[[emoji]]
+word = "喝彩"
+emoji = "🥳"
+
+[[emoji]]
+word = "喝水"
+emoji = "🚰"
+
+[[emoji]]
+word = "喝酒"
+emoji = "🍶"
+
+[[emoji]]
+word = "喝醉"
+emoji = "🥴"
+
+[[emoji]]
+word = "喷嚏"
+emoji = "🤧"
+
+[[emoji]]
+word = "喷头"
+emoji = "🚿"
+
+[[emoji]]
+word = "喷水"
+emoji = "🐳"
+
+[[emoji]]
+word = "喷泉"
+emoji = "⛲"
+
+[[emoji]]
+word = "喷洒"
+emoji = "🫟"
+
+[[emoji]]
+word = "嘴唇"
+emoji = "🫦"
+
+[[emoji]]
+word = "嘻嘻"
+emoji = "😁"
+
+[[emoji]]
+word = "嘿嘿"
+emoji = "😀"
+
+[[emoji]]
+word = "器官"
+emoji = "🫀"
+
+[[emoji]]
+word = "四叶草"
+emoji = "🍀"
+
+[[emoji]]
+word = "四点"
+emoji = "🕓"
+
+[[emoji]]
+word = "回收"
+emoji = "♻"
+
+[[emoji]]
+word = "回答"
+emoji = "🟰"
+
+[[emoji]]
+word = "回退"
+emoji = "🔙"
+
+[[emoji]]
+word = "团结"
+emoji = "✊"
+
+[[emoji]]
+word = "困境"
+emoji = "🫝"
+
+[[emoji]]
+word = "困惑"
+emoji = "😖"
+
+[[emoji]]
+word = "困扰"
+emoji = "😕"
+
+[[emoji]]
+word = "围巾"
+emoji = "🧣"
+
+[[emoji]]
+word = "固体"
+emoji = "🪨"
+
+[[emoji]]
+word = "固定"
+emoji = "📌"
+
+[[emoji]]
+word = "固定电话"
+emoji = "☎"
+
+[[emoji]]
+word = "固话"
+emoji = "☎"
+
+[[emoji]]
+word = "国王"
+emoji = "👑"
+
+[[emoji]]
+word = "国际象棋"
+emoji = "♟"
+
+[[emoji]]
+word = "图书"
+emoji = "📚"
+
+[[emoji]]
+word = "图书馆"
+emoji = "📖"
+
+[[emoji]]
+word = "图形"
+emoji = "📊"
+
+[[emoji]]
+word = "图片"
+emoji = "🧩"
+
+[[emoji]]
+word = "图表"
+emoji = "📊"
+
+[[emoji]]
+word = "圆圈"
+emoji = "🛞"
+
+[[emoji]]
+word = "圆心"
+emoji = "🔘"
+
+[[emoji]]
+word = "圆珠笔"
+emoji = "🖊"
+
+[[emoji]]
+word = "圆盘"
+emoji = "🥏"
+
+[[emoji]]
+word = "土星"
+emoji = "🪐"
+
+[[emoji]]
+word = "土著"
+emoji = "🪃"
+
+[[emoji]]
+word = "土豆"
+emoji = "🥔"
+
+[[emoji]]
+word = "圣诞"
+emoji = "🎄"
+
+[[emoji]]
+word = "圣诞树"
+emoji = "🌲"
+
+[[emoji]]
+word = "圣诞老人"
+emoji = "🎅"
+
+[[emoji]]
+word = "圣诞节"
+emoji = "🎅"
+
+[[emoji]]
+word = "地图"
+emoji = "🗾"
+
+[[emoji]]
+word = "地板"
+emoji = "🤣"
+
+[[emoji]]
+word = "地点"
+emoji = "🛐"
+
+[[emoji]]
+word = "地球"
+emoji = "🌍"
+
+[[emoji]]
+word = "地瓜"
+emoji = "🍠"
+
+[[emoji]]
+word = "地铁"
+emoji = "🚇"
+
+[[emoji]]
+word = "地震"
+emoji = "🛘"
+
+[[emoji]]
+word = "场所"
+emoji = "🎦"
+
+[[emoji]]
+word = "坏蛋"
+emoji = "🦹"
+
+[[emoji]]
+word = "坐下"
+emoji = "🪑"
+
+[[emoji]]
+word = "坚果"
+emoji = "🥜"
+
+[[emoji]]
+word = "坟墓"
+emoji = "🪦"
+
+[[emoji]]
+word = "坠落"
+emoji = "🪋"
+
+[[emoji]]
+word = "垂涎"
+emoji = "🤤"
+
+[[emoji]]
+word = "垃圾"
+emoji = "🗑"
+
+[[emoji]]
+word = "垃圾桶"
+emoji = "🗑"
+
+[[emoji]]
+word = "埋葬"
+emoji = "⚰"
+
+[[emoji]]
+word = "城堡"
+emoji = "🏯"
+
+[[emoji]]
+word = "城市"
+emoji = "🌆"
+
+[[emoji]]
+word = "培养"
+emoji = "🧫"
+
+[[emoji]]
+word = "培根"
+emoji = "🐖"
+
+[[emoji]]
+word = "培育"
+emoji = "🪴"
+
+[[emoji]]
+word = "基因"
+emoji = "🧬"
+
+[[emoji]]
+word = "基督"
+emoji = "⛪"
+
+[[emoji]]
+word = "基督教"
+emoji = "⛪"
+
+[[emoji]]
+word = "塌方"
+emoji = "🛘"
+
+[[emoji]]
+word = "塑像"
+emoji = "🗽"
+
+[[emoji]]
+word = "填充"
+emoji = "🧸"
+
+[[emoji]]
+word = "墓地"
+emoji = "🪦"
+
+[[emoji]]
+word = "墓碑"
+emoji = "🪦"
+
+[[emoji]]
+word = "墨西哥"
+emoji = "🌮"
+
+[[emoji]]
+word = "墨镜"
+emoji = "🕶"
+
+[[emoji]]
+word = "士兵"
+emoji = "🥷"
+
+[[emoji]]
+word = "声音"
+emoji = "🔇"
+
+[[emoji]]
+word = "处女座"
+emoji = "♍"
+
+[[emoji]]
+word = "备忘录"
+emoji = "📝"
+
+[[emoji]]
+word = "复印"
+emoji = "🖨"
+
+[[emoji]]
+word = "复选框"
+emoji = "☑"
+
+[[emoji]]
+word = "夕阳"
+emoji = "🌇"
+
+[[emoji]]
+word = "外卖"
+emoji = "🥡"
+
+[[emoji]]
+word = "外套"
+emoji = "🧥"
+
+[[emoji]]
+word = "外星"
+emoji = "👾"
+
+[[emoji]]
+word = "外星人"
+emoji = "🔭"
+
+[[emoji]]
+word = "外汇"
+emoji = "💱"
+
+[[emoji]]
+word = "外衣"
+emoji = "🥼"
+
+[[emoji]]
+word = "多云"
+emoji = "⛅"
+
+[[emoji]]
+word = "多孔"
+emoji = "🧽"
+
+[[emoji]]
+word = "夜幕"
+emoji = "🌉"
+
+[[emoji]]
+word = "夜晚"
+emoji = "🌃"
+
+[[emoji]]
+word = "夜里"
+emoji = "🛌"
+
+[[emoji]]
+word = "大便"
+emoji = "💩"
+
+[[emoji]]
+word = "大哭"
+emoji = "😭"
+
+[[emoji]]
+word = "大型"
+emoji = "🦣"
+
+[[emoji]]
+word = "大声"
+emoji = "🔊"
+
+[[emoji]]
+word = "大巴"
+emoji = "🚍"
+
+[[emoji]]
+word = "大海"
+emoji = "🫍"
+
+[[emoji]]
+word = "大猩猩"
+emoji = "🦍"
+
+[[emoji]]
+word = "大王"
+emoji = "🃏"
+
+[[emoji]]
+word = "大眼"
+emoji = "🤪"
+
+[[emoji]]
+word = "大眼睛"
+emoji = "🥺"
+
+[[emoji]]
+word = "大笑"
+emoji = "😄"
+
+[[emoji]]
+word = "大罗"
+emoji = "⚽"
+
+[[emoji]]
+word = "大胡子"
+emoji = "🧔"
+
+[[emoji]]
+word = "大脑"
+emoji = "🧠"
+
+[[emoji]]
+word = "大自然"
+emoji = "🌅"
+
+[[emoji]]
+word = "大蒜"
+emoji = "🧄"
+
+[[emoji]]
+word = "大豆"
+emoji = "🫛"
+
+[[emoji]]
+word = "大象"
+emoji = "🐘"
+
+[[emoji]]
+word = "大门"
+emoji = "🚪"
+
+[[emoji]]
+word = "大风"
+emoji = "🌬"
+
+[[emoji]]
+word = "大饼"
+emoji = "🥙"
+
+[[emoji]]
+word = "天主教"
+emoji = "✝"
+
+[[emoji]]
+word = "天体"
+emoji = "🔭"
+
+[[emoji]]
+word = "天使"
+emoji = "👼"
+
+[[emoji]]
+word = "天啊"
+emoji = "🫨"
+
+[[emoji]]
+word = "天平"
+emoji = "⚖"
+
+[[emoji]]
+word = "天才"
+emoji = "🤓"
+
+[[emoji]]
+word = "天文"
+emoji = "🔭"
+
+[[emoji]]
+word = "天文学"
+emoji = "🔭"
+
+[[emoji]]
+word = "天气"
+emoji = "🌡"
+
+[[emoji]]
+word = "天然"
+emoji = "🫚"
+
+[[emoji]]
+word = "天真"
+emoji = "😇"
+
+[[emoji]]
+word = "天秤"
+emoji = "⚖"
+
+[[emoji]]
+word = "天秤座"
+emoji = "♎"
+
+[[emoji]]
+word = "天线"
+emoji = "📶"
+
+[[emoji]]
+word = "天蓝"
+emoji = "🩵"
+
+[[emoji]]
+word = "天蝎"
+emoji = "♏"
+
+[[emoji]]
+word = "天蝎座"
+emoji = "♏"
+
+[[emoji]]
+word = "天鹅"
+emoji = "🦢"
+
+[[emoji]]
+word = "太极"
+emoji = "☯"
+
+[[emoji]]
+word = "太棒了"
+emoji = "😃"
+
+[[emoji]]
+word = "太空"
+emoji = "☄"
+
+[[emoji]]
+word = "太阳"
+emoji = "🌄"
+
+[[emoji]]
+word = "太阳镜"
+emoji = "🕶"
+
+[[emoji]]
+word = "失望"
+emoji = "😞"
+
+[[emoji]]
+word = "失落"
+emoji = "😔"
+
+[[emoji]]
+word = "头发"
+emoji = "🦳"
+
+[[emoji]]
+word = "头巾"
+emoji = "👳"
+
+[[emoji]]
+word = "头晕"
+emoji = "💫"
+
+[[emoji]]
+word = "头痛"
+emoji = "💆"
+
+[[emoji]]
+word = "头盔"
+emoji = "⛑"
+
+[[emoji]]
+word = "头脑"
+emoji = "🧠"
+
+[[emoji]]
+word = "头骨"
+emoji = "💀"
+
+[[emoji]]
+word = "夹克"
+emoji = "🧥"
+
+[[emoji]]
+word = "夹具"
+emoji = "🗜"
+
+[[emoji]]
+word = "夹子"
+emoji = "🪮"
+
+[[emoji]]
+word = "奇幻"
+emoji = "🧞"
+
+[[emoji]]
+word = "奔跑"
+emoji = "🏃"
+
+[[emoji]]
+word = "奖励"
+emoji = "🏆"
+
+[[emoji]]
+word = "奖品"
+emoji = "🏆"
+
+[[emoji]]
+word = "奖杯"
+emoji = "🏆"
+
+[[emoji]]
+word = "奖牌"
+emoji = "🏅"
+
+[[emoji]]
+word = "奖章"
+emoji = "🎖"
+
+[[emoji]]
+word = "奖赏"
+emoji = "🪎"
+
+[[emoji]]
+word = "奢华"
+emoji = "🧐"
+
+[[emoji]]
+word = "女人"
+emoji = "🤰"
+
+[[emoji]]
+word = "女儿"
+emoji = "👧"
+
+[[emoji]]
+word = "女士"
+emoji = "🚺"
+
+[[emoji]]
+word = "女孩"
+emoji = "👧"
+
+[[emoji]]
+word = "女巫"
+emoji = "🧹"
+
+[[emoji]]
+word = "女式"
+emoji = "👒"
+
+[[emoji]]
+word = "女演员"
+emoji = "🎭"
+
+[[emoji]]
+word = "女装"
+emoji = "👚"
+
+[[emoji]]
+word = "奶油"
+emoji = "🍰"
+
+[[emoji]]
+word = "奶牛"
+emoji = "🐄"
+
+[[emoji]]
+word = "奶瓶"
+emoji = "🍼"
+
+[[emoji]]
+word = "奶茶"
+emoji = "🧋"
+
+[[emoji]]
+word = "奶酪"
+emoji = "🧀"
+
+[[emoji]]
+word = "奸笑"
+emoji = "😼"
+
+[[emoji]]
+word = "好人"
+emoji = "🦸"
+
+[[emoji]]
+word = "好吃"
+emoji = "😋"
+
+[[emoji]]
+word = "好奇"
+emoji = "🦝"
+
+[[emoji]]
+word = "好朋友"
+emoji = "👭"
+
+[[emoji]]
+word = "好玩"
+emoji = "🙃"
+
+[[emoji]]
+word = "好的"
+emoji = "🫡"
+
+[[emoji]]
+word = "好笑"
+emoji = "🙃"
+
+[[emoji]]
+word = "好运"
+emoji = "🪬"
+
+[[emoji]]
+word = "妖怪"
+emoji = "👺"
+
+[[emoji]]
+word = "委屈"
+emoji = "☹"
+
+[[emoji]]
+word = "姿势"
+emoji = "🙇"
+
+[[emoji]]
+word = "威士忌"
+emoji = "🥃"
+
+[[emoji]]
+word = "娃娃"
+emoji = "🎎"
+
+[[emoji]]
+word = "娱乐"
+emoji = "📻"
+
+[[emoji]]
+word = "婚礼"
+emoji = "💎"
+
+[[emoji]]
+word = "婴儿"
+emoji = "🚼"
+
+[[emoji]]
+word = "媚眼"
+emoji = "😉"
+
+[[emoji]]
+word = "孔雀"
+emoji = "🦚"
+
+[[emoji]]
+word = "孕妇"
+emoji = "🤰"
+
+[[emoji]]
+word = "字母"
+emoji = "🔤"
+
+[[emoji]]
+word = "字符"
+emoji = "🔣"
+
+[[emoji]]
+word = "存储"
+emoji = "💾"
+
+[[emoji]]
+word = "存档"
+emoji = "🗄"
+
+[[emoji]]
+word = "季军"
+emoji = "🥉"
+
+[[emoji]]
+word = "学习"
+emoji = "📚"
+
+[[emoji]]
+word = "学位"
+emoji = "🎓"
+
+[[emoji]]
+word = "学校"
+emoji = "🏫"
+
+[[emoji]]
+word = "学者"
+emoji = "🎓"
+
+[[emoji]]
+word = "孩子"
+emoji = "👶"
+
+[[emoji]]
+word = "宇宙"
+emoji = "♾"
+
+[[emoji]]
+word = "守卫"
+emoji = "💂"
+
+[[emoji]]
+word = "安全"
+emoji = "🔐"
+
+[[emoji]]
+word = "安息"
+emoji = "🪦"
+
+[[emoji]]
+word = "安慰"
+emoji = "🫂"
+
+[[emoji]]
+word = "安检"
+emoji = "🛂"
+
+[[emoji]]
+word = "安静"
+emoji = "🔇"
+
+[[emoji]]
+word = "完成"
+emoji = "✅"
+
+[[emoji]]
+word = "宗教"
+emoji = "⛩"
+
+[[emoji]]
+word = "定向"
+emoji = "🧭"
+
+[[emoji]]
+word = "定时器"
+emoji = "⏲"
+
+[[emoji]]
+word = "宝宝"
+emoji = "👶"
+
+[[emoji]]
+word = "宝物"
+emoji = "🪎"
+
+[[emoji]]
+word = "宝石"
+emoji = "💎"
+
+[[emoji]]
+word = "宝贝"
+emoji = "💏"
+
+[[emoji]]
+word = "实习"
+emoji = "🔰"
+
+[[emoji]]
+word = "实验"
+emoji = "🔬"
+
+[[emoji]]
+word = "实验室"
+emoji = "🔬"
+
+[[emoji]]
+word = "宠物"
+emoji = "🐈"
+
+[[emoji]]
+word = "审讯"
+emoji = "🤌"
+
+[[emoji]]
+word = "害怕"
+emoji = "😨"
+
+[[emoji]]
+word = "害羞"
+emoji = "😊"
+
+[[emoji]]
+word = "害虫"
+emoji = "🪰"
+
+[[emoji]]
+word = "家庭"
+emoji = "👪"
+
+[[emoji]]
+word = "家禽"
+emoji = "🍗"
+
+[[emoji]]
+word = "容器"
+emoji = "🫙"
+
+[[emoji]]
+word = "宽带"
+emoji = "🛜"
+
+[[emoji]]
+word = "宾馆"
+emoji = "🛏"
+
+[[emoji]]
+word = "寄信"
+emoji = "📮"
+
+[[emoji]]
+word = "寄存"
+emoji = "🛅"
+
+[[emoji]]
+word = "寄生虫"
+emoji = "🪱"
+
+[[emoji]]
+word = "密码"
+emoji = "🔑"
+
+[[emoji]]
+word = "密钥"
+emoji = "🔑"
+
+[[emoji]]
+word = "富士山"
+emoji = "🗻"
+
+[[emoji]]
+word = "富有"
+emoji = "🪙"
+
+[[emoji]]
+word = "对不起"
+emoji = "🙇"
+
+[[emoji]]
+word = "对决"
+emoji = "🤼"
+
+[[emoji]]
+word = "对话框"
+emoji = "🗨"
+
+[[emoji]]
+word = "寺庙"
+emoji = "🛕"
+
+[[emoji]]
+word = "寺院"
+emoji = "🛕"
+
+[[emoji]]
+word = "导航"
+emoji = "🧭"
+
+[[emoji]]
+word = "寿司"
+emoji = "🍣"
+
+[[emoji]]
+word = "封口"
+emoji = "🤐"
+
+[[emoji]]
+word = "封面"
+emoji = "📔"
+
+[[emoji]]
+word = "射手"
+emoji = "♐"
+
+[[emoji]]
+word = "射手座"
+emoji = "♐"
+
+[[emoji]]
+word = "射箭"
+emoji = "🏹"
+
+[[emoji]]
+word = "小丑"
+emoji = "🤡"
+
+[[emoji]]
+word = "小区"
+emoji = "🏘"
+
+[[emoji]]
+word = "小号"
+emoji = "🎺"
+
+[[emoji]]
+word = "小声"
+emoji = "🔈"
+
+[[emoji]]
+word = "小天使"
+emoji = "👼"
+
+[[emoji]]
+word = "小天鹅"
+emoji = "🦢"
+
+[[emoji]]
+word = "小妖精"
+emoji = "👺"
+
+[[emoji]]
+word = "小孩"
+emoji = "👦"
+
+[[emoji]]
+word = "小宝贝"
+emoji = "👶"
+
+[[emoji]]
+word = "小屋"
+emoji = "🛖"
+
+[[emoji]]
+word = "小强"
+emoji = "🪳"
+
+[[emoji]]
+word = "小心"
+emoji = "⚠"
+
+[[emoji]]
+word = "小提琴"
+emoji = "🎻"
+
+[[emoji]]
+word = "小时"
+emoji = "⏰"
+
+[[emoji]]
+word = "小狗"
+emoji = "🐶"
+
+[[emoji]]
+word = "小猫"
+emoji = "🐈"
+
+[[emoji]]
+word = "小王"
+emoji = "🃏"
+
+[[emoji]]
+word = "小白菜"
+emoji = "🥬"
+
+[[emoji]]
+word = "小精灵"
+emoji = "🧝"
+
+[[emoji]]
+word = "小说"
+emoji = "📖"
+
+[[emoji]]
+word = "小鸡"
+emoji = "🐣"
+
+[[emoji]]
+word = "小麦"
+emoji = "🍞"
+
+[[emoji]]
+word = "小黄"
+emoji = "🚕"
+
+[[emoji]]
+word = "少量"
+emoji = "🤏"
+
+[[emoji]]
+word = "尖叫"
+emoji = "😱"
+
+[[emoji]]
+word = "尴尬"
+emoji = "😬"
+
+[[emoji]]
+word = "尺子"
+emoji = "📏"
+
+[[emoji]]
+word = "尾气"
+emoji = "💨"
+
+[[emoji]]
+word = "山区"
+emoji = "🚞"
+
+[[emoji]]
+word = "山石"
+emoji = "🛘"
+
+[[emoji]]
+word = "山羊"
+emoji = "🐐"
+
+[[emoji]]
+word = "岩石"
+emoji = "🪨"
+
+[[emoji]]
+word = "崇拜"
+emoji = "🛐"
+
+[[emoji]]
+word = "巡逻"
+emoji = "🚓"
+
+[[emoji]]
+word = "工人"
+emoji = "👷"
+
+[[emoji]]
+word = "工作"
+emoji = "👔"
+
+[[emoji]]
+word = "工具"
+emoji = "⚒"
+
+[[emoji]]
+word = "工具箱"
+emoji = "🧰"
+
+[[emoji]]
+word = "工厂"
+emoji = "🏭"
+
+[[emoji]]
+word = "工程师"
+emoji = "👷"
+
+[[emoji]]
+word = "左侧"
+emoji = "🫹"
+
+[[emoji]]
+word = "左手"
+emoji = "🫲"
+
+[[emoji]]
+word = "巧克力"
+emoji = "🍫"
+
+[[emoji]]
+word = "巨石"
+emoji = "🪨"
+
+[[emoji]]
+word = "巨蟹"
+emoji = "♋"
+
+[[emoji]]
+word = "巨蟹座"
+emoji = "🦀"
+
+[[emoji]]
+word = "巫婆"
+emoji = "🧹"
+
+[[emoji]]
+word = "巫师"
+emoji = "🪄"
+
+[[emoji]]
+word = "帆船"
+emoji = "⛵"
+
+[[emoji]]
+word = "希望"
+emoji = "🫌"
+
+[[emoji]]
+word = "帐篷"
+emoji = "⛺"
+
+[[emoji]]
+word = "帮助"
+emoji = "💁"
+
+[[emoji]]
+word = "帽子"
+emoji = "🎩"
+
+[[emoji]]
+word = "干旱"
+emoji = "🌵"
+
+[[emoji]]
+word = "干杯"
+emoji = "🥂"
+
+[[emoji]]
+word = "平等"
+emoji = "🟰"
+
+[[emoji]]
+word = "平衡"
+emoji = "♎"
+
+[[emoji]]
+word = "年老"
+emoji = "🦳"
+
+[[emoji]]
+word = "年轻人"
+emoji = "🧒"
+
+[[emoji]]
+word = "幸福"
+emoji = "🥲"
+
+[[emoji]]
+word = "幸运"
+emoji = "🍀"
+
+[[emoji]]
+word = "幻想"
+emoji = "😈"
+
+[[emoji]]
+word = "幼苗"
+emoji = "🌱"
+
+[[emoji]]
+word = "幽灵"
+emoji = "👻"
+
+[[emoji]]
+word = "幽静"
+emoji = "🪷"
+
+[[emoji]]
+word = "广播"
+emoji = "📻"
+
+[[emoji]]
+word = "广播电台"
+emoji = "📻"
+
+[[emoji]]
+word = "庆典"
+emoji = "🎆"
+
+[[emoji]]
+word = "庆祝"
+emoji = "🎂"
+
+[[emoji]]
+word = "庆贺"
+emoji = "㊗"
+
+[[emoji]]
+word = "床垫"
+emoji = "🛏"
+
+[[emoji]]
+word = "床铺"
+emoji = "🛏"
+
+[[emoji]]
+word = "庙宇"
+emoji = "🛕"
+
+[[emoji]]
+word = "废墟"
+emoji = "🏚"
+
+[[emoji]]
+word = "座位"
+emoji = "🈵"
+
+[[emoji]]
+word = "座机"
+emoji = "☎"
+
+[[emoji]]
+word = "庭院"
+emoji = "🏡"
+
+[[emoji]]
+word = "建筑"
+emoji = "🏣"
+
+[[emoji]]
+word = "建筑施工"
+emoji = "🏗"
+
+[[emoji]]
+word = "建造"
+emoji = "👷"
+
+[[emoji]]
+word = "开卷"
+emoji = "📖"
+
+[[emoji]]
+word = "开始"
+emoji = "🔛"
+
+[[emoji]]
+word = "开心"
+emoji = "☺"
+
+[[emoji]]
+word = "开玩笑"
+emoji = "😜"
+
+[[emoji]]
+word = "开窗"
+emoji = "🪟"
+
+[[emoji]]
+word = "开花"
+emoji = "🌷"
+
+[[emoji]]
+word = "开车"
+emoji = "🚗"
+
+[[emoji]]
+word = "开锁"
+emoji = "🔓"
+
+[[emoji]]
+word = "开门"
+emoji = "🈺"
+
+[[emoji]]
+word = "弓箭"
+emoji = "🏹"
+
+[[emoji]]
+word = "弓箭手"
+emoji = "♐"
+
+[[emoji]]
+word = "弯曲"
+emoji = "🥨"
+
+[[emoji]]
+word = "弹出"
+emoji = "⏏"
+
+[[emoji]]
+word = "弹奏"
+emoji = "🎹"
+
+[[emoji]]
+word = "强壮"
+emoji = "💪"
+
+[[emoji]]
+word = "强度"
+emoji = "📶"
+
+[[emoji]]
+word = "强调"
+emoji = "🤌"
+
+[[emoji]]
+word = "归档"
+emoji = "🗄"
+
+[[emoji]]
+word = "当然"
+emoji = "👌"
+
+[[emoji]]
+word = "录像"
+emoji = "🎥"
+
+[[emoji]]
+word = "录像带"
+emoji = "📼"
+
+[[emoji]]
+word = "录像机"
+emoji = "📹"
+
+[[emoji]]
+word = "录制"
+emoji = "⏺"
+
+[[emoji]]
+word = "录影"
+emoji = "📹"
+
+[[emoji]]
+word = "录音"
+emoji = "⏺"
+
+[[emoji]]
+word = "录音室"
+emoji = "🎙"
+
+[[emoji]]
+word = "彗星"
+emoji = "☄"
+
+[[emoji]]
+word = "彩虹"
+emoji = "🌈"
+
+[[emoji]]
+word = "影片"
+emoji = "📽"
+
+[[emoji]]
+word = "往上"
+emoji = "🔼"
+
+[[emoji]]
+word = "往下"
+emoji = "🔽"
+
+[[emoji]]
+word = "往后"
+emoji = "⏭"
+
+[[emoji]]
+word = "徒步"
+emoji = "🚶"
+
+[[emoji]]
+word = "得分"
+emoji = "🥍"
+
+[[emoji]]
+word = "得意"
+emoji = "😏"
+
+[[emoji]]
+word = "循环"
+emoji = "🔁"
+
+[[emoji]]
+word = "微笑"
+emoji = "😈"
+
+[[emoji]]
+word = "徽章"
+emoji = "📛"
+
+[[emoji]]
+word = "心动"
+emoji = "💓"
+
+[[emoji]]
+word = "心情不好"
+emoji = "🙁"
+
+[[emoji]]
+word = "心率"
+emoji = "🫀"
+
+[[emoji]]
+word = "心碎"
+emoji = "💔"
+
+[[emoji]]
+word = "心脏"
+emoji = "🩺"
+
+[[emoji]]
+word = "心跳"
+emoji = "💓"
+
+[[emoji]]
+word = "忍者"
+emoji = "🥷"
+
+[[emoji]]
+word = "忍耐"
+emoji = "😣"
+
+[[emoji]]
+word = "忘记"
+emoji = "😮"
+
+[[emoji]]
+word = "忧虑"
+emoji = "😔"
+
+[[emoji]]
+word = "快乐"
+emoji = "😹"
+
+[[emoji]]
+word = "快艇"
+emoji = "🚤"
+
+[[emoji]]
+word = "快跑"
+emoji = "🏃"
+
+[[emoji]]
+word = "快进"
+emoji = "⏩"
+
+[[emoji]]
+word = "快递"
+emoji = "📦"
+
+[[emoji]]
+word = "快速"
+emoji = "⏩"
+
+[[emoji]]
+word = "快餐"
+emoji = "🍟"
+
+[[emoji]]
+word = "怀孕"
+emoji = "🤰"
+
+[[emoji]]
+word = "怀疑"
+emoji = "🤨"
+
+[[emoji]]
+word = "怜悯"
+emoji = "🥺"
+
+[[emoji]]
+word = "思想"
+emoji = "💭"
+
+[[emoji]]
+word = "思考"
+emoji = "🤔"
+
+[[emoji]]
+word = "急救"
+emoji = "🚑"
+
+[[emoji]]
+word = "性感"
+emoji = "💋"
+
+[[emoji]]
+word = "怪兽"
+emoji = "🧌"
+
+[[emoji]]
+word = "怪物"
+emoji = "🤖"
+
+[[emoji]]
+word = "恋爱"
+emoji = "💑"
+
+[[emoji]]
+word = "恐怖"
+emoji = "😨"
+
+[[emoji]]
+word = "恐惧"
+emoji = "😨"
+
+[[emoji]]
+word = "恐龙"
+emoji = "🦖"
+
+[[emoji]]
+word = "恬静"
+emoji = "🪷"
+
+[[emoji]]
+word = "恭喜"
+emoji = "👏"
+
+[[emoji]]
+word = "恰恰"
+emoji = "🪇"
+
+[[emoji]]
+word = "恶心"
+emoji = "🤢"
+
+[[emoji]]
+word = "恶魔"
+emoji = "👿"
+
+[[emoji]]
+word = "恼怒"
+emoji = "🤦"
+
+[[emoji]]
+word = "恼火"
+emoji = "🙍"
+
+[[emoji]]
+word = "您好"
+emoji = "🫂"
+
+[[emoji]]
+word = "悬挂"
+emoji = "🚟"
+
+[[emoji]]
+word = "悲伤"
+emoji = "🪊"
+
+[[emoji]]
+word = "情书"
+emoji = "💌"
+
+[[emoji]]
+word = "情侣"
+emoji = "👫"
+
+[[emoji]]
+word = "情绪"
+emoji = "🥹"
+
+[[emoji]]
+word = "情节"
+emoji = "🪥"
+
+[[emoji]]
+word = "惊吓"
+emoji = "🤯"
+
+[[emoji]]
+word = "惊喜"
+emoji = "🫪"
+
+[[emoji]]
+word = "惊奇"
+emoji = "🫢"
+
+[[emoji]]
+word = "惊恐"
+emoji = "🫪"
+
+[[emoji]]
+word = "惊愕"
+emoji = "🫢"
+
+[[emoji]]
+word = "惊慌"
+emoji = "🫪"
+
+[[emoji]]
+word = "惊讶"
+emoji = "🙀"
+
+[[emoji]]
+word = "惭愧"
+emoji = "🙇"
+
+[[emoji]]
+word = "想一想"
+emoji = "🤔"
+
+[[emoji]]
+word = "想你"
+emoji = "😘"
+
+[[emoji]]
+word = "想法"
+emoji = "💡"
+
+[[emoji]]
+word = "想睡"
+emoji = "💤"
+
+[[emoji]]
+word = "意外"
+emoji = "😦"
+
+[[emoji]]
+word = "感冒"
+emoji = "😷"
+
+[[emoji]]
+word = "感动"
+emoji = "🥲"
+
+[[emoji]]
+word = "感叹"
+emoji = "❗"
+
+[[emoji]]
+word = "感叹号"
+emoji = "❗"
+
+[[emoji]]
+word = "感恩"
+emoji = "🙏"
+
+[[emoji]]
+word = "感恩节"
+emoji = "🦃"
+
+[[emoji]]
+word = "感情"
+emoji = "🩶"
+
+[[emoji]]
+word = "感激"
+emoji = "🥹"
+
+[[emoji]]
+word = "感谢"
+emoji = "🙇"
+
+[[emoji]]
+word = "愤怒"
+emoji = "🗯"
+
+[[emoji]]
+word = "愿望"
+emoji = "🧞"
+
+[[emoji]]
+word = "懊悔"
+emoji = "🙇"
+
+[[emoji]]
+word = "戏剧"
+emoji = "🎭"
+
+[[emoji]]
+word = "成人"
+emoji = "👨"
+
+[[emoji]]
+word = "成功"
+emoji = "✌"
+
+[[emoji]]
+word = "成长"
+emoji = "📈"
+
+[[emoji]]
+word = "我爱你"
+emoji = "💖"
+
+[[emoji]]
+word = "戒指"
+emoji = "💍"
+
+[[emoji]]
+word = "战争"
+emoji = "🪖"
+
+[[emoji]]
+word = "战士"
+emoji = "🪖"
+
+[[emoji]]
+word = "战斗"
+emoji = "🫯"
+
+[[emoji]]
+word = "战死"
+emoji = "⚔"
+
+[[emoji]]
+word = "户外"
+emoji = "🥾"
+
+[[emoji]]
+word = "房子"
+emoji = "🪴"
+
+[[emoji]]
+word = "房屋"
+emoji = "🏠"
+
+[[emoji]]
+word = "房车"
+emoji = "🚙"
+
+[[emoji]]
+word = "房门"
+emoji = "🚪"
+
+[[emoji]]
+word = "房间"
+emoji = "🚪"
+
+[[emoji]]
+word = "扇子"
+emoji = "🪭"
+
+[[emoji]]
+word = "手势"
+emoji = "🙆"
+
+[[emoji]]
+word = "手套"
+emoji = "🥊"
+
+[[emoji]]
+word = "手拉手"
+emoji = "👫"
+
+[[emoji]]
+word = "手拿"
+emoji = "👝"
+
+[[emoji]]
+word = "手指"
+emoji = "🫵"
+
+[[emoji]]
+word = "手掌"
+emoji = "🪬"
+
+[[emoji]]
+word = "手提电脑"
+emoji = "💻"
+
+[[emoji]]
+word = "手机"
+emoji = "📳"
+
+[[emoji]]
+word = "手枪"
+emoji = "🔫"
+
+[[emoji]]
+word = "手柄"
+emoji = "🎮"
+
+[[emoji]]
+word = "手电"
+emoji = "🔦"
+
+[[emoji]]
+word = "手电筒"
+emoji = "🔦"
+
+[[emoji]]
+word = "手纸"
+emoji = "🧻"
+
+[[emoji]]
+word = "手背"
+emoji = "🤚"
+
+[[emoji]]
+word = "手臂"
+emoji = "🦾"
+
+[[emoji]]
+word = "手表"
+emoji = "⌚"
+
+[[emoji]]
+word = "手袋"
+emoji = "👝"
+
+[[emoji]]
+word = "扑克"
+emoji = "♠"
+
+[[emoji]]
+word = "打乱"
+emoji = "🔀"
+
+[[emoji]]
+word = "打勾"
+emoji = "✔"
+
+[[emoji]]
+word = "打印"
+emoji = "🖨"
+
+[[emoji]]
+word = "打印机"
+emoji = "🖨"
+
+[[emoji]]
+word = "打喷嚏"
+emoji = "🤧"
+
+[[emoji]]
+word = "打嗝"
+emoji = "🫧"
+
+[[emoji]]
+word = "打字"
+emoji = "⌨"
+
+[[emoji]]
+word = "打开"
+emoji = "📂"
+
+[[emoji]]
+word = "打扫"
+emoji = "🧹"
+
+[[emoji]]
+word = "打扰"
+emoji = "🦡"
+
+[[emoji]]
+word = "打折"
+emoji = "🈹"
+
+[[emoji]]
+word = "打斗"
+emoji = "🫯"
+
+[[emoji]]
+word = "打架"
+emoji = "🤼"
+
+[[emoji]]
+word = "打滚"
+emoji = "🤣"
+
+[[emoji]]
+word = "打球"
+emoji = "🏀"
+
+[[emoji]]
+word = "打破"
+emoji = "🫫"
+
+[[emoji]]
+word = "打针"
+emoji = "💉"
+
+[[emoji]]
+word = "打雷"
+emoji = "🌩"
+
+[[emoji]]
+word = "扔掉"
+emoji = "🫳"
+
+[[emoji]]
+word = "执照"
+emoji = "🪪"
+
+[[emoji]]
+word = "扫地"
+emoji = "🧹"
+
+[[emoji]]
+word = "扫帚"
+emoji = "🧹"
+
+[[emoji]]
+word = "扫描"
+emoji = "🖨"
+
+[[emoji]]
+word = "扬声器"
+emoji = "🔊"
+
+[[emoji]]
+word = "扳手"
+emoji = "🛠"
+
+[[emoji]]
+word = "投影仪"
+emoji = "📽"
+
+[[emoji]]
+word = "投票"
+emoji = "🗳"
+
+[[emoji]]
+word = "抗拒"
+emoji = "🥹"
+
+[[emoji]]
+word = "折扣"
+emoji = "🈹"
+
+[[emoji]]
+word = "抢劫"
+emoji = "🪎"
+
+[[emoji]]
+word = "护照"
+emoji = "🛂"
+
+[[emoji]]
+word = "护身符"
+emoji = "🧿"
+
+[[emoji]]
+word = "报到"
+emoji = "🛫"
+
+[[emoji]]
+word = "报纸"
+emoji = "📰"
+
+[[emoji]]
+word = "报道"
+emoji = "📰"
+
+[[emoji]]
+word = "披肩"
+emoji = "🥻"
+
+[[emoji]]
+word = "抱抱"
+emoji = "🤗"
+
+[[emoji]]
+word = "抽烟"
+emoji = "🚬"
+
+[[emoji]]
+word = "担心"
+emoji = "😓"
+
+[[emoji]]
+word = "担忧"
+emoji = "😟"
+
+[[emoji]]
+word = "拇指"
+emoji = "👍"
+
+[[emoji]]
+word = "拉面"
+emoji = "🍜"
+
+[[emoji]]
+word = "拍手"
+emoji = "👏"
+
+[[emoji]]
+word = "拍摄"
+emoji = "📹"
+
+[[emoji]]
+word = "拍照"
+emoji = "📷"
+
+[[emoji]]
+word = "拍电影"
+emoji = "🎬"
+
+[[emoji]]
+word = "拐杖"
+emoji = "🦯"
+
+[[emoji]]
+word = "拒绝"
+emoji = "🫷"
+
+[[emoji]]
+word = "拖拉机"
+emoji = "🚜"
+
+[[emoji]]
+word = "拖车"
+emoji = "🚛"
+
+[[emoji]]
+word = "招摇"
+emoji = "🦚"
+
+[[emoji]]
+word = "拜托"
+emoji = "🙏"
+
+[[emoji]]
+word = "拥抱"
+emoji = "🤗"
+
+[[emoji]]
+word = "拳击"
+emoji = "🥊"
+
+[[emoji]]
+word = "拳头"
+emoji = "🤛"
+
+[[emoji]]
+word = "拼图"
+emoji = "🧩"
+
+[[emoji]]
+word = "拿着"
+emoji = "🫴"
+
+[[emoji]]
+word = "拿起"
+emoji = "🫳"
+
+[[emoji]]
+word = "挂钩"
+emoji = "🪝"
+
+[[emoji]]
+word = "指南针"
+emoji = "🧭"
+
+[[emoji]]
+word = "指向"
+emoji = "📦"
+
+[[emoji]]
+word = "指引"
+emoji = "🦮"
+
+[[emoji]]
+word = "指甲油"
+emoji = "💅"
+
+[[emoji]]
+word = "指纹"
+emoji = "🫆"
+
+[[emoji]]
+word = "按摩"
+emoji = "💆"
+
+[[emoji]]
+word = "按钮"
+emoji = "🔳"
+
+[[emoji]]
+word = "按键"
+emoji = "🈶"
+
+[[emoji]]
+word = "挎包"
+emoji = "👜"
+
+[[emoji]]
+word = "挖苦"
+emoji = "🤌"
+
+[[emoji]]
+word = "挥手"
+emoji = "👋"
+
+[[emoji]]
+word = "振动"
+emoji = "📳"
+
+[[emoji]]
+word = "捏着"
+emoji = "🤏"
+
+[[emoji]]
+word = "捕捉"
+emoji = "🪍"
+
+[[emoji]]
+word = "捕鱼"
+emoji = "🦦"
+
+[[emoji]]
+word = "捡起"
+emoji = "🫳"
+
+[[emoji]]
+word = "排球"
+emoji = "🏐"
+
+[[emoji]]
+word = "排骨"
+emoji = "🥩"
+
+[[emoji]]
+word = "探戈"
+emoji = "💃"
+
+[[emoji]]
+word = "接住"
+emoji = "🫴"
+
+[[emoji]]
+word = "接吻"
+emoji = "💏"
+
+[[emoji]]
+word = "接收"
+emoji = "📥"
+
+[[emoji]]
+word = "接球"
+emoji = "🤾"
+
+[[emoji]]
+word = "接种"
+emoji = "💉"
+
+[[emoji]]
+word = "接触"
+emoji = "🔭"
+
+[[emoji]]
+word = "控制"
+emoji = "🎛"
+
+[[emoji]]
+word = "掩饰"
+emoji = "🫫"
+
+[[emoji]]
+word = "提供"
+emoji = "🫴"
+
+[[emoji]]
+word = "提取"
+emoji = "🛄"
+
+[[emoji]]
+word = "插头"
+emoji = "🔌"
+
+[[emoji]]
+word = "握手"
+emoji = "🤝"
+
+[[emoji]]
+word = "搏斗"
+emoji = "🤼"
+
+[[emoji]]
+word = "搜索"
+emoji = "🔍"
+
+[[emoji]]
+word = "搞定"
+emoji = "☑"
+
+[[emoji]]
+word = "搞怪"
+emoji = "😜"
+
+[[emoji]]
+word = "搬运"
+emoji = "🚛"
+
+[[emoji]]
+word = "摄像机"
+emoji = "🎥"
+
+[[emoji]]
+word = "摄影"
+emoji = "📷"
+
+[[emoji]]
+word = "摄影机"
+emoji = "🎦"
+
+[[emoji]]
+word = "摇动"
+emoji = "🪇"
+
+[[emoji]]
+word = "摇滚"
+emoji = "🤘"
+
+[[emoji]]
+word = "摔跤"
+emoji = "🤼"
+
+[[emoji]]
+word = "摩天轮"
+emoji = "🎡"
+
+[[emoji]]
+word = "摩托"
+emoji = "🏍"
+
+[[emoji]]
+word = "摩托车"
+emoji = "🏍"
+
+[[emoji]]
+word = "摩羯"
+emoji = "♑"
+
+[[emoji]]
+word = "摩羯座"
+emoji = "🐐"
+
+[[emoji]]
+word = "撤销"
+emoji = "🪌"
+
+[[emoji]]
+word = "播放"
+emoji = "⏯"
+
+[[emoji]]
+word = "操纵"
+emoji = "🤹"
+
+[[emoji]]
+word = "攀岩"
+emoji = "🧗"
+
+[[emoji]]
+word = "收件箱"
+emoji = "📥"
+
+[[emoji]]
+word = "收信"
+emoji = "📥"
+
+[[emoji]]
+word = "收到"
+emoji = "🫡"
+
+[[emoji]]
+word = "收据"
+emoji = "🧾"
+
+[[emoji]]
+word = "收纳"
+emoji = "🗄"
+
+[[emoji]]
+word = "收费"
+emoji = "🈂"
+
+[[emoji]]
+word = "收钱"
+emoji = "💳"
+
+[[emoji]]
+word = "收集"
+emoji = "🪍"
+
+[[emoji]]
+word = "收音机"
+emoji = "📻"
+
+[[emoji]]
+word = "改正"
+emoji = "🪌"
+
+[[emoji]]
+word = "改造"
+emoji = "👷"
+
+[[emoji]]
+word = "放下"
+emoji = "📪"
+
+[[emoji]]
+word = "放大"
+emoji = "🔍"
+
+[[emoji]]
+word = "放大镜"
+emoji = "🔍"
+
+[[emoji]]
+word = "放射性"
+emoji = "☢"
+
+[[emoji]]
+word = "放屁"
+emoji = "💨"
+
+[[emoji]]
+word = "放松"
+emoji = "🧖"
+
+[[emoji]]
+word = "救命"
+emoji = "🆘"
+
+[[emoji]]
+word = "救护车"
+emoji = "🚑"
+
+[[emoji]]
+word = "救援"
+emoji = "🛟"
+
+[[emoji]]
+word = "救生"
+emoji = "🛟"
+
+[[emoji]]
+word = "救生圈"
+emoji = "🛟"
+
+[[emoji]]
+word = "教堂"
+emoji = "💒"
+
+[[emoji]]
+word = "教学楼"
+emoji = "🏫"
+
+[[emoji]]
+word = "教育"
+emoji = "📗"
+
+[[emoji]]
+word = "散步"
+emoji = "🚶"
+
+[[emoji]]
+word = "敬畏"
+emoji = "🫢"
+
+[[emoji]]
+word = "敬礼"
+emoji = "🖖"
+
+[[emoji]]
+word = "数字"
+emoji = "🔢"
+
+[[emoji]]
+word = "数学"
+emoji = "➗"
+
+[[emoji]]
+word = "整点"
+emoji = "🕛"
+
+[[emoji]]
+word = "文书"
+emoji = "📄"
+
+[[emoji]]
+word = "文件"
+emoji = "📁"
+
+[[emoji]]
+word = "文件夹"
+emoji = "📁"
+
+[[emoji]]
+word = "文具"
+emoji = "🗒"
+
+[[emoji]]
+word = "文档"
+emoji = "📄"
+
+[[emoji]]
+word = "斑点"
+emoji = "🦒"
+
+[[emoji]]
+word = "斑马"
+emoji = "🦓"
+
+[[emoji]]
+word = "斗殴"
+emoji = "🫯"
+
+[[emoji]]
+word = "斧头"
+emoji = "🪓"
+
+[[emoji]]
+word = "新娘"
+emoji = "👰"
+
+[[emoji]]
+word = "新手"
+emoji = "🔰"
+
+[[emoji]]
+word = "新月"
+emoji = "🌑"
+
+[[emoji]]
+word = "新生儿"
+emoji = "🍼"
+
+[[emoji]]
+word = "新的"
+emoji = "🆕"
+
+[[emoji]]
+word = "新郎"
+emoji = "🤵"
+
+[[emoji]]
+word = "新闻"
+emoji = "📰"
+
+[[emoji]]
+word = "方向"
+emoji = "🔃"
+
+[[emoji]]
+word = "方块"
+emoji = "🟥"
+
+[[emoji]]
+word = "方形"
+emoji = "⬛"
+
+[[emoji]]
+word = "方格"
+emoji = "🏁"
+
+[[emoji]]
+word = "方框"
+emoji = "🟥"
+
+[[emoji]]
+word = "施工"
+emoji = "🚧"
+
+[[emoji]]
+word = "旅客"
+emoji = "⛴"
+
+[[emoji]]
+word = "旅行"
+emoji = "🚁"
+
+[[emoji]]
+word = "旅馆"
+emoji = "🏨"
+
+[[emoji]]
+word = "旋转"
+emoji = "💈"
+
+[[emoji]]
+word = "旋钮"
+emoji = "🎛"
+
+[[emoji]]
+word = "旋风"
+emoji = "🌀"
+
+[[emoji]]
+word = "旗帜"
+emoji = "🎌"
+
+[[emoji]]
+word = "无声"
+emoji = "🔕"
+
+[[emoji]]
+word = "无尽"
+emoji = "♾"
+
+[[emoji]]
+word = "无所谓"
+emoji = "🫥"
+
+[[emoji]]
+word = "无线"
+emoji = "🛜"
+
+[[emoji]]
+word = "无线电"
+emoji = "📻"
+
+[[emoji]]
+word = "无聊"
+emoji = "🫤"
+
+[[emoji]]
+word = "无视"
+emoji = "🤷"
+
+[[emoji]]
+word = "无语"
+emoji = "😑"
+
+[[emoji]]
+word = "无障碍"
+emoji = "♿"
+
+[[emoji]]
+word = "日元"
+emoji = "💴"
+
+[[emoji]]
+word = "日出"
+emoji = "🌅"
+
+[[emoji]]
+word = "日历"
+emoji = "📅"
+
+[[emoji]]
+word = "日文"
+emoji = "🈳"
+
+[[emoji]]
+word = "日期"
+emoji = "📅"
+
+[[emoji]]
+word = "日本"
+emoji = "⛩"
+
+[[emoji]]
+word = "日落"
+emoji = "🌇"
+
+[[emoji]]
+word = "日记本"
+emoji = "📓"
+
+[[emoji]]
+word = "日语"
+emoji = "🈳"
+
+[[emoji]]
+word = "早晨"
+emoji = "☕"
+
+[[emoji]]
+word = "早餐"
+emoji = "🥣"
+
+[[emoji]]
+word = "时装"
+emoji = "👠"
+
+[[emoji]]
+word = "时钟"
+emoji = "🕰"
+
+[[emoji]]
+word = "时间"
+emoji = "⌛"
+
+[[emoji]]
+word = "昂贵"
+emoji = "🫰"
+
+[[emoji]]
+word = "昆虫"
+emoji = "🐛"
+
+[[emoji]]
+word = "明亮"
+emoji = "🔆"
+
+[[emoji]]
+word = "昏昏欲睡"
+emoji = "🥱"
+
+[[emoji]]
+word = "昏暗"
+emoji = "🔅"
+
+[[emoji]]
+word = "星巴克"
+emoji = "☕"
+
+[[emoji]]
+word = "星座"
+emoji = "♌"
+
+[[emoji]]
+word = "星星"
+emoji = "✨"
+
+[[emoji]]
+word = "星月"
+emoji = "☪"
+
+[[emoji]]
+word = "星空"
+emoji = "🌃"
+
+[[emoji]]
+word = "星际"
+emoji = "👽"
+
+[[emoji]]
+word = "春天"
+emoji = "🪻"
+
+[[emoji]]
+word = "显微镜"
+emoji = "🔬"
+
+[[emoji]]
+word = "显示器"
+emoji = "🖥"
+
+[[emoji]]
+word = "显示屏"
+emoji = "🖥"
+
+[[emoji]]
+word = "晕头转向"
+emoji = "😵"
+
+[[emoji]]
+word = "晚上"
+emoji = "🌃"
+
+[[emoji]]
+word = "晚安"
+emoji = "🛌"
+
+[[emoji]]
+word = "晚睡"
+emoji = "🫩"
+
+[[emoji]]
+word = "晚餐"
+emoji = "🍽"
+
+[[emoji]]
+word = "景色"
+emoji = "🪟"
+
+[[emoji]]
+word = "晴天"
+emoji = "☀"
+
+[[emoji]]
+word = "智慧"
+emoji = "🧠"
+
+[[emoji]]
+word = "智者"
+emoji = "🧙"
+
+[[emoji]]
+word = "智能"
+emoji = "🧠"
+
+[[emoji]]
+word = "智能手机"
+emoji = "📱"
+
+[[emoji]]
+word = "暂停"
+emoji = "⏸"
+
+[[emoji]]
+word = "暗示"
+emoji = "🎗"
+
+[[emoji]]
+word = "暴风雨"
+emoji = "⛈"
+
+[[emoji]]
+word = "曲线"
+emoji = "🪝"
+
+[[emoji]]
+word = "月亮"
+emoji = "🌔"
+
+[[emoji]]
+word = "月度"
+emoji = "🈷"
+
+[[emoji]]
+word = "月经"
+emoji = "🩸"
+
+[[emoji]]
+word = "月饼"
+emoji = "🥮"
+
+[[emoji]]
+word = "有钱"
+emoji = "💰"
+
+[[emoji]]
+word = "朋友"
+emoji = "👥"
+
+[[emoji]]
+word = "服务"
+emoji = "🈂"
+
+[[emoji]]
+word = "服务费"
+emoji = "🈂"
+
+[[emoji]]
+word = "服饰"
+emoji = "👓"
+
+[[emoji]]
+word = "望月"
+emoji = "🌕"
+
+[[emoji]]
+word = "望远镜"
+emoji = "🔭"
+
+[[emoji]]
+word = "木匠"
+emoji = "🪚"
+
+[[emoji]]
+word = "木头"
+emoji = "🪵"
+
+[[emoji]]
+word = "木材"
+emoji = "🪵"
+
+[[emoji]]
+word = "木桶"
+emoji = "🪣"
+
+[[emoji]]
+word = "木马"
+emoji = "🎠"
+
+[[emoji]]
+word = "本子"
+emoji = "📓"
+
+[[emoji]]
+word = "机器人"
+emoji = "🤖"
+
+[[emoji]]
+word = "机械"
+emoji = "⚙"
+
+[[emoji]]
+word = "杀菌"
+emoji = "🧼"
+
+[[emoji]]
+word = "杂技"
+emoji = "🤸"
+
+[[emoji]]
+word = "杏仁"
+emoji = "🌰"
+
+[[emoji]]
+word = "条幅"
+emoji = "🎋"
+
+[[emoji]]
+word = "条纹"
+emoji = "🦓"
+
+[[emoji]]
+word = "来信"
+emoji = "✉"
+
+[[emoji]]
+word = "来电"
+emoji = "📲"
+
+[[emoji]]
+word = "松树"
+emoji = "🌲"
+
+[[emoji]]
+word = "松鼠"
+emoji = "🐿"
+
+[[emoji]]
+word = "极大"
+emoji = "♾"
+
+[[emoji]]
+word = "极限"
+emoji = "🥏"
+
+[[emoji]]
+word = "果冻"
+emoji = "🪼"
+
+[[emoji]]
+word = "果子"
+emoji = "🍭"
+
+[[emoji]]
+word = "果汁"
+emoji = "🧃"
+
+[[emoji]]
+word = "枫叶"
+emoji = "🍁"
+
+[[emoji]]
+word = "枯燥"
+emoji = "🪴"
+
+[[emoji]]
+word = "枯萎"
+emoji = "🥀"
+
+[[emoji]]
+word = "柑桔"
+emoji = "🍊"
+
+[[emoji]]
+word = "柑橘"
+emoji = "🍋"
+
+[[emoji]]
+word = "柔道"
+emoji = "🥋"
+
+[[emoji]]
+word = "柠檬"
+emoji = "🍋"
+
+[[emoji]]
+word = "查找"
+emoji = "🔍"
+
+[[emoji]]
+word = "柴油"
+emoji = "⛽"
+
+[[emoji]]
+word = "标志"
+emoji = "🪧"
+
+[[emoji]]
+word = "标点"
+emoji = "❓"
+
+[[emoji]]
+word = "标点符号"
+emoji = "〰"
+
+[[emoji]]
+word = "标牌"
+emoji = "🪧"
+
+[[emoji]]
+word = "标的"
+emoji = "🎯"
+
+[[emoji]]
+word = "标签"
+emoji = "🏷"
+
+[[emoji]]
+word = "标记"
+emoji = "🏷"
+
+[[emoji]]
+word = "标识"
+emoji = "☢"
+
+[[emoji]]
+word = "标语"
+emoji = "🪧"
+
+[[emoji]]
+word = "树叶"
+emoji = "🍁"
+
+[[emoji]]
+word = "树干"
+emoji = "🪾"
+
+[[emoji]]
+word = "树枝"
+emoji = "🪹"
+
+[[emoji]]
+word = "栗子"
+emoji = "🌰"
+
+[[emoji]]
+word = "桌球"
+emoji = "🏓"
+
+[[emoji]]
+word = "桑拿"
+emoji = "🧖"
+
+[[emoji]]
+word = "桑拿浴"
+emoji = "🧖"
+
+[[emoji]]
+word = "桔子"
+emoji = "🍊"
+
+[[emoji]]
+word = "档案"
+emoji = "🗃"
+
+[[emoji]]
+word = "梅花"
+emoji = "♣"
+
+[[emoji]]
+word = "梅西"
+emoji = "⚽"
+
+[[emoji]]
+word = "梦幻"
+emoji = "🔮"
+
+[[emoji]]
+word = "梯子"
+emoji = "🪜"
+
+[[emoji]]
+word = "梳子"
+emoji = "🪮"
+
+[[emoji]]
+word = "梳理"
+emoji = "🪮"
+
+[[emoji]]
+word = "检查"
+emoji = "🛂"
+
+[[emoji]]
+word = "棒棒糖"
+emoji = "🍭"
+
+[[emoji]]
+word = "棒球"
+emoji = "⚾"
+
+[[emoji]]
+word = "棕榈"
+emoji = "🥥"
+
+[[emoji]]
+word = "棕色"
+emoji = "👞"
+
+[[emoji]]
+word = "森林"
+emoji = "🫈"
+
+[[emoji]]
+word = "棺材"
+emoji = "⚰"
+
+[[emoji]]
+word = "椅子"
+emoji = "💺"
+
+[[emoji]]
+word = "植物"
+emoji = "🌺"
+
+[[emoji]]
+word = "椰子"
+emoji = "🥥"
+
+[[emoji]]
+word = "模仿"
+emoji = "🦜"
+
+[[emoji]]
+word = "横线"
+emoji = "➖"
+
+[[emoji]]
+word = "樱桃"
+emoji = "🍒"
+
+[[emoji]]
+word = "樱花"
+emoji = "🌸"
+
+[[emoji]]
+word = "橄榄"
+emoji = "🫒"
+
+[[emoji]]
+word = "橄榄球"
+emoji = "🏈"
+
+[[emoji]]
+word = "橘子"
+emoji = "🍊"
+
+[[emoji]]
+word = "橙色"
+emoji = "🟧"
+
+[[emoji]]
+word = "橡皮"
+emoji = "✏"
+
+[[emoji]]
+word = "欧元"
+emoji = "💶"
+
+[[emoji]]
+word = "欧洲"
+emoji = "🏤"
+
+[[emoji]]
+word = "正义"
+emoji = "♎"
+
+[[emoji]]
+word = "正式"
+emoji = "🎩"
+
+[[emoji]]
+word = "正方形"
+emoji = "⬛"
+
+[[emoji]]
+word = "正确"
+emoji = "✔"
+
+[[emoji]]
+word = "正装"
+emoji = "🕴"
+
+[[emoji]]
+word = "正负"
+emoji = "🧲"
+
+[[emoji]]
+word = "此处"
+emoji = "🈁"
+
+[[emoji]]
+word = "武器"
+emoji = "🛡"
+
+[[emoji]]
+word = "武术"
+emoji = "🥋"
+
+[[emoji]]
+word = "武警"
+emoji = "👮"
+
+[[emoji]]
+word = "死亡"
+emoji = "⚱"
+
+[[emoji]]
+word = "残疾"
+emoji = "♿"
+
+[[emoji]]
+word = "母乳喂养"
+emoji = "🤱"
+
+[[emoji]]
+word = "母牛"
+emoji = "🐮"
+
+[[emoji]]
+word = "比基尼"
+emoji = "👙"
+
+[[emoji]]
+word = "比萨"
+emoji = "🍕"
+
+[[emoji]]
+word = "比赛"
+emoji = "🐎"
+
+[[emoji]]
+word = "毕业"
+emoji = "🎓"
+
+[[emoji]]
+word = "毛毛虫"
+emoji = "🐛"
+
+[[emoji]]
+word = "毛笔"
+emoji = "🖌"
+
+[[emoji]]
+word = "毛线"
+emoji = "🧶"
+
+[[emoji]]
+word = "毛茸茸"
+emoji = "🐩"
+
+[[emoji]]
+word = "毛豆"
+emoji = "🫛"
+
+[[emoji]]
+word = "气候变化"
+emoji = "🪸"
+
+[[emoji]]
+word = "气味"
+emoji = "👃"
+
+[[emoji]]
+word = "气泡"
+emoji = "🫧"
+
+[[emoji]]
+word = "气温"
+emoji = "🌡"
+
+[[emoji]]
+word = "气球"
+emoji = "🎈"
+
+[[emoji]]
+word = "水下"
+emoji = "🫧"
+
+[[emoji]]
+word = "水晶"
+emoji = "🔮"
+
+[[emoji]]
+word = "水果"
+emoji = "🍅"
+
+[[emoji]]
+word = "水桶"
+emoji = "🪣"
+
+[[emoji]]
+word = "水母"
+emoji = "🪼"
+
+[[emoji]]
+word = "水滴"
+emoji = "💧"
+
+[[emoji]]
+word = "水牛"
+emoji = "🐃"
+
+[[emoji]]
+word = "水瓶"
+emoji = "🏺"
+
+[[emoji]]
+word = "水瓶座"
+emoji = "♒"
+
+[[emoji]]
+word = "水饺"
+emoji = "🥟"
+
+[[emoji]]
+word = "水龙头"
+emoji = "🚰"
+
+[[emoji]]
+word = "求救"
+emoji = "🆘"
+
+[[emoji]]
+word = "汇率"
+emoji = "💱"
+
+[[emoji]]
+word = "汉堡"
+emoji = "🍔"
+
+[[emoji]]
+word = "污染"
+emoji = "☣"
+
+[[emoji]]
+word = "污渍"
+emoji = "🫟"
+
+[[emoji]]
+word = "汤匙"
+emoji = "🥄"
+
+[[emoji]]
+word = "汽水"
+emoji = "🥤"
+
+[[emoji]]
+word = "汽车"
+emoji = "🏎"
+
+[[emoji]]
+word = "沉思"
+emoji = "🧘"
+
+[[emoji]]
+word = "沉默"
+emoji = "😶"
+
+[[emoji]]
+word = "沐浴"
+emoji = "🛁"
+
+[[emoji]]
+word = "沙发"
+emoji = "🛋"
+
+[[emoji]]
+word = "沙拉"
+emoji = "🥗"
+
+[[emoji]]
+word = "沙滩"
+emoji = "🏖"
+
+[[emoji]]
+word = "沙漏"
+emoji = "⌛"
+
+[[emoji]]
+word = "沙漠"
+emoji = "🏜"
+
+[[emoji]]
+word = "没有反应"
+emoji = "😑"
+
+[[emoji]]
+word = "沮丧"
+emoji = "🫥"
+
+[[emoji]]
+word = "河马"
+emoji = "🦛"
+
+[[emoji]]
+word = "油漆"
+emoji = "🫟"
+
+[[emoji]]
+word = "油炸"
+emoji = "🍟"
+
+[[emoji]]
+word = "治疗"
+emoji = "💊"
+
+[[emoji]]
+word = "泄气"
+emoji = "😅"
+
+[[emoji]]
+word = "法师"
+emoji = "🧙"
+
+[[emoji]]
+word = "法式"
+emoji = "🥖"
+
+[[emoji]]
+word = "法律"
+emoji = "⚖"
+
+[[emoji]]
+word = "法术"
+emoji = "🧙"
+
+[[emoji]]
+word = "泡沫"
+emoji = "🧼"
+
+[[emoji]]
+word = "泡泡"
+emoji = "🧋"
+
+[[emoji]]
+word = "泡澡"
+emoji = "🛁"
+
+[[emoji]]
+word = "泡菜"
+emoji = "🥒"
+
+[[emoji]]
+word = "波浪"
+emoji = "🌊"
+
+[[emoji]]
+word = "泥石流"
+emoji = "🛘"
+
+[[emoji]]
+word = "注射器"
+emoji = "💉"
+
+[[emoji]]
+word = "泳衣"
+emoji = "🩱"
+
+[[emoji]]
+word = "泳装"
+emoji = "👙"
+
+[[emoji]]
+word = "洋葱"
+emoji = "🧅"
+
+[[emoji]]
+word = "洗发水"
+emoji = "🧴"
+
+[[emoji]]
+word = "洗手"
+emoji = "🧼"
+
+[[emoji]]
+word = "洗手间"
+emoji = "🚹"
+
+[[emoji]]
+word = "洗漱"
+emoji = "🪥"
+
+[[emoji]]
+word = "洗澡"
+emoji = "🛀"
+
+[[emoji]]
+word = "洗衣"
+emoji = "🧺"
+
+[[emoji]]
+word = "津津有味"
+emoji = "😋"
+
+[[emoji]]
+word = "活塞"
+emoji = "🪠"
+
+[[emoji]]
+word = "活泼"
+emoji = "🤸"
+
+[[emoji]]
+word = "派对"
+emoji = "🪩"
+
+[[emoji]]
+word = "流出"
+emoji = "🫗"
+
+[[emoji]]
+word = "流口水"
+emoji = "🤤"
+
+[[emoji]]
+word = "流星"
+emoji = "🌠"
+
+[[emoji]]
+word = "流血"
+emoji = "🩸"
+
+[[emoji]]
+word = "流通"
+emoji = "💱"
+
+[[emoji]]
+word = "测量"
+emoji = "📏"
+
+[[emoji]]
+word = "浪漫"
+emoji = "💑"
+
+[[emoji]]
+word = "浪花"
+emoji = "🌊"
+
+[[emoji]]
+word = "浴室"
+emoji = "🪥"
+
+[[emoji]]
+word = "浴缸"
+emoji = "🛀"
+
+[[emoji]]
+word = "海事"
+emoji = "🛙"
+
+[[emoji]]
+word = "海关"
+emoji = "🛃"
+
+[[emoji]]
+word = "海底"
+emoji = "🧜"
+
+[[emoji]]
+word = "海报"
+emoji = "🪧"
+
+[[emoji]]
+word = "海洋"
+emoji = "🦭"
+
+[[emoji]]
+word = "海滩"
+emoji = "🏖"
+
+[[emoji]]
+word = "海盗"
+emoji = "☠"
+
+[[emoji]]
+word = "海绵"
+emoji = "🧽"
+
+[[emoji]]
+word = "海螺"
+emoji = "🐚"
+
+[[emoji]]
+word = "海豚"
+emoji = "🐬"
+
+[[emoji]]
+word = "海豹"
+emoji = "🦭"
+
+[[emoji]]
+word = "海鲜"
+emoji = "🦪"
+
+[[emoji]]
+word = "海龟"
+emoji = "🐢"
+
+[[emoji]]
+word = "浸泡"
+emoji = "🧽"
+
+[[emoji]]
+word = "消失"
+emoji = "🫥"
+
+[[emoji]]
+word = "消防车"
+emoji = "🚒"
+
+[[emoji]]
+word = "涌动"
+emoji = "💞"
+
+[[emoji]]
+word = "液体"
+emoji = "🫠"
+
+[[emoji]]
+word = "淀粉"
+emoji = "🍞"
+
+[[emoji]]
+word = "淋浴"
+emoji = "🚿"
+
+[[emoji]]
+word = "淑女"
+emoji = "👩"
+
+[[emoji]]
+word = "淘气"
+emoji = "🦝"
+
+[[emoji]]
+word = "清晨"
+emoji = "🌅"
+
+[[emoji]]
+word = "清洁"
+emoji = "🧼"
+
+[[emoji]]
+word = "清理"
+emoji = "🆑"
+
+[[emoji]]
+word = "清真寺"
+emoji = "🕌"
+
+[[emoji]]
+word = "清除"
+emoji = "🆑"
+
+[[emoji]]
+word = "渗透"
+emoji = "🧽"
+
+[[emoji]]
+word = "温度"
+emoji = "🌡"
+
+[[emoji]]
+word = "温度计"
+emoji = "🌡"
+
+[[emoji]]
+word = "温泉"
+emoji = "♨"
+
+[[emoji]]
+word = "游乐园"
+emoji = "🎢"
+
+[[emoji]]
+word = "游乐场"
+emoji = "🛝"
+
+[[emoji]]
+word = "游戏"
+emoji = "🎮"
+
+[[emoji]]
+word = "游泳"
+emoji = "🏊"
+
+[[emoji]]
+word = "游艇"
+emoji = "⛵"
+
+[[emoji]]
+word = "溜冰"
+emoji = "⛸"
+
+[[emoji]]
+word = "溢出"
+emoji = "🫟"
+
+[[emoji]]
+word = "溶解"
+emoji = "🫠"
+
+[[emoji]]
+word = "滑冰"
+emoji = "⛸"
+
+[[emoji]]
+word = "滑动"
+emoji = "🪊"
+
+[[emoji]]
+word = "滑板"
+emoji = "🛹"
+
+[[emoji]]
+word = "滑稽"
+emoji = "🤪"
+
+[[emoji]]
+word = "滑雪"
+emoji = "⛷"
+
+[[emoji]]
+word = "满分"
+emoji = "💯"
+
+[[emoji]]
+word = "满意"
+emoji = "😊"
+
+[[emoji]]
+word = "满月"
+emoji = "🌕"
+
+[[emoji]]
+word = "漂亮"
+emoji = "🦋"
+
+[[emoji]]
+word = "漂浮"
+emoji = "🫧"
+
+[[emoji]]
+word = "演化"
+emoji = "🧬"
+
+[[emoji]]
+word = "演员"
+emoji = "🎭"
+
+[[emoji]]
+word = "演奏"
+emoji = "🎷"
+
+[[emoji]]
+word = "漫画"
+emoji = "💬"
+
+[[emoji]]
+word = "潜水"
+emoji = "🤿"
+
+[[emoji]]
+word = "澳大利亚"
+emoji = "🐨"
+
+[[emoji]]
+word = "澳洲"
+emoji = "🦘"
+
+[[emoji]]
+word = "激动"
+emoji = "💖"
+
+[[emoji]]
+word = "灌木"
+emoji = "🪻"
+
+[[emoji]]
+word = "火山"
+emoji = "🌋"
+
+[[emoji]]
+word = "火灾"
+emoji = "🧯"
+
+[[emoji]]
+word = "火焰"
+emoji = "🔥"
+
+[[emoji]]
+word = "火球"
+emoji = "🪋"
+
+[[emoji]]
+word = "火箭"
+emoji = "🚀"
+
+[[emoji]]
+word = "火花"
+emoji = "❇"
+
+[[emoji]]
+word = "火车"
+emoji = "🛤"
+
+[[emoji]]
+word = "火车头"
+emoji = "🚂"
+
+[[emoji]]
+word = "火锅"
+emoji = "🫕"
+
+[[emoji]]
+word = "火鸡"
+emoji = "🦃"
+
+[[emoji]]
+word = "灭火"
+emoji = "🧯"
+
+[[emoji]]
+word = "灭火器"
+emoji = "🧯"
+
+[[emoji]]
+word = "灭绝"
+emoji = "🦤"
+
+[[emoji]]
+word = "灯光"
+emoji = "🛙"
+
+[[emoji]]
+word = "灯泡"
+emoji = "💡"
+
+[[emoji]]
+word = "灯笼"
+emoji = "🏮"
+
+[[emoji]]
+word = "灰心"
+emoji = "🩶"
+
+[[emoji]]
+word = "灰熊"
+emoji = "🐻"
+
+[[emoji]]
+word = "灰色"
+emoji = "🦳"
+
+[[emoji]]
+word = "灾害"
+emoji = "🛘"
+
+[[emoji]]
+word = "灾难"
+emoji = "🛘"
+
+[[emoji]]
+word = "炸弹"
+emoji = "💣"
+
+[[emoji]]
+word = "炸药"
+emoji = "🧨"
+
+[[emoji]]
+word = "点击"
+emoji = "🖱"
+
+[[emoji]]
+word = "点子"
+emoji = "💡"
+
+[[emoji]]
+word = "点心"
+emoji = "🧇"
+
+[[emoji]]
+word = "点钟"
+emoji = "🕛"
+
+[[emoji]]
+word = "烛光"
+emoji = "🕯"
+
+[[emoji]]
+word = "烟火"
+emoji = "❇"
+
+[[emoji]]
+word = "烟花"
+emoji = "🎆"
+
+[[emoji]]
+word = "烟草"
+emoji = "🚬"
+
+[[emoji]]
+word = "热带"
+emoji = "🐠"
+
+[[emoji]]
+word = "热点"
+emoji = "🛜"
+
+[[emoji]]
+word = "烹调"
+emoji = "🍴"
+
+[[emoji]]
+word = "烹饪"
+emoji = "🔪"
+
+[[emoji]]
+word = "焊接"
+emoji = "🥽"
+
+[[emoji]]
+word = "焦头烂额"
+emoji = "😖"
+
+[[emoji]]
+word = "焦虑"
+emoji = "🫪"
+
+[[emoji]]
+word = "焰火"
+emoji = "🎆"
+
+[[emoji]]
+word = "煎蛋"
+emoji = "🍳"
+
+[[emoji]]
+word = "煎饼"
+emoji = "🥞"
+
+[[emoji]]
+word = "照明"
+emoji = "🕯"
+
+[[emoji]]
+word = "照片"
+emoji = "📷"
+
+[[emoji]]
+word = "照相机"
+emoji = "📷"
+
+[[emoji]]
+word = "煲汤"
+emoji = "🫕"
+
+[[emoji]]
+word = "熄灭"
+emoji = "🧯"
+
+[[emoji]]
+word = "熊猫"
+emoji = "🐼"
+
+[[emoji]]
+word = "熬夜"
+emoji = "🫩"
+
+[[emoji]]
+word = "燃料"
+emoji = "⛽"
+
+[[emoji]]
+word = "燃油"
+emoji = "⛽"
+
+[[emoji]]
+word = "燃烧"
+emoji = "🔥"
+
+[[emoji]]
+word = "燕麦"
+emoji = "🥣"
+
+[[emoji]]
+word = "爆发"
+emoji = "🌋"
+
+[[emoji]]
+word = "爆炸"
+emoji = "💣"
+
+[[emoji]]
+word = "爆竹"
+emoji = "🎆"
+
+[[emoji]]
+word = "爆米花"
+emoji = "🍿"
+
+[[emoji]]
+word = "爪子"
+emoji = "🐾"
+
+[[emoji]]
+word = "爬山"
+emoji = "🧗"
+
+[[emoji]]
+word = "爱你"
+emoji = "🤟"
+
+[[emoji]]
+word = "爱尔兰"
+emoji = "☘"
+
+[[emoji]]
+word = "爱心"
+emoji = "🤍"
+
+[[emoji]]
+word = "爱情"
+emoji = "💕"
+
+[[emoji]]
+word = "爱慕"
+emoji = "🥰"
+
+[[emoji]]
+word = "爵士"
+emoji = "🪊"
+
+[[emoji]]
+word = "牙刷"
+emoji = "🪥"
+
+[[emoji]]
+word = "牙医"
+emoji = "🦷"
+
+[[emoji]]
+word = "牙科"
+emoji = "🪥"
+
+[[emoji]]
+word = "牙齿"
+emoji = "🦷"
+
+[[emoji]]
+word = "牛仔"
+emoji = "🤠"
+
+[[emoji]]
+word = "牛仔裤"
+emoji = "👖"
+
+[[emoji]]
+word = "牛头"
+emoji = "🐮"
+
+[[emoji]]
+word = "牛奶"
+emoji = "🧈"
+
+[[emoji]]
+word = "牛排"
+emoji = "🥩"
+
+[[emoji]]
+word = "牡蛎"
+emoji = "🦪"
+
+[[emoji]]
+word = "牦牛"
+emoji = "🦬"
+
+[[emoji]]
+word = "物质"
+emoji = "⚛"
+
+[[emoji]]
+word = "特工"
+emoji = "🕵"
+
+[[emoji]]
+word = "特殊"
+emoji = "🩷"
+
+[[emoji]]
+word = "牺牲品"
+emoji = "♟"
+
+[[emoji]]
+word = "犀牛"
+emoji = "🦏"
+
+[[emoji]]
+word = "犯罪"
+emoji = "🫆"
+
+[[emoji]]
+word = "犹太"
+emoji = "🕍"
+
+[[emoji]]
+word = "犹豫不决"
+emoji = "🪀"
+
+[[emoji]]
+word = "狂风"
+emoji = "🌬"
+
+[[emoji]]
+word = "狐狸"
+emoji = "🦊"
+
+[[emoji]]
+word = "狡猾"
+emoji = "🦝"
+
+[[emoji]]
+word = "狮子"
+emoji = "🦁"
+
+[[emoji]]
+word = "狮子座"
+emoji = "♌"
+
+[[emoji]]
+word = "猎豹"
+emoji = "🐆"
+
+[[emoji]]
+word = "猕猴桃"
+emoji = "🥝"
+
+[[emoji]]
+word = "猩猩"
+emoji = "🦧"
+
+[[emoji]]
+word = "猪头"
+emoji = "🐷"
+
+[[emoji]]
+word = "猪肉"
+emoji = "🐖"
+
+[[emoji]]
+word = "猫咪"
+emoji = "🐱"
+
+[[emoji]]
+word = "猫头鹰"
+emoji = "🦉"
+
+[[emoji]]
+word = "献血"
+emoji = "🩸"
+
+[[emoji]]
+word = "猴子"
+emoji = "🐒"
+
+[[emoji]]
+word = "玉米"
+emoji = "🌽"
+
+[[emoji]]
+word = "王冠"
+emoji = "👑"
+
+[[emoji]]
+word = "王后"
+emoji = "👑"
+
+[[emoji]]
+word = "王子"
+emoji = "🤴"
+
+[[emoji]]
+word = "王室"
+emoji = "🫅"
+
+[[emoji]]
+word = "玛丽"
+emoji = "🪬"
+
+[[emoji]]
+word = "玩偶"
+emoji = "🧸"
+
+[[emoji]]
+word = "玩具"
+emoji = "🪀"
+
+[[emoji]]
+word = "玩物"
+emoji = "🧸"
+
+[[emoji]]
+word = "玩耍"
+emoji = "🛝"
+
+[[emoji]]
+word = "玫瑰"
+emoji = "🌹"
+
+[[emoji]]
+word = "现金"
+emoji = "💲"
+
+[[emoji]]
+word = "玻璃杯"
+emoji = "🍸"
+
+[[emoji]]
+word = "珊瑚"
+emoji = "🪸"
+
+[[emoji]]
+word = "珍宝"
+emoji = "🪎"
+
+[[emoji]]
+word = "珍珠"
+emoji = "🦪"
+
+[[emoji]]
+word = "珠子"
+emoji = "📿"
+
+[[emoji]]
+word = "珠宝"
+emoji = "💎"
+
+[[emoji]]
+word = "球拍"
+emoji = "🏸"
+
+[[emoji]]
+word = "球赛"
+emoji = "🏐"
+
+[[emoji]]
+word = "球门"
+emoji = "🥅"
+
+[[emoji]]
+word = "理发"
+emoji = "💇"
+
+[[emoji]]
+word = "理发师"
+emoji = "💇"
+
+[[emoji]]
+word = "理发店"
+emoji = "💈"
+
+[[emoji]]
+word = "瑜伽"
+emoji = "🧘"
+
+[[emoji]]
+word = "瑞士"
+emoji = "🫕"
+
+[[emoji]]
+word = "瓦解"
+emoji = "🫫"
+
+[[emoji]]
+word = "瓶子"
+emoji = "🫙"
+
+[[emoji]]
+word = "甜味"
+emoji = "🧃"
+
+[[emoji]]
+word = "甜品"
+emoji = "🍫"
+
+[[emoji]]
+word = "甜点"
+emoji = "🍩"
+
+[[emoji]]
+word = "甜蜜"
+emoji = "🩷"
+
+[[emoji]]
+word = "生命"
+emoji = "🧬"
+
+[[emoji]]
+word = "生日"
+emoji = "💐"
+
+[[emoji]]
+word = "生日快乐"
+emoji = "🎂"
+
+[[emoji]]
+word = "生日礼物"
+emoji = "🎁"
+
+[[emoji]]
+word = "生气"
+emoji = "😾"
+
+[[emoji]]
+word = "生物"
+emoji = "🔬"
+
+[[emoji]]
+word = "生物学"
+emoji = "🧫"
+
+[[emoji]]
+word = "生病"
+emoji = "💊"
+
+[[emoji]]
+word = "生菜"
+emoji = "🥬"
+
+[[emoji]]
+word = "生长"
+emoji = "🪴"
+
+[[emoji]]
+word = "用药"
+emoji = "💊"
+
+[[emoji]]
+word = "甲虫"
+emoji = "🪲"
+
+[[emoji]]
+word = "申请"
+emoji = "🈸"
+
+[[emoji]]
+word = "申请书"
+emoji = "🈸"
+
+[[emoji]]
+word = "申请表"
+emoji = "🈸"
+
+[[emoji]]
+word = "电台"
+emoji = "📻"
+
+[[emoji]]
+word = "电子"
+emoji = "🪫"
+
+[[emoji]]
+word = "电子游戏"
+emoji = "🕹"
+
+[[emoji]]
+word = "电子邮件"
+emoji = "📧"
+
+[[emoji]]
+word = "电平"
+emoji = "🎚"
+
+[[emoji]]
+word = "电影"
+emoji = "🎞"
+
+[[emoji]]
+word = "电影票"
+emoji = "🎫"
+
+[[emoji]]
+word = "电影院"
+emoji = "🎦"
+
+[[emoji]]
+word = "电极"
+emoji = "🔋"
+
+[[emoji]]
+word = "电梯"
+emoji = "🛗"
+
+[[emoji]]
+word = "电池"
+emoji = "🪫"
+
+[[emoji]]
+word = "电源"
+emoji = "🔌"
+
+[[emoji]]
+word = "电灯泡"
+emoji = "💡"
+
+[[emoji]]
+word = "电线"
+emoji = "🔌"
+
+[[emoji]]
+word = "电脑"
+emoji = "🖲"
+
+[[emoji]]
+word = "电视"
+emoji = "📺"
+
+[[emoji]]
+word = "电视机"
+emoji = "📺"
+
+[[emoji]]
+word = "电话"
+emoji = "📵"
+
+[[emoji]]
+word = "电车"
+emoji = "🚃"
+
+[[emoji]]
+word = "电邮"
+emoji = "📧"
+
+[[emoji]]
+word = "男人"
+emoji = "🕺"
+
+[[emoji]]
+word = "男士"
+emoji = "🚹"
+
+[[emoji]]
+word = "男子"
+emoji = "🫃"
+
+[[emoji]]
+word = "男孩"
+emoji = "👦"
+
+[[emoji]]
+word = "画卷"
+emoji = "📜"
+
+[[emoji]]
+word = "画家"
+emoji = "🎨"
+
+[[emoji]]
+word = "画画"
+emoji = "✏"
+
+[[emoji]]
+word = "画笔"
+emoji = "✏"
+
+[[emoji]]
+word = "番茄"
+emoji = "🍅"
+
+[[emoji]]
+word = "疑惑"
+emoji = "😕"
+
+[[emoji]]
+word = "疑问"
+emoji = "❓"
+
+[[emoji]]
+word = "疟疾"
+emoji = "🦟"
+
+[[emoji]]
+word = "疫苗"
+emoji = "💉"
+
+[[emoji]]
+word = "疯狂"
+emoji = "🫨"
+
+[[emoji]]
+word = "疲倦"
+emoji = "😩"
+
+[[emoji]]
+word = "疲劳"
+emoji = "😩"
+
+[[emoji]]
+word = "疲惫"
+emoji = "😩"
+
+[[emoji]]
+word = "疾病"
+emoji = "🪰"
+
+[[emoji]]
+word = "病毒"
+emoji = "🦠"
+
+[[emoji]]
+word = "病菌"
+emoji = "😷"
+
+[[emoji]]
+word = "痕迹"
+emoji = "🫆"
+
+[[emoji]]
+word = "痛哭"
+emoji = "😭"
+
+[[emoji]]
+word = "痛苦"
+emoji = "😧"
+
+[[emoji]]
+word = "登山"
+emoji = "🥾"
+
+[[emoji]]
+word = "登机"
+emoji = "🛫"
+
+[[emoji]]
+word = "白发"
+emoji = "🦳"
+
+[[emoji]]
+word = "白日梦"
+emoji = "💭"
+
+[[emoji]]
+word = "白眼"
+emoji = "🙄"
+
+[[emoji]]
+word = "白羊座"
+emoji = "🐏"
+
+[[emoji]]
+word = "白色"
+emoji = "⬜"
+
+[[emoji]]
+word = "白花"
+emoji = "💮"
+
+[[emoji]]
+word = "白衣"
+emoji = "🥼"
+
+[[emoji]]
+word = "百万"
+emoji = "💰"
+
+[[emoji]]
+word = "百分百"
+emoji = "💯"
+
+[[emoji]]
+word = "百货公司"
+emoji = "🏬"
+
+[[emoji]]
+word = "的士"
+emoji = "🚕"
+
+[[emoji]]
+word = "皇冠"
+emoji = "👸"
+
+[[emoji]]
+word = "皇室"
+emoji = "🫅"
+
+[[emoji]]
+word = "皇家"
+emoji = "🤴"
+
+[[emoji]]
+word = "皮卡"
+emoji = "🛻"
+
+[[emoji]]
+word = "皮鞋"
+emoji = "👞"
+
+[[emoji]]
+word = "皱眉"
+emoji = "☹"
+
+[[emoji]]
+word = "盆景"
+emoji = "🪴"
+
+[[emoji]]
+word = "盆栽"
+emoji = "🎍"
+
+[[emoji]]
+word = "盐水"
+emoji = "🫝"
+
+[[emoji]]
+word = "盒子"
+emoji = "🗳"
+
+[[emoji]]
+word = "盒装"
+emoji = "🧃"
+
+[[emoji]]
+word = "盒饭"
+emoji = "🍱"
+
+[[emoji]]
+word = "目录"
+emoji = "📇"
+
+[[emoji]]
+word = "目瞪口呆"
+emoji = "😦"
+
+[[emoji]]
+word = "盲人"
+emoji = "🦯"
+
+[[emoji]]
+word = "直升机"
+emoji = "🚁"
+
+[[emoji]]
+word = "直升飞机"
+emoji = "🚁"
+
+[[emoji]]
+word = "相加"
+emoji = "➕"
+
+[[emoji]]
+word = "相恋"
+emoji = "👫"
+
+[[emoji]]
+word = "相机"
+emoji = "🤳"
+
+[[emoji]]
+word = "相爱"
+emoji = "🥰"
+
+[[emoji]]
+word = "相等"
+emoji = "🟰"
+
+[[emoji]]
+word = "盾牌"
+emoji = "🛡"
+
+[[emoji]]
+word = "眉毛"
+emoji = "🥸"
+
+[[emoji]]
+word = "看电影"
+emoji = "🍿"
+
+[[emoji]]
+word = "看电视"
+emoji = "📺"
+
+[[emoji]]
+word = "看病"
+emoji = "🏥"
+
+[[emoji]]
+word = "真心"
+emoji = "🫀"
+
+[[emoji]]
+word = "真棒"
+emoji = "👍"
+
+[[emoji]]
+word = "真菌"
+emoji = "🍄"
+
+[[emoji]]
+word = "眨眼"
+emoji = "😉"
+
+[[emoji]]
+word = "眼泪"
+emoji = "😂"
+
+[[emoji]]
+word = "眼睛"
+emoji = "👓"
+
+[[emoji]]
+word = "眼花"
+emoji = "🥴"
+
+[[emoji]]
+word = "眼袋"
+emoji = "🫩"
+
+[[emoji]]
+word = "眼镜"
+emoji = "😎"
+
+[[emoji]]
+word = "着陆"
+emoji = "🛬"
+
+[[emoji]]
+word = "睡眠"
+emoji = "🛏"
+
+[[emoji]]
+word = "睡着"
+emoji = "💤"
+
+[[emoji]]
+word = "睡觉"
+emoji = "😪"
+
+[[emoji]]
+word = "睿智"
+emoji = "🦉"
+
+[[emoji]]
+word = "瞌睡"
+emoji = "😪"
+
+[[emoji]]
+word = "知识"
+emoji = "📖"
+
+[[emoji]]
+word = "短裤"
+emoji = "🩲"
+
+[[emoji]]
+word = "石头"
+emoji = "🪨"
+
+[[emoji]]
+word = "石油"
+emoji = "🛢"
+
+[[emoji]]
+word = "砂浆"
+emoji = "🧱"
+
+[[emoji]]
+word = "破解"
+emoji = "🔓"
+
+[[emoji]]
+word = "硬币"
+emoji = "🪙"
+
+[[emoji]]
+word = "确定"
+emoji = "👌"
+
+[[emoji]]
+word = "磁带"
+emoji = "📼"
+
+[[emoji]]
+word = "磁性"
+emoji = "🧭"
+
+[[emoji]]
+word = "磁盘"
+emoji = "💾"
+
+[[emoji]]
+word = "磁铁"
+emoji = "🧲"
+
+[[emoji]]
+word = "示威"
+emoji = "🪧"
+
+[[emoji]]
+word = "礼品"
+emoji = "🎁"
+
+[[emoji]]
+word = "礼拜"
+emoji = "🛐"
+
+[[emoji]]
+word = "礼物"
+emoji = "🧧"
+
+[[emoji]]
+word = "祈求"
+emoji = "🙏"
+
+[[emoji]]
+word = "祈祷"
+emoji = "📿"
+
+[[emoji]]
+word = "祈福"
+emoji = "🙏"
+
+[[emoji]]
+word = "祖母"
+emoji = "👵"
+
+[[emoji]]
+word = "祖父"
+emoji = "👴"
+
+[[emoji]]
+word = "祝福"
+emoji = "㊗"
+
+[[emoji]]
+word = "祝贺"
+emoji = "㊗"
+
+[[emoji]]
+word = "神灵"
+emoji = "🧞"
+
+[[emoji]]
+word = "神秘"
+emoji = "🧝"
+
+[[emoji]]
+word = "神话"
+emoji = "🐲"
+
+[[emoji]]
+word = "祷告"
+emoji = "🤲"
+
+[[emoji]]
+word = "禁止"
+emoji = "🚳"
+
+[[emoji]]
+word = "禁烟"
+emoji = "🚭"
+
+[[emoji]]
+word = "私密"
+emoji = "🔒"
+
+[[emoji]]
+word = "秃头"
+emoji = "👴"
+
+[[emoji]]
+word = "秋叶"
+emoji = "🍁"
+
+[[emoji]]
+word = "秋天"
+emoji = "🥮"
+
+[[emoji]]
+word = "种植"
+emoji = "🧺"
+
+[[emoji]]
+word = "科学"
+emoji = "🦠"
+
+[[emoji]]
+word = "科学家"
+emoji = "🥼"
+
+[[emoji]]
+word = "秘密"
+emoji = "🙊"
+
+[[emoji]]
+word = "移动"
+emoji = "📱"
+
+[[emoji]]
+word = "移动电话"
+emoji = "📱"
+
+[[emoji]]
+word = "移动通信"
+emoji = "📱"
+
+[[emoji]]
+word = "移除"
+emoji = "🪌"
+
+[[emoji]]
+word = "稀饭"
+emoji = "🥣"
+
+[[emoji]]
+word = "穆斯林"
+emoji = "🕌"
+
+[[emoji]]
+word = "空中"
+emoji = "🚠"
+
+[[emoji]]
+word = "空位"
+emoji = "🈳"
+
+[[emoji]]
+word = "空心"
+emoji = "❔"
+
+[[emoji]]
+word = "空手道"
+emoji = "🥋"
+
+[[emoji]]
+word = "空闲"
+emoji = "🈳"
+
+[[emoji]]
+word = "窗口"
+emoji = "🪟"
+
+[[emoji]]
+word = "窗户"
+emoji = "🪟"
+
+[[emoji]]
+word = "窥视"
+emoji = "👀"
+
+[[emoji]]
+word = "站着"
+emoji = "🧍"
+
+[[emoji]]
+word = "站立"
+emoji = "🧍"
+
+[[emoji]]
+word = "竞技场"
+emoji = "🏟"
+
+[[emoji]]
+word = "竞赛"
+emoji = "🏁"
+
+[[emoji]]
+word = "章鱼"
+emoji = "🐙"
+
+[[emoji]]
+word = "童话"
+emoji = "🐲"
+
+[[emoji]]
+word = "笑脸"
+emoji = "😀"
+
+[[emoji]]
+word = "笑颜"
+emoji = "😁"
+
+[[emoji]]
+word = "笔记"
+emoji = "📓"
+
+[[emoji]]
+word = "笔记本"
+emoji = "📒"
+
+[[emoji]]
+word = "笔迹"
+emoji = "🪌"
+
+[[emoji]]
+word = "符号"
+emoji = "♀"
+
+[[emoji]]
+word = "符咒"
+emoji = "🧿"
+
+[[emoji]]
+word = "第一"
+emoji = "🥇"
+
+[[emoji]]
+word = "第三"
+emoji = "🥉"
+
+[[emoji]]
+word = "第二"
+emoji = "🥈"
+
+[[emoji]]
+word = "等于"
+emoji = "🟰"
+
+[[emoji]]
+word = "等号"
+emoji = "🟰"
+
+[[emoji]]
+word = "等待"
+emoji = "⏳"
+
+[[emoji]]
+word = "等等"
+emoji = "👋"
+
+[[emoji]]
+word = "答案"
+emoji = "🟰"
+
+[[emoji]]
+word = "筷子"
+emoji = "🥢"
+
+[[emoji]]
+word = "算命"
+emoji = "🥠"
+
+[[emoji]]
+word = "算盘"
+emoji = "🧮"
+
+[[emoji]]
+word = "箭头"
+emoji = "🔚"
+
+[[emoji]]
+word = "箱子"
+emoji = "📦"
+
+[[emoji]]
+word = "篮子"
+emoji = "🧺"
+
+[[emoji]]
+word = "篮球"
+emoji = "🏀"
+
+[[emoji]]
+word = "米饭"
+emoji = "🍚"
+
+[[emoji]]
+word = "粉红"
+emoji = "🩷"
+
+[[emoji]]
+word = "粑粑"
+emoji = "💩"
+
+[[emoji]]
+word = "粮食"
+emoji = "🌾"
+
+[[emoji]]
+word = "粽子"
+emoji = "🫔"
+
+[[emoji]]
+word = "精灵"
+emoji = "🧝"
+
+[[emoji]]
+word = "糕点"
+emoji = "🍰"
+
+[[emoji]]
+word = "糖果"
+emoji = "🍭"
+
+[[emoji]]
+word = "素食"
+emoji = "🫜"
+
+[[emoji]]
+word = "索引"
+emoji = "🗂"
+
+[[emoji]]
+word = "索道"
+emoji = "🚠"
+
+[[emoji]]
+word = "紧张"
+emoji = "🫫"
+
+[[emoji]]
+word = "紧急"
+emoji = "🚨"
+
+[[emoji]]
+word = "紫罗兰"
+emoji = "🪻"
+
+[[emoji]]
+word = "紫色"
+emoji = "🟣"
+
+[[emoji]]
+word = "纠结"
+emoji = "😖"
+
+[[emoji]]
+word = "纠缠"
+emoji = "🦡"
+
+[[emoji]]
+word = "红包"
+emoji = "🧧"
+
+[[emoji]]
+word = "红心"
+emoji = "♥"
+
+[[emoji]]
+word = "红桃"
+emoji = "♥"
+
+[[emoji]]
+word = "红玫瑰"
+emoji = "🌹"
+
+[[emoji]]
+word = "红绿灯"
+emoji = "🚥"
+
+[[emoji]]
+word = "红色"
+emoji = "🔺"
+
+[[emoji]]
+word = "红薯"
+emoji = "🍠"
+
+[[emoji]]
+word = "约会"
+emoji = "💄"
+
+[[emoji]]
+word = "纪念"
+emoji = "🪦"
+
+[[emoji]]
+word = "纯洁"
+emoji = "🪷"
+
+[[emoji]]
+word = "纸巾"
+emoji = "🧻"
+
+[[emoji]]
+word = "纸币"
+emoji = "💸"
+
+[[emoji]]
+word = "纸张"
+emoji = "📃"
+
+[[emoji]]
+word = "纽约"
+emoji = "🗽"
+
+[[emoji]]
+word = "线圈"
+emoji = "🗒"
+
+[[emoji]]
+word = "线索"
+emoji = "🗝"
+
+[[emoji]]
+word = "细胞"
+emoji = "🔬"
+
+[[emoji]]
+word = "细菌"
+emoji = "🦠"
+
+[[emoji]]
+word = "终极"
+emoji = "🥏"
+
+[[emoji]]
+word = "终止"
+emoji = "⏹"
+
+[[emoji]]
+word = "终点"
+emoji = "🔚"
+
+[[emoji]]
+word = "经纬"
+emoji = "🌐"
+
+[[emoji]]
+word = "结婚"
+emoji = "💍"
+
+[[emoji]]
+word = "结束"
+emoji = "🔚"
+
+[[emoji]]
+word = "绘图"
+emoji = "🪌"
+
+[[emoji]]
+word = "绘画"
+emoji = "✏"
+
+[[emoji]]
+word = "绝不"
+emoji = "😲"
+
+[[emoji]]
+word = "绝对"
+emoji = "💯"
+
+[[emoji]]
+word = "统计"
+emoji = "🈷"
+
+[[emoji]]
+word = "绳子"
+emoji = "🧵"
+
+[[emoji]]
+word = "维他命"
+emoji = "💊"
+
+[[emoji]]
+word = "绵羊"
+emoji = "🐑"
+
+[[emoji]]
+word = "绷带"
+emoji = "🩹"
+
+[[emoji]]
+word = "绿色"
+emoji = "🟩"
+
+[[emoji]]
+word = "缄默"
+emoji = "😯"
+
+[[emoji]]
+word = "缆车"
+emoji = "🚠"
+
+[[emoji]]
+word = "缓解"
+emoji = "💆"
+
+[[emoji]]
+word = "编织"
+emoji = "🧶"
+
+[[emoji]]
+word = "缝合"
+emoji = "🪡"
+
+[[emoji]]
+word = "缝纫"
+emoji = "🧵"
+
+[[emoji]]
+word = "缠绕"
+emoji = "🥨"
+
+[[emoji]]
+word = "罐头"
+emoji = "🥫"
+
+[[emoji]]
+word = "网址"
+emoji = "🔗"
+
+[[emoji]]
+word = "网球"
+emoji = "🎾"
+
+[[emoji]]
+word = "网络"
+emoji = "🛜"
+
+[[emoji]]
+word = "网罗"
+emoji = "🪍"
+
+[[emoji]]
+word = "罗盘"
+emoji = "🧭"
+
+[[emoji]]
+word = "罗纳尔多"
+emoji = "⚽"
+
+[[emoji]]
+word = "罚球"
+emoji = "⛹"
+
+[[emoji]]
+word = "罪犯"
+emoji = "🦹"
+
+[[emoji]]
+word = "置顶"
+emoji = "🔝"
+
+[[emoji]]
+word = "羊毛"
+emoji = "🦙"
+
+[[emoji]]
+word = "美丽"
+emoji = "🦋"
+
+[[emoji]]
+word = "美人鱼"
+emoji = "🧜"
+
+[[emoji]]
+word = "美元"
+emoji = "💲"
+
+[[emoji]]
+word = "美发"
+emoji = "💇"
+
+[[emoji]]
+word = "美味"
+emoji = "😋"
+
+[[emoji]]
+word = "美容"
+emoji = "💇"
+
+[[emoji]]
+word = "美容院"
+emoji = "💇"
+
+[[emoji]]
+word = "美洲"
+emoji = "🌎"
+
+[[emoji]]
+word = "美甲"
+emoji = "💅"
+
+[[emoji]]
+word = "羞涩"
+emoji = "😚"
+
+[[emoji]]
+word = "羽毛"
+emoji = "🪶"
+
+[[emoji]]
+word = "羽毛球"
+emoji = "🏸"
+
+[[emoji]]
+word = "翅膀"
+emoji = "💸"
+
+[[emoji]]
+word = "翱翔"
+emoji = "🪁"
+
+[[emoji]]
+word = "老人"
+emoji = "👵"
+
+[[emoji]]
+word = "老太"
+emoji = "👵"
+
+[[emoji]]
+word = "老头"
+emoji = "👴"
+
+[[emoji]]
+word = "老奶奶"
+emoji = "👵"
+
+[[emoji]]
+word = "老年人"
+emoji = "🧓"
+
+[[emoji]]
+word = "老爷爷"
+emoji = "👴"
+
+[[emoji]]
+word = "老男人"
+emoji = "🧓"
+
+[[emoji]]
+word = "老虎"
+emoji = "🐅"
+
+[[emoji]]
+word = "老虎机"
+emoji = "🎰"
+
+[[emoji]]
+word = "老鹰"
+emoji = "🦅"
+
+[[emoji]]
+word = "老鼠"
+emoji = "🐁"
+
+[[emoji]]
+word = "老龄"
+emoji = "🧓"
+
+[[emoji]]
+word = "考拉"
+emoji = "🐨"
+
+[[emoji]]
+word = "考试"
+emoji = "💯"
+
+[[emoji]]
+word = "耗子"
+emoji = "🐀"
+
+[[emoji]]
+word = "耳塞"
+emoji = "🎧"
+
+[[emoji]]
+word = "耳朵"
+emoji = "👂"
+
+[[emoji]]
+word = "耳机"
+emoji = "🎧"
+
+[[emoji]]
+word = "耳聋"
+emoji = "🦻"
+
+[[emoji]]
+word = "聚会"
+emoji = "🪩"
+
+[[emoji]]
+word = "聪明"
+emoji = "🧠"
+
+[[emoji]]
+word = "肌肉"
+emoji = "💪"
+
+[[emoji]]
+word = "肢体"
+emoji = "🦵"
+
+[[emoji]]
+word = "肥皂"
+emoji = "🧼"
+
+[[emoji]]
+word = "肺部"
+emoji = "🫁"
+
+[[emoji]]
+word = "背包"
+emoji = "🥾"
+
+[[emoji]]
+word = "背心"
+emoji = "🦺"
+
+[[emoji]]
+word = "胜利"
+emoji = "✌"
+
+[[emoji]]
+word = "胡子"
+emoji = "🥸"
+
+[[emoji]]
+word = "胡萝卜"
+emoji = "🥕"
+
+[[emoji]]
+word = "胡须"
+emoji = "🧔"
+
+[[emoji]]
+word = "胶卷"
+emoji = "🎞"
+
+[[emoji]]
+word = "胶布"
+emoji = "🩹"
+
+[[emoji]]
+word = "胶片"
+emoji = "🎞"
+
+[[emoji]]
+word = "脆弱"
+emoji = "🫌"
+
+[[emoji]]
+word = "脚印"
+emoji = "👣"
+
+[[emoji]]
+word = "脸红"
+emoji = "😳"
+
+[[emoji]]
+word = "腋下"
+emoji = "🥎"
+
+[[emoji]]
+word = "腐烂"
+emoji = "🪰"
+
+[[emoji]]
+word = "腹部"
+emoji = "🫄"
+
+[[emoji]]
+word = "腼腆"
+emoji = "🪭"
+
+[[emoji]]
+word = "膨胀"
+emoji = "🫪"
+
+[[emoji]]
+word = "臃肿"
+emoji = "🫄"
+
+[[emoji]]
+word = "自拍"
+emoji = "🤳"
+
+[[emoji]]
+word = "自然"
+emoji = "🐌"
+
+[[emoji]]
+word = "自由"
+emoji = "🗽"
+
+[[emoji]]
+word = "自行车"
+emoji = "🚲"
+
+[[emoji]]
+word = "自豪"
+emoji = "🥹"
+
+[[emoji]]
+word = "自负"
+emoji = "😤"
+
+[[emoji]]
+word = "致敬"
+emoji = "🫡"
+
+[[emoji]]
+word = "舌头"
+emoji = "👅"
+
+[[emoji]]
+word = "舞会"
+emoji = "🪩"
+
+[[emoji]]
+word = "舞厅"
+emoji = "🪩"
+
+[[emoji]]
+word = "舞者"
+emoji = "🕺"
+
+[[emoji]]
+word = "舞蹈"
+emoji = "🩰"
+
+[[emoji]]
+word = "航海"
+emoji = "🛙"
+
+[[emoji]]
+word = "航班"
+emoji = "🛬"
+
+[[emoji]]
+word = "艳丽"
+emoji = "🦩"
+
+[[emoji]]
+word = "艺术"
+emoji = "🎭"
+
+[[emoji]]
+word = "节奏"
+emoji = "🪘"
+
+[[emoji]]
+word = "节日"
+emoji = "🎅"
+
+[[emoji]]
+word = "节日快乐"
+emoji = "🥳"
+
+[[emoji]]
+word = "节目"
+emoji = "📺"
+
+[[emoji]]
+word = "芒果"
+emoji = "🥭"
+
+[[emoji]]
+word = "芙蓉"
+emoji = "🌺"
+
+[[emoji]]
+word = "芝士"
+emoji = "🧀"
+
+[[emoji]]
+word = "花园"
+emoji = "🐌"
+
+[[emoji]]
+word = "花圈"
+emoji = "🏵"
+
+[[emoji]]
+word = "花朵"
+emoji = "🪷"
+
+[[emoji]]
+word = "花生"
+emoji = "🥜"
+
+[[emoji]]
+word = "花痴"
+emoji = "😍"
+
+[[emoji]]
+word = "花盆"
+emoji = "🪴"
+
+[[emoji]]
+word = "花絮"
+emoji = "🆖"
+
+[[emoji]]
+word = "花钱"
+emoji = "💸"
+
+[[emoji]]
+word = "苍蝇"
+emoji = "🪰"
+
+[[emoji]]
+word = "苦笑"
+emoji = "😅"
+
+[[emoji]]
+word = "英镑"
+emoji = "💷"
+
+[[emoji]]
+word = "英雄"
+emoji = "🦸"
+
+[[emoji]]
+word = "苹果"
+emoji = "🍏"
+
+[[emoji]]
+word = "茄子"
+emoji = "🍆"
+
+[[emoji]]
+word = "茫然"
+emoji = "😑"
+
+[[emoji]]
+word = "茶壶"
+emoji = "🫖"
+
+[[emoji]]
+word = "茶杯"
+emoji = "🍵"
+
+[[emoji]]
+word = "草药"
+emoji = "🌿"
+
+[[emoji]]
+word = "草莓"
+emoji = "🍓"
+
+[[emoji]]
+word = "荒废"
+emoji = "🏚"
+
+[[emoji]]
+word = "荒漠"
+emoji = "🏜"
+
+[[emoji]]
+word = "荒芜"
+emoji = "🪾"
+
+[[emoji]]
+word = "药丸"
+emoji = "💊"
+
+[[emoji]]
+word = "药物"
+emoji = "💊"
+
+[[emoji]]
+word = "药草"
+emoji = "🌿"
+
+[[emoji]]
+word = "莎士比亚"
+emoji = "🎭"
+
+[[emoji]]
+word = "莲花"
+emoji = "🪷"
+
+[[emoji]]
+word = "获胜"
+emoji = "🏅"
+
+[[emoji]]
+word = "菜刀"
+emoji = "🔪"
+
+[[emoji]]
+word = "菜园"
+emoji = "🫜"
+
+[[emoji]]
+word = "菠萝"
+emoji = "🍍"
+
+[[emoji]]
+word = "菱形"
+emoji = "🔹"
+
+[[emoji]]
+word = "萝卜"
+emoji = "🫜"
+
+[[emoji]]
+word = "营业"
+emoji = "🈺"
+
+[[emoji]]
+word = "落叶"
+emoji = "🌳"
+
+[[emoji]]
+word = "葡萄"
+emoji = "🍇"
+
+[[emoji]]
+word = "葡萄酒"
+emoji = "🍷"
+
+[[emoji]]
+word = "葬礼"
+emoji = "⚰"
+
+[[emoji]]
+word = "蒲公英"
+emoji = "🌼"
+
+[[emoji]]
+word = "蒸汽"
+emoji = "♨"
+
+[[emoji]]
+word = "蒸馏"
+emoji = "⚗"
+
+[[emoji]]
+word = "蓄电池"
+emoji = "🔋"
+
+[[emoji]]
+word = "蓝光"
+emoji = "💿"
+
+[[emoji]]
+word = "蓝绿"
+emoji = "🩵"
+
+[[emoji]]
+word = "蓝色"
+emoji = "👖"
+
+[[emoji]]
+word = "蓝莓"
+emoji = "🫐"
+
+[[emoji]]
+word = "蔬菜"
+emoji = "🍆"
+
+[[emoji]]
+word = "薯条"
+emoji = "🍟"
+
+[[emoji]]
+word = "薰衣草"
+emoji = "🪻"
+
+[[emoji]]
+word = "蘑菇"
+emoji = "🍄"
+
+[[emoji]]
+word = "虫子"
+emoji = "🪲"
+
+[[emoji]]
+word = "蚂蚁"
+emoji = "🐜"
+
+[[emoji]]
+word = "蚊子"
+emoji = "🦟"
+
+[[emoji]]
+word = "蚯蚓"
+emoji = "🪱"
+
+[[emoji]]
+word = "蛀牙"
+emoji = "🍬"
+
+[[emoji]]
+word = "蛋糕"
+emoji = "🍰"
+
+[[emoji]]
+word = "蛐蛐"
+emoji = "🦗"
+
+[[emoji]]
+word = "蜂蜜"
+emoji = "🐝"
+
+[[emoji]]
+word = "蜕变"
+emoji = "🫫"
+
+[[emoji]]
+word = "蜗牛"
+emoji = "🐌"
+
+[[emoji]]
+word = "蜘蛛"
+emoji = "🕷"
+
+[[emoji]]
+word = "蜜蜂"
+emoji = "🐝"
+
+[[emoji]]
+word = "蜡烛"
+emoji = "🕯"
+
+[[emoji]]
+word = "蜡笔"
+emoji = "🖍"
+
+[[emoji]]
+word = "蜥蜴"
+emoji = "🦎"
+
+[[emoji]]
+word = "蝎子"
+emoji = "🦂"
+
+[[emoji]]
+word = "蝙蝠"
+emoji = "🦇"
+
+[[emoji]]
+word = "蝙蝠侠"
+emoji = "🦸"
+
+[[emoji]]
+word = "蝴蝶"
+emoji = "🦋"
+
+[[emoji]]
+word = "蝴蝶结"
+emoji = "🎀"
+
+[[emoji]]
+word = "螃蟹"
+emoji = "🦀"
+
+[[emoji]]
+word = "融化"
+emoji = "🫕"
+
+[[emoji]]
+word = "螺丝"
+emoji = "🔩"
+
+[[emoji]]
+word = "螺丝刀"
+emoji = "🪛"
+
+[[emoji]]
+word = "螺旋"
+emoji = "🐚"
+
+[[emoji]]
+word = "螺栓"
+emoji = "🔩"
+
+[[emoji]]
+word = "螺母"
+emoji = "🔩"
+
+[[emoji]]
+word = "螺钉"
+emoji = "🔩"
+
+[[emoji]]
+word = "蟋蟀"
+emoji = "🦗"
+
+[[emoji]]
+word = "蟑螂"
+emoji = "🪳"
+
+[[emoji]]
+word = "蠕虫"
+emoji = "🪱"
+
+[[emoji]]
+word = "血型"
+emoji = "🅰"
+
+[[emoji]]
+word = "血拼"
+emoji = "👛"
+
+[[emoji]]
+word = "血液"
+emoji = "🅰"
+
+[[emoji]]
+word = "行人"
+emoji = "🚷"
+
+[[emoji]]
+word = "行尸走肉"
+emoji = "🧟"
+
+[[emoji]]
+word = "行星"
+emoji = "🪐"
+
+[[emoji]]
+word = "行李"
+emoji = "🛄"
+
+[[emoji]]
+word = "行李箱"
+emoji = "🧳"
+
+[[emoji]]
+word = "衣服"
+emoji = "👗"
+
+[[emoji]]
+word = "表情"
+emoji = "🙎"
+
+[[emoji]]
+word = "表演"
+emoji = "🎭"
+
+[[emoji]]
+word = "衰落"
+emoji = "🌖"
+
+[[emoji]]
+word = "袋鼠"
+emoji = "🦘"
+
+[[emoji]]
+word = "袜子"
+emoji = "🧦"
+
+[[emoji]]
+word = "裁剪"
+emoji = "🪡"
+
+[[emoji]]
+word = "装饰"
+emoji = "💟"
+
+[[emoji]]
+word = "裙子"
+emoji = "👗"
+
+[[emoji]]
+word = "裤子"
+emoji = "👖"
+
+[[emoji]]
+word = "西瓜"
+emoji = "🍉"
+
+[[emoji]]
+word = "西红柿"
+emoji = "🍅"
+
+[[emoji]]
+word = "西餐"
+emoji = "🍽"
+
+[[emoji]]
+word = "要害"
+emoji = "🎯"
+
+[[emoji]]
+word = "视频"
+emoji = "📺"
+
+[[emoji]]
+word = "角度"
+emoji = "📐"
+
+[[emoji]]
+word = "解剖"
+emoji = "🫀"
+
+[[emoji]]
+word = "解散"
+emoji = "🫳"
+
+[[emoji]]
+word = "解锁"
+emoji = "🔑"
+
+[[emoji]]
+word = "触手"
+emoji = "🪼"
+
+[[emoji]]
+word = "警告"
+emoji = "⚠"
+
+[[emoji]]
+word = "警官"
+emoji = "👮"
+
+[[emoji]]
+word = "警察"
+emoji = "🚔"
+
+[[emoji]]
+word = "警报"
+emoji = "🚨"
+
+[[emoji]]
+word = "警方"
+emoji = "👮"
+
+[[emoji]]
+word = "警示"
+emoji = "🚨"
+
+[[emoji]]
+word = "警车"
+emoji = "🚔"
+
+[[emoji]]
+word = "计时"
+emoji = "⌛"
+
+[[emoji]]
+word = "计时器"
+emoji = "⌛"
+
+[[emoji]]
+word = "计算"
+emoji = "🧮"
+
+[[emoji]]
+word = "计算器"
+emoji = "🧮"
+
+[[emoji]]
+word = "计算机"
+emoji = "🖥"
+
+[[emoji]]
+word = "订婚"
+emoji = "💍"
+
+[[emoji]]
+word = "讨人喜欢"
+emoji = "🩷"
+
+[[emoji]]
+word = "讨价还价"
+emoji = "🉐"
+
+[[emoji]]
+word = "训练"
+emoji = "🏋"
+
+[[emoji]]
+word = "记事本"
+emoji = "📒"
+
+[[emoji]]
+word = "记录"
+emoji = "📓"
+
+[[emoji]]
+word = "记账"
+emoji = "📒"
+
+[[emoji]]
+word = "讲话"
+emoji = "🗣"
+
+[[emoji]]
+word = "许可"
+emoji = "🉑"
+
+[[emoji]]
+word = "讽刺"
+emoji = "😼"
+
+[[emoji]]
+word = "证件"
+emoji = "🪪"
+
+[[emoji]]
+word = "证据"
+emoji = "🧾"
+
+[[emoji]]
+word = "证明"
+emoji = "🧾"
+
+[[emoji]]
+word = "诅咒"
+emoji = "🤬"
+
+[[emoji]]
+word = "识别"
+emoji = "🆔"
+
+[[emoji]]
+word = "诊断"
+emoji = "🩺"
+
+[[emoji]]
+word = "试管"
+emoji = "🧪"
+
+[[emoji]]
+word = "话语"
+emoji = "🗨"
+
+[[emoji]]
+word = "诱饵"
+emoji = "🪤"
+
+[[emoji]]
+word = "说话"
+emoji = "🦜"
+
+[[emoji]]
+word = "说谎"
+emoji = "🤥"
+
+[[emoji]]
+word = "请客"
+emoji = "🧁"
+
+[[emoji]]
+word = "请求"
+emoji = "🥺"
+
+[[emoji]]
+word = "读书"
+emoji = "🔖"
+
+[[emoji]]
+word = "调味"
+emoji = "🧅"
+
+[[emoji]]
+word = "调味品"
+emoji = "🧂"
+
+[[emoji]]
+word = "调味料"
+emoji = "🧂"
+
+[[emoji]]
+word = "调情"
+emoji = "🫦"
+
+[[emoji]]
+word = "调皮"
+emoji = "😛"
+
+[[emoji]]
+word = "调节"
+emoji = "🎚"
+
+[[emoji]]
+word = "谢谢"
+emoji = "🙏"
+
+[[emoji]]
+word = "谷物"
+emoji = "🌾"
+
+[[emoji]]
+word = "豆子"
+emoji = "🫘"
+
+[[emoji]]
+word = "豆类"
+emoji = "🫘"
+
+[[emoji]]
+word = "豌豆"
+emoji = "🫛"
+
+[[emoji]]
+word = "豹子"
+emoji = "🐆"
+
+[[emoji]]
+word = "财富"
+emoji = "🪙"
+
+[[emoji]]
+word = "责备"
+emoji = "👎"
+
+[[emoji]]
+word = "账单"
+emoji = "🧾"
+
+[[emoji]]
+word = "账本"
+emoji = "📒"
+
+[[emoji]]
+word = "货币"
+emoji = "💶"
+
+[[emoji]]
+word = "货车"
+emoji = "🚚"
+
+[[emoji]]
+word = "购物"
+emoji = "🛒"
+
+[[emoji]]
+word = "购物车"
+emoji = "🛒"
+
+[[emoji]]
+word = "贮藏"
+emoji = "🫙"
+
+[[emoji]]
+word = "贵族"
+emoji = "🫅"
+
+[[emoji]]
+word = "费用"
+emoji = "🈶"
+
+[[emoji]]
+word = "资料"
+emoji = "📊"
+
+[[emoji]]
+word = "赌博"
+emoji = "🎰"
+
+[[emoji]]
+word = "赌场"
+emoji = "🎰"
+
+[[emoji]]
+word = "赏月"
+emoji = "🎑"
+
+[[emoji]]
+word = "赛跑"
+emoji = "🏃"
+
+[[emoji]]
+word = "赛车"
+emoji = "🏍"
+
+[[emoji]]
+word = "赛马"
+emoji = "🏇"
+
+[[emoji]]
+word = "赞成"
+emoji = "👏"
+
+[[emoji]]
+word = "赤脚"
+emoji = "👣"
+
+[[emoji]]
+word = "走势"
+emoji = "💹"
+
+[[emoji]]
+word = "走路"
+emoji = "🚶"
+
+[[emoji]]
+word = "起飞"
+emoji = "🛫"
+
+[[emoji]]
+word = "超人"
+emoji = "🦸"
+
+[[emoji]]
+word = "超能力"
+emoji = "🦸"
+
+[[emoji]]
+word = "足球"
+emoji = "⚽"
+
+[[emoji]]
+word = "足迹"
+emoji = "🐾"
+
+[[emoji]]
+word = "跆拳道"
+emoji = "🥋"
+
+[[emoji]]
+word = "跑步"
+emoji = "🎽"
+
+[[emoji]]
+word = "跑路"
+emoji = "🏃"
+
+[[emoji]]
+word = "跑车"
+emoji = "🏎"
+
+[[emoji]]
+word = "跑鞋"
+emoji = "👟"
+
+[[emoji]]
+word = "跪下"
+emoji = "🧎"
+
+[[emoji]]
+word = "跳伞"
+emoji = "🪂"
+
+[[emoji]]
+word = "跳舞"
+emoji = "🕺"
+
+[[emoji]]
+word = "跳跃"
+emoji = "🦘"
+
+[[emoji]]
+word = "身份"
+emoji = "🆔"
+
+[[emoji]]
+word = "身份证"
+emoji = "🪪"
+
+[[emoji]]
+word = "身体"
+emoji = "👀"
+
+[[emoji]]
+word = "车票"
+emoji = "🎫"
+
+[[emoji]]
+word = "车站"
+emoji = "🚉"
+
+[[emoji]]
+word = "车轮"
+emoji = "🛞"
+
+[[emoji]]
+word = "车辆"
+emoji = "🚑"
+
+[[emoji]]
+word = "轨道"
+emoji = "🚋"
+
+[[emoji]]
+word = "转动"
+emoji = "🛞"
+
+[[emoji]]
+word = "转变"
+emoji = "🫌"
+
+[[emoji]]
+word = "轮椅"
+emoji = "🦼"
+
+[[emoji]]
+word = "轮盘"
+emoji = "☸"
+
+[[emoji]]
+word = "轮胎"
+emoji = "🛞"
+
+[[emoji]]
+word = "轮船"
+emoji = "⛴"
+
+[[emoji]]
+word = "软盘"
+emoji = "💾"
+
+[[emoji]]
+word = "轻声"
+emoji = "🔈"
+
+[[emoji]]
+word = "轻轨"
+emoji = "🚈"
+
+[[emoji]]
+word = "轿车"
+emoji = "🚗"
+
+[[emoji]]
+word = "辅助"
+emoji = "🩼"
+
+[[emoji]]
+word = "辐射"
+emoji = "☢"
+
+[[emoji]]
+word = "输入"
+emoji = "⌨"
+
+[[emoji]]
+word = "输入法"
+emoji = "🔠"
+
+[[emoji]]
+word = "输血"
+emoji = "🩸"
+
+[[emoji]]
+word = "辣椒"
+emoji = "🌶"
+
+[[emoji]]
+word = "达摩"
+emoji = "☸"
+
+[[emoji]]
+word = "迁徙"
+emoji = "🫌"
+
+[[emoji]]
+word = "过关"
+emoji = "🈴"
+
+[[emoji]]
+word = "过山车"
+emoji = "🎢"
+
+[[emoji]]
+word = "过来"
+emoji = "🫴"
+
+[[emoji]]
+word = "运动"
+emoji = "🎿"
+
+[[emoji]]
+word = "运动员"
+emoji = "🏅"
+
+[[emoji]]
+word = "运动服"
+emoji = "🎽"
+
+[[emoji]]
+word = "运动鞋"
+emoji = "👟"
+
+[[emoji]]
+word = "运气"
+emoji = "🧧"
+
+[[emoji]]
+word = "运球"
+emoji = "⛹"
+
+[[emoji]]
+word = "运送"
+emoji = "📦"
+
+[[emoji]]
+word = "返回"
+emoji = "🔙"
+
+[[emoji]]
+word = "这里"
+emoji = "🈁"
+
+[[emoji]]
+word = "进化"
+emoji = "🧬"
+
+[[emoji]]
+word = "连接"
+emoji = "🖇"
+
+[[emoji]]
+word = "连衣裙"
+emoji = "👗"
+
+[[emoji]]
+word = "迟缓"
+emoji = "🦥"
+
+[[emoji]]
+word = "迪亚"
+emoji = "🪔"
+
+[[emoji]]
+word = "迷住"
+emoji = "🫣"
+
+[[emoji]]
+word = "迷恋"
+emoji = "🥰"
+
+[[emoji]]
+word = "迷惘"
+emoji = "🫤"
+
+[[emoji]]
+word = "迷茫"
+emoji = "😳"
+
+[[emoji]]
+word = "送出"
+emoji = "🫴"
+
+[[emoji]]
+word = "送货"
+emoji = "🚚"
+
+[[emoji]]
+word = "逃生"
+emoji = "🦺"
+
+[[emoji]]
+word = "逆时针"
+emoji = "🔄"
+
+[[emoji]]
+word = "选中"
+emoji = "🔘"
+
+[[emoji]]
+word = "选举"
+emoji = "🗳"
+
+[[emoji]]
+word = "选票"
+emoji = "🗳"
+
+[[emoji]]
+word = "透明"
+emoji = "🪟"
+
+[[emoji]]
+word = "透露"
+emoji = "🫫"
+
+[[emoji]]
+word = "通信"
+emoji = "📟"
+
+[[emoji]]
+word = "通知"
+emoji = "📢"
+
+[[emoji]]
+word = "通行证"
+emoji = "🛂"
+
+[[emoji]]
+word = "通过"
+emoji = "🈴"
+
+[[emoji]]
+word = "逛街"
+emoji = "🛍"
+
+[[emoji]]
+word = "速度"
+emoji = "🚄"
+
+[[emoji]]
+word = "造型师"
+emoji = "💇"
+
+[[emoji]]
+word = "逮捕"
+emoji = "👮"
+
+[[emoji]]
+word = "道教"
+emoji = "☯"
+
+[[emoji]]
+word = "道歉"
+emoji = "🙇"
+
+[[emoji]]
+word = "遗传学"
+emoji = "🧬"
+
+[[emoji]]
+word = "邪恶"
+emoji = "🖤"
+
+[[emoji]]
+word = "邮件"
+emoji = "💌"
+
+[[emoji]]
+word = "邮局"
+emoji = "🏤"
+
+[[emoji]]
+word = "邮政"
+emoji = "📯"
+
+[[emoji]]
+word = "邮箱"
+emoji = "📫"
+
+[[emoji]]
+word = "邮递"
+emoji = "📭"
+
+[[emoji]]
+word = "郁金香"
+emoji = "🌷"
+
+[[emoji]]
+word = "郁闷"
+emoji = "😒"
+
+[[emoji]]
+word = "郊区"
+emoji = "🏠"
+
+[[emoji]]
+word = "部件"
+emoji = "🧩"
+
+[[emoji]]
+word = "部队"
+emoji = "🪖"
+
+[[emoji]]
+word = "都好"
+emoji = "😝"
+
+[[emoji]]
+word = "都市"
+emoji = "🏙"
+
+[[emoji]]
+word = "鄙视"
+emoji = "😒"
+
+[[emoji]]
+word = "酒吧"
+emoji = "🍷"
+
+[[emoji]]
+word = "酒店"
+emoji = "🏨"
+
+[[emoji]]
+word = "酒杯"
+emoji = "🍷"
+
+[[emoji]]
+word = "酒馆"
+emoji = "🏮"
+
+[[emoji]]
+word = "采矿"
+emoji = "⛏"
+
+[[emoji]]
+word = "采购"
+emoji = "🛒"
+
+[[emoji]]
+word = "重力"
+emoji = "🪋"
+
+[[emoji]]
+word = "野猪"
+emoji = "🐗"
+
+[[emoji]]
+word = "金发"
+emoji = "👱"
+
+[[emoji]]
+word = "金子"
+emoji = "🪎"
+
+[[emoji]]
+word = "金属"
+emoji = "🪙"
+
+[[emoji]]
+word = "金币"
+emoji = "🪙"
+
+[[emoji]]
+word = "金牌"
+emoji = "🥇"
+
+[[emoji]]
+word = "金牛"
+emoji = "♉"
+
+[[emoji]]
+word = "金牛座"
+emoji = "🐂"
+
+[[emoji]]
+word = "金钱"
+emoji = "💲"
+
+[[emoji]]
+word = "鉴证"
+emoji = "🫆"
+
+[[emoji]]
+word = "针头"
+emoji = "💉"
+
+[[emoji]]
+word = "钓鱼"
+emoji = "🚣"
+
+[[emoji]]
+word = "钞票"
+emoji = "💶"
+
+[[emoji]]
+word = "钟声"
+emoji = "🔔"
+
+[[emoji]]
+word = "钢琴"
+emoji = "🎹"
+
+[[emoji]]
+word = "钢笔"
+emoji = "🔏"
+
+[[emoji]]
+word = "钥匙"
+emoji = "🔐"
+
+[[emoji]]
+word = "钩子"
+emoji = "🪝"
+
+[[emoji]]
+word = "钱包"
+emoji = "👛"
+
+[[emoji]]
+word = "钻戒"
+emoji = "💍"
+
+[[emoji]]
+word = "钻石"
+emoji = "💎"
+
+[[emoji]]
+word = "铁路"
+emoji = "🛤"
+
+[[emoji]]
+word = "铁轨"
+emoji = "🛤"
+
+[[emoji]]
+word = "铁链"
+emoji = "⛓"
+
+[[emoji]]
+word = "铁锤"
+emoji = "🛠"
+
+[[emoji]]
+word = "铃声"
+emoji = "🔔"
+
+[[emoji]]
+word = "铃铛"
+emoji = "🎐"
+
+[[emoji]]
+word = "铅笔"
+emoji = "📝"
+
+[[emoji]]
+word = "铜板"
+emoji = "👛"
+
+[[emoji]]
+word = "铜牌"
+emoji = "🥉"
+
+[[emoji]]
+word = "银河"
+emoji = "🌌"
+
+[[emoji]]
+word = "银牌"
+emoji = "🥈"
+
+[[emoji]]
+word = "银色"
+emoji = "🩶"
+
+[[emoji]]
+word = "银行"
+emoji = "🏦"
+
+[[emoji]]
+word = "银行卡"
+emoji = "💳"
+
+[[emoji]]
+word = "链接"
+emoji = "🔗"
+
+[[emoji]]
+word = "链条"
+emoji = "⛓"
+
+[[emoji]]
+word = "锁住"
+emoji = "🔒"
+
+[[emoji]]
+word = "锁定"
+emoji = "🔒"
+
+[[emoji]]
+word = "锋利"
+emoji = "🪒"
+
+[[emoji]]
+word = "错综复杂"
+emoji = "🥨"
+
+[[emoji]]
+word = "错误"
+emoji = "🪌"
+
+[[emoji]]
+word = "锤子"
+emoji = "⚒"
+
+[[emoji]]
+word = "锦标赛"
+emoji = "⛹"
+
+[[emoji]]
+word = "键盘"
+emoji = "⌨"
+
+[[emoji]]
+word = "锻炼"
+emoji = "🙆"
+
+[[emoji]]
+word = "镜子"
+emoji = "🪞"
+
+[[emoji]]
+word = "长度"
+emoji = "📏"
+
+[[emoji]]
+word = "长颈鹿"
+emoji = "🦒"
+
+[[emoji]]
+word = "门票"
+emoji = "🎟"
+
+[[emoji]]
+word = "闪亮"
+emoji = "✨"
+
+[[emoji]]
+word = "闪人"
+emoji = "🏃"
+
+[[emoji]]
+word = "闪光"
+emoji = "❇"
+
+[[emoji]]
+word = "闪光灯"
+emoji = "📸"
+
+[[emoji]]
+word = "闪电"
+emoji = "⚡"
+
+[[emoji]]
+word = "闪耀"
+emoji = "❇"
+
+[[emoji]]
+word = "闭嘴"
+emoji = "🤐"
+
+[[emoji]]
+word = "闭眼"
+emoji = "😚"
+
+[[emoji]]
+word = "问号"
+emoji = "❓"
+
+[[emoji]]
+word = "问题"
+emoji = "❔"
+
+[[emoji]]
+word = "闲逛"
+emoji = "🚶"
+
+[[emoji]]
+word = "间谍"
+emoji = "🕵"
+
+[[emoji]]
+word = "闹钟"
+emoji = "⏰"
+
+[[emoji]]
+word = "阅读"
+emoji = "🔖"
+
+[[emoji]]
+word = "防御"
+emoji = "🛡"
+
+[[emoji]]
+word = "防晒霜"
+emoji = "🧴"
+
+[[emoji]]
+word = "阳光"
+emoji = "🫡"
+
+[[emoji]]
+word = "阳光明媚"
+emoji = "🌞"
+
+[[emoji]]
+word = "阴阳"
+emoji = "☯"
+
+[[emoji]]
+word = "阵雨"
+emoji = "⛈"
+
+[[emoji]]
+word = "阶梯"
+emoji = "🪜"
+
+[[emoji]]
+word = "阻挡"
+emoji = "🫷"
+
+[[emoji]]
+word = "阻止"
+emoji = "🚫"
+
+[[emoji]]
+word = "降温"
+emoji = "🪭"
+
+[[emoji]]
+word = "降落"
+emoji = "🛬"
+
+[[emoji]]
+word = "降落伞"
+emoji = "🪂"
+
+[[emoji]]
+word = "陵墓"
+emoji = "⚰"
+
+[[emoji]]
+word = "陷进"
+emoji = "🪤"
+
+[[emoji]]
+word = "陷阱"
+emoji = "🕳"
+
+[[emoji]]
+word = "随便"
+emoji = "😝"
+
+[[emoji]]
+word = "随机"
+emoji = "🔀"
+
+[[emoji]]
+word = "隐形"
+emoji = "🫥"
+
+[[emoji]]
+word = "隐私"
+emoji = "🔏"
+
+[[emoji]]
+word = "隐藏"
+emoji = "🫥"
+
+[[emoji]]
+word = "隐身"
+emoji = "🥷"
+
+[[emoji]]
+word = "难以置信"
+emoji = "🤦"
+
+[[emoji]]
+word = "难受"
+emoji = "😧"
+
+[[emoji]]
+word = "难过"
+emoji = "😞"
+
+[[emoji]]
+word = "雄性"
+emoji = "♂"
+
+[[emoji]]
+word = "雄狮"
+emoji = "♌"
+
+[[emoji]]
+word = "雌性"
+emoji = "♀"
+
+[[emoji]]
+word = "雕塑"
+emoji = "🗽"
+
+[[emoji]]
+word = "雨伞"
+emoji = "☂"
+
+[[emoji]]
+word = "雨滴"
+emoji = "☔"
+
+[[emoji]]
+word = "雪人"
+emoji = "⛄"
+
+[[emoji]]
+word = "雪山"
+emoji = "🏔"
+
+[[emoji]]
+word = "雪糕"
+emoji = "🍨"
+
+[[emoji]]
+word = "雪花"
+emoji = "❄"
+
+[[emoji]]
+word = "零下"
+emoji = "🥶"
+
+[[emoji]]
+word = "零件"
+emoji = "⚙"
+
+[[emoji]]
+word = "雷阵雨"
+emoji = "⛈"
+
+[[emoji]]
+word = "震动"
+emoji = "📳"
+
+[[emoji]]
+word = "震惊"
+emoji = "🤯"
+
+[[emoji]]
+word = "露营"
+emoji = "⛺"
+
+[[emoji]]
+word = "青椒"
+emoji = "🫑"
+
+[[emoji]]
+word = "青色"
+emoji = "🩵"
+
+[[emoji]]
+word = "青蛙"
+emoji = "🐸"
+
+[[emoji]]
+word = "静音"
+emoji = "🔕"
+
+[[emoji]]
+word = "非机动车"
+emoji = "🚳"
+
+[[emoji]]
+word = "非洲"
+emoji = "🌍"
+
+[[emoji]]
+word = "面具"
+emoji = "👹"
+
+[[emoji]]
+word = "面包"
+emoji = "🥪"
+
+[[emoji]]
+word = "面无表情"
+emoji = "😐"
+
+[[emoji]]
+word = "面条"
+emoji = "🍜"
+
+[[emoji]]
+word = "面部"
+emoji = "💆"
+
+[[emoji]]
+word = "靴子"
+emoji = "👢"
+
+[[emoji]]
+word = "鞠躬"
+emoji = "🙇"
+
+[[emoji]]
+word = "鞭炮"
+emoji = "🧨"
+
+[[emoji]]
+word = "韧性"
+emoji = "🫫"
+
+[[emoji]]
+word = "音乐"
+emoji = "🥁"
+
+[[emoji]]
+word = "音符"
+emoji = "♪"
+
+[[emoji]]
+word = "音量"
+emoji = "🔊"
+
+[[emoji]]
+word = "页面"
+emoji = "📃"
+
+[[emoji]]
+word = "顶一下"
+emoji = "👍"
+
+[[emoji]]
+word = "项链"
+emoji = "📿"
+
+[[emoji]]
+word = "顺时针"
+emoji = "🔁"
+
+[[emoji]]
+word = "预定"
+emoji = "🈯"
+
+[[emoji]]
+word = "预言"
+emoji = "🥠"
+
+[[emoji]]
+word = "预订"
+emoji = "🈯"
+
+[[emoji]]
+word = "领带"
+emoji = "👔"
+
+[[emoji]]
+word = "颠倒"
+emoji = "🙃"
+
+[[emoji]]
+word = "颤抖"
+emoji = "🫨"
+
+[[emoji]]
+word = "风吹"
+emoji = "🌬"
+
+[[emoji]]
+word = "风景"
+emoji = "🏞"
+
+[[emoji]]
+word = "风筝"
+emoji = "🪁"
+
+[[emoji]]
+word = "风铃"
+emoji = "🎐"
+
+[[emoji]]
+word = "飓风"
+emoji = "🌀"
+
+[[emoji]]
+word = "飞机"
+emoji = "✈"
+
+[[emoji]]
+word = "飞碟"
+emoji = "🛸"
+
+[[emoji]]
+word = "飞翔"
+emoji = "🕊"
+
+[[emoji]]
+word = "飞行"
+emoji = "✈"
+
+[[emoji]]
+word = "飞驰"
+emoji = "🚲"
+
+[[emoji]]
+word = "食堂"
+emoji = "🍳"
+
+[[emoji]]
+word = "食指"
+emoji = "☝"
+
+[[emoji]]
+word = "食物"
+emoji = "🍣"
+
+[[emoji]]
+word = "餐具"
+emoji = "🥄"
+
+[[emoji]]
+word = "餐厅"
+emoji = "🍝"
+
+[[emoji]]
+word = "餐馆"
+emoji = "🍢"
+
+[[emoji]]
+word = "饭团"
+emoji = "🍙"
+
+[[emoji]]
+word = "饮料"
+emoji = "🧉"
+
+[[emoji]]
+word = "饮用水"
+emoji = "🚰"
+
+[[emoji]]
+word = "饺子"
+emoji = "🥟"
+
+[[emoji]]
+word = "饼干"
+emoji = "🍪"
+
+[[emoji]]
+word = "香料"
+emoji = "🫚"
+
+[[emoji]]
+word = "香槟"
+emoji = "🍾"
+
+[[emoji]]
+word = "香烟"
+emoji = "🚬"
+
+[[emoji]]
+word = "香肠"
+emoji = "🌭"
+
+[[emoji]]
+word = "香草"
+emoji = "🌿"
+
+[[emoji]]
+word = "香蕉"
+emoji = "🍌"
+
+[[emoji]]
+word = "马上"
+emoji = "🔜"
+
+[[emoji]]
+word = "马戏团"
+emoji = "🎪"
+
+[[emoji]]
+word = "马拉松"
+emoji = "🏃"
+
+[[emoji]]
+word = "马桶"
+emoji = "🚽"
+
+[[emoji]]
+word = "马铃薯"
+emoji = "🥔"
+
+[[emoji]]
+word = "驱赶"
+emoji = "🫳"
+
+[[emoji]]
+word = "驴子"
+emoji = "🫏"
+
+[[emoji]]
+word = "驾驶"
+emoji = "🚙"
+
+[[emoji]]
+word = "骄傲"
+emoji = "🦚"
+
+[[emoji]]
+word = "骆驼"
+emoji = "🐫"
+
+[[emoji]]
+word = "骑自行车"
+emoji = "🚴"
+
+[[emoji]]
+word = "骑车"
+emoji = "🚲"
+
+[[emoji]]
+word = "骑马"
+emoji = "🐎"
+
+[[emoji]]
+word = "骚动"
+emoji = "🫯"
+
+[[emoji]]
+word = "骡子"
+emoji = "🫏"
+
+[[emoji]]
+word = "骨头"
+emoji = "🦴"
+
+[[emoji]]
+word = "骨架"
+emoji = "🩻"
+
+[[emoji]]
+word = "骨灰"
+emoji = "⚱"
+
+[[emoji]]
+word = "骨骼"
+emoji = "🦴"
+
+[[emoji]]
+word = "骷髅"
+emoji = "💀"
+
+[[emoji]]
+word = "高兴"
+emoji = "😀"
+
+[[emoji]]
+word = "高压"
+emoji = "⚡"
+
+[[emoji]]
+word = "高尔夫"
+emoji = "⛳"
+
+[[emoji]]
+word = "高楼大厦"
+emoji = "🏙"
+
+[[emoji]]
+word = "高跟"
+emoji = "👠"
+
+[[emoji]]
+word = "高跟鞋"
+emoji = "👠"
+
+[[emoji]]
+word = "高速"
+emoji = "🚅"
+
+[[emoji]]
+word = "高速公路"
+emoji = "🛣"
+
+[[emoji]]
+word = "高铁"
+emoji = "🚄"
+
+[[emoji]]
+word = "鬼脸"
+emoji = "😬"
+
+[[emoji]]
+word = "魔咒"
+emoji = "🧙"
+
+[[emoji]]
+word = "魔幻"
+emoji = "🧝"
+
+[[emoji]]
+word = "魔术"
+emoji = "🪄"
+
+[[emoji]]
+word = "魔术师"
+emoji = "🪄"
+
+[[emoji]]
+word = "魔杖"
+emoji = "🪄"
+
+[[emoji]]
+word = "魔法"
+emoji = "🧝"
+
+[[emoji]]
+word = "魔鬼"
+emoji = "👹"
+
+[[emoji]]
+word = "鱿鱼"
+emoji = "🦑"
+
+[[emoji]]
+word = "鲜花"
+emoji = "💐"
+
+[[emoji]]
+word = "鲨鱼"
+emoji = "🦈"
+
+[[emoji]]
+word = "鲸鱼"
+emoji = "🐋"
+
+[[emoji]]
+word = "鳄鱼"
+emoji = "🐊"
+
+[[emoji]]
+word = "鸟巢"
+emoji = "🪹"
+
+[[emoji]]
+word = "鸡尾酒"
+emoji = "🍸"
+
+[[emoji]]
+word = "鸡肉"
+emoji = "🍗"
+
+[[emoji]]
+word = "鸡腿"
+emoji = "🍗"
+
+[[emoji]]
+word = "鸣叫"
+emoji = "🪿"
+
+[[emoji]]
+word = "鸭子"
+emoji = "🦆"
+
+[[emoji]]
+word = "鸽子"
+emoji = "🕊"
+
+[[emoji]]
+word = "鹦鹉"
+emoji = "🦜"
+
+[[emoji]]
+word = "麦克"
+emoji = "🎙"
+
+[[emoji]]
+word = "麦克风"
+emoji = "🎙"
+
+[[emoji]]
+word = "麻将"
+emoji = "🀄"
+
+[[emoji]]
+word = "黄昏"
+emoji = "🌆"
+
+[[emoji]]
+word = "黄油"
+emoji = "🧈"
+
+[[emoji]]
+word = "黄瓜"
+emoji = "🥒"
+
+[[emoji]]
+word = "黄色"
+emoji = "🟡"
+
+[[emoji]]
+word = "黄豆"
+emoji = "🫛"
+
+[[emoji]]
+word = "黄金"
+emoji = "🪎"
+
+[[emoji]]
+word = "黑心"
+emoji = "🖤"
+
+[[emoji]]
+word = "黑桃"
+emoji = "♠"
+
+[[emoji]]
+word = "黑色"
+emoji = "⬛"
+
+[[emoji]]
+word = "鼓掌"
+emoji = "👏"
+
+[[emoji]]
+word = "鼠标"
+emoji = "🖲"
+
+[[emoji]]
+word = "鼻子"
+emoji = "👃"
+
+[[emoji]]
+word = "鼻涕"
+emoji = "🤧"
+
+[[emoji]]
+word = "齿轮"
+emoji = "⚙"
+
+[[emoji]]
+word = "龙卷风"
+emoji = "🌪"
+
+[[emoji]]
+word = "龙头"
+emoji = "🐲"
+
+[[emoji]]
+word = "龙虾"
+emoji = "🦞"

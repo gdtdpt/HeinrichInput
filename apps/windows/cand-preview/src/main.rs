@@ -42,6 +42,10 @@ const HINTS: [&str; 5] = ["vbg", "kgn", "vbyg", "itfh", "rn"];
 /// 单字拆不出「前截 + chip + 后截」，得多字候选才验得到。
 const MULTI_POOL: [&str; 5] = ["好吃", "好看", "好话", "好似", "好样"];
 
+/// `--emoji` 时轮流挂上的假 emoji（§6.4）。特意混一个非黄色、一个带变体选择符：
+/// 前者验彩色字形确实上了屏，后者验「基础字符 + FE0F」这种双码位值也能量准。
+const EMOJIS: [&str; 4] = ["👍", "🎉", "❤\u{FE0F}", "🚀"];
+
 fn main() -> std::process::ExitCode {
     let args = Args::parse(std::env::args().skip(1));
     match run(&args) {
@@ -105,10 +109,20 @@ fn run(args: &Args) -> windows::core::Result<bool> {
         vec![0; texts.len()]
     };
 
+    // emoji（§6.4）：`--emoji` 时逐条轮流挂一枚，用来验渲染与「行宽把它算进去」。
+    let emojis: Vec<String> = if args.emoji {
+        (0..texts.len())
+            .map(|i| EMOJIS[i % EMOJIS.len()].to_string())
+            .collect()
+    } else {
+        vec![String::new(); texts.len()]
+    };
+
     let candidates = Candidates {
         texts: &texts,
         hints: &hints,
         hint_ats: &hint_ats,
+        emojis: &emojis,
         page: args.page,
         page_size: args.page_size,
         highlight: 0,
@@ -169,11 +183,15 @@ fn run(args: &Args) -> windows::core::Result<bool> {
     );
     for item in &prepared.layout.items {
         println!(
-            "  #{} 「{}」{}{} rect=({:.0}, {:.0}, {:.0}×{:.0})",
+            "  #{} 「{}」{}{}{} rect=({:.0}, {:.0}, {:.0}×{:.0})",
             item.index + 1,
             item.text,
             match &item.hint {
                 Some(h) => format!("[{h}]"),
+                None => String::new(),
+            },
+            match &item.emoji {
+                Some(e) => format!(" {e}"),
                 None => String::new(),
             },
             if item.secondary { "（补段）" } else { "" },
@@ -535,6 +553,46 @@ fn selftest(
         );
     }
 
+    // ⑧ emoji（§6.4）：挂了就得有矩形、且在整项之内（否则点不到，还会压到下一条）；
+    //    点在 emoji 上也必须命中该候选。
+    let marked: Vec<&heinrich_ui::ItemBox> = prepared
+        .layout
+        .items
+        .iter()
+        .filter(|it| it.emoji.is_some())
+        .collect();
+    if marked.is_empty() {
+        println!("（本次没有 emoji 候选，跳过 emoji 断言——加 --emoji 可验）");
+    } else {
+        let inside = marked.iter().all(|it| {
+            it.emoji_rect.w > 0.0
+                && it.emoji_rect.x >= it.text_rect.right() - 0.01
+                && it.emoji_rect.right() <= it.rect.right() + 0.01
+                && it.emoji_rect.y >= it.rect.y
+                && it.emoji_rect.bottom() <= it.rect.bottom()
+        });
+        check(
+            "emoji 有矩形、在整项内、不压住词",
+            inside,
+            format!("{} 条带 emoji", marked.len()),
+        );
+
+        let it = marked[0];
+        let (x, y) = (
+            (it.emoji_rect.x + it.emoji_rect.w / 2.0) as i32,
+            (it.emoji_rect.y + it.emoji_rect.h / 2.0) as i32,
+        );
+        while rx.try_recv().is_ok() {}
+        post_click(window.hwnd(), x, y);
+        pump();
+        let got = rx.try_recv().ok();
+        check(
+            "点 emoji 命中该候选",
+            got == Some(Event::Click(Hit::Candidate(it.index))),
+            format!("点 ({x}, {y}) 得到 {got:?}"),
+        );
+    }
+
     println!(
         "\n{}",
         if all_ok {
@@ -594,6 +652,8 @@ struct Args {
     /// chip 的词中位置（D64）：`--hint-at N`（配 `--hint`）把 chip 嵌在第 N 个
     /// 字符之后，并切换到多字候选池——目验 `好[vbg]吃` 的排版。
     hint_at: usize,
+    /// 给每条候选挂一枚假 emoji（§6.4），用来目验「词尾一枚彩色字形」的排版。
+    emoji: bool,
     /// 渲染位图落盘路径（`.bmp`）。沙箱 / 无头会话抓不到屏幕，直接拿
     /// `UpdateLayeredWindow` 要上屏的那块 DIB 做视觉验收。
     save_bmp: Option<String>,
@@ -620,6 +680,7 @@ impl Args {
             split: usize::MAX,
             hint: false,
             hint_at: 0,
+            emoji: false,
             save_bmp: None,
             keycaps: false,
             keys: "vbg".to_string(),
@@ -653,6 +714,7 @@ impl Args {
                 "--selftest" => out.selftest = true,
                 "--hint" => out.hint = true,
                 "--hint-at" => out.hint_at = value("--hint-at").parse().unwrap_or(0),
+                "--emoji" => out.emoji = true,
                 "--save-bmp" => out.save_bmp = Some(value("--save-bmp")),
                 "--keycaps" => {
                     out.keycaps = true;
@@ -670,7 +732,7 @@ impl Args {
                         "用法：heinrich-cand-preview [--count N] [--page P] [--page-size S]\n\
                          \x20                      [--dpi SCALE] [--at X,Y] [--hold MS]
 \
-                         \x20                      [--split N] [--hint] [--hint-at N] [--selftest]\n\
+                         \x20                      [--split N] [--hint] [--hint-at N] [--emoji] [--selftest]\n\
                          \x20                      [--keycaps [码]] [--data 目录]"
                     );
                     std::process::exit(0);

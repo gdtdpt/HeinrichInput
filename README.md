@@ -68,6 +68,43 @@ heinrich-setup.exe shortcut     # 补开始菜单快捷方式（不需要管理�
 - 用的不是 `Ctrl+Shift`：那是 Windows 切换输入法的热键，按一次弹图就把输入法切走了。
   同理，没有候选窗时这些组合一律还给程序本身。
 
+## 词组 emoji
+
+词组候选的末尾会带一个彩色 emoji，告诉你这个词大概是什么意思——打 `wqvb` 出「你好 👋」、
+`gany` 出「开心 ☺」、`agjs` 出「苹果 🍏」。
+
+- **只有词组带，单字不带**。单字候选一行好几个，每个都挂一枚 emoji，行宽会翻倍。
+- **一个词只带一枚**，超过一屏宽时**先丢 emoji、不缩词**——emoji 是装饰，字才是你要的。
+- 内置表约 2400 条，来自 Unicode 官方的中文注音表（CLDR）与词库求交，不是手写的。
+
+想改绑、想过自己的一套，就编辑用户层 `%APPDATA%\Heinrich\emoji.user.toml`（**保存即生效，不用重启**）：
+
+```toml
+[[emoji]]
+word = "好评"      # 按词绑：只影响这一个候选
+emoji = "👍"
+
+[[emoji]]
+code = "vbyg"      # 按码绑：这个码下的候选都带（vbyg = 好评）
+emoji = "👏"
+
+[[emoji]]
+word = "开心"
+emoji = "😊"
+enabled = false    # 停用内置表里的那条
+```
+
+- 按词绑优先于按码绑；一个词同时命中两者时用按词的那条。
+- 不想看 emoji 就在 `config.toml` 里写 `emoji.enabled = false`（一秒内生效，候选行宽回到没有 emoji 的样子）。
+- 查一查、改错了想重来：
+
+```
+heinrich-cli emoji list --limit 20          → 现在生效的映射（含你自己的用户层）
+heinrich-cli emoji check --file %APPDATA%\Heinrich\emoji.user.toml
+                                            → 校验：词在不在词库、码在不在码表、值是不是单个 emoji
+heinrich-cli emoji reset                    → 备份用户层（带时间戳）后清空
+```
+
 ## 万能学习键与多段
 
 - **`z` 查前缀**：忘了某字的后几码时，打到确定的那几位再补一个 `z`。`vbz` 会列出
@@ -171,10 +208,14 @@ ranking.learning_gain = 0.35
 
 # 半衰期（天）。想让旧习惯更快退场就调小
 ranking.half_life_days = 45
+
+# 词组 emoji。false = 候选不戴 emoji（行宽回到没有这功能时的样子）
+emoji.enabled = true
 ```
 
-写错一行只会被跳过并记一条日志，不会让输入法起不来。这三项也可以不开编辑器改：
-设置窗口 → **通用**页，改完点「应用」（写盘时保留你手写的注释与顺序）。
+写错一行只会被跳过并记一条日志，不会让输入法起不来。码提示与两项学习参数
+也可以不开编辑器改：设置窗口 → **通用**页，改完点「应用」（写盘时保留你手写的注释与顺序）。
+`emoji.enabled` 目前只能手改配置（窗口里的开关排在后面的版本）。
 
 「恢复默认」= 删掉这三行，缺行即取内置默认。
 
@@ -184,6 +225,7 @@ ranking.half_life_days = 45
 |---|---|---|
 | 五笔码表 / 简码 / 权重 | [rime/rime-wubi](https://github.com/rime/rime-wubi) | LGPL-3.0 |
 | 拼音词库 | [rime/rime-pinyin-simp](https://github.com/rime/rime-pinyin-simp) | Apache-2.0 |
+| 词组 emoji 关键词 | [Unicode CLDR](https://github.com/unicode-org/cldr) `common/annotations/zh.xml` | Unicode License |
 | 代码 | 本仓库 | GPL-3.0-or-later |
 
 码表作为独立授权的数据文件随包分发，与代码许可分离；不修改、不并入代码。

@@ -19,14 +19,16 @@ use std::process::ExitCode;
 
 use heinrich_scheme::{sha256_hex, Code, MAX_CODE_LEN};
 
+mod emoji;
 mod pinyin;
 
-/// 装配哪一套词库。两套的输入格式、校验项、产物都不同，共用入口只是为了
+/// 装配哪一套词库。三套的输入格式、校验项、产物都不同，共用入口只是为了
 /// 让 `tools/gen.ps1` 只有一个 `cargo run`。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Wubi,
     Pinyin,
+    Emoji,
 }
 
 struct Args {
@@ -36,6 +38,8 @@ struct Args {
     /// 所以默认值不能在参数解析前就定下来）。
     out: Option<PathBuf>,
     report: Option<PathBuf>,
+    /// emoji 装配的词来源（拼音词库）。默认 `data/pinyin/lexicon.tsv`。
+    lexicon: Option<PathBuf>,
 }
 
 impl Args {
@@ -44,6 +48,7 @@ impl Args {
         let mut raw = PathBuf::from("data/raw");
         let mut out = None;
         let mut report = None;
+        let mut lexicon = None;
         let mut it = std::env::args().skip(1);
         while let Some(flag) = it.next() {
             let value = it.next().ok_or_else(|| format!("`{flag}` 缺少取值"))?;
@@ -52,12 +57,16 @@ impl Args {
                     kind = match value.as_str() {
                         "wubi" => Kind::Wubi,
                         "pinyin" => Kind::Pinyin,
-                        other => return Err(format!("未知的 --kind `{other}`（wubi | pinyin）")),
+                        "emoji" => Kind::Emoji,
+                        other => {
+                            return Err(format!("未知的 --kind `{other}`（wubi | pinyin | emoji）"))
+                        }
                     }
                 }
                 "--raw" => raw = PathBuf::from(value),
                 "--out" => out = Some(PathBuf::from(value)),
                 "--report" => report = Some(PathBuf::from(value)),
+                "--lexicon" => lexicon = Some(PathBuf::from(value)),
                 other => return Err(format!("未知参数 `{other}`")),
             }
         }
@@ -66,12 +75,13 @@ impl Args {
             raw,
             out,
             report,
+            lexicon,
         })
     }
 
     fn out(&self) -> PathBuf {
         self.out.clone().unwrap_or_else(|| match self.kind {
-            Kind::Wubi => PathBuf::from("data/wubi86"),
+            Kind::Wubi | Kind::Emoji => PathBuf::from("data/wubi86"),
             Kind::Pinyin => PathBuf::from("data/pinyin"),
         })
     }
@@ -80,7 +90,14 @@ impl Args {
         self.report.clone().unwrap_or_else(|| match self.kind {
             Kind::Wubi => PathBuf::from("out/m0a-report.md"),
             Kind::Pinyin => PathBuf::from("out/m3-pinyin-report.md"),
+            Kind::Emoji => PathBuf::from("out/m4c-emoji-report.md"),
         })
+    }
+
+    fn lexicon(&self) -> PathBuf {
+        self.lexicon
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("data/pinyin/lexicon.tsv"))
     }
 }
 
@@ -112,6 +129,7 @@ fn run() -> Result<bool, String> {
     match args.kind {
         Kind::Pinyin => pinyin::run(&args.raw, &out, &report),
         Kind::Wubi => run_wubi(&args.raw, &out, &report),
+        Kind::Emoji => emoji::run(&args.raw, &args.lexicon(), &out, &report),
     }
 }
 

@@ -104,6 +104,18 @@ impl TextEngine {
         self.measure_with(text, font_size, true)
     }
 
+    /// 量一枚 emoji 的宽度（§6.4）。
+    ///
+    /// 走主字号的 format，但字形来自**彩色字体回退**（`Segoe UI Emoji`）：
+    /// `IDWriteTextLayout` 的 `GetMetrics` 会把回退字体的前进宽度算进去，
+    /// 所以不需要自己去 `IDWriteFontFallback` 里找字体再算一遍。
+    ///
+    /// ⚠️ 不要用「字号 × 1.0」估：emoji 的前进宽度普遍比汉字窄一点点，
+    /// 估出来的余量会让 emoji 与下一个候选之间多出一条明显的缝。
+    pub fn measure_emoji(&mut self, emoji: &str, font_size: f32) -> Result<f32> {
+        self.measure_with(emoji, font_size, false)
+    }
+
     fn measure_with(&mut self, text: &str, font_size: f32, hint: bool) -> Result<f32> {
         let formats = self.formats(font_size)?;
         let format = if hint {

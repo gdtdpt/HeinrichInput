@@ -11,6 +11,7 @@
 
 mod code;
 mod config;
+pub mod emoji;
 mod hash;
 mod manifest;
 mod pinyin;
@@ -20,6 +21,7 @@ pub mod user;
 
 pub use code::{pack, prefix_bounds, Code, MAX_CODE_LEN};
 pub use config::{edit_file as edit_config_file, Config, HintMode, CONFIG_VERSION};
+pub use emoji::{is_emoji, valid_emoji, EmojiEntry, EmojiLayer, EmojiMap};
 pub use hash::sha256_hex;
 pub use manifest::{Manifest, ManifestError};
 pub use pinyin::{PinyinEntry, PinyinLexicon, PinyinUserEntry};

@@ -50,6 +50,8 @@ struct Args {
     config: Option<PathBuf>,
     /// 自定义词库。`Some` 才会去读；`--no-words` 或 `--selftest` 为 `None`。
     words: Option<PathBuf>,
+    /// emoji 用户层。`Some` 才会去读；`--no-emoji` 或 `--selftest` 为 `None`。
+    emoji: Option<PathBuf>,
     /// 命令行强制的码提示模式，压过配置文件（验三档时用）。
     hint: Option<HintMode>,
     debug_sleep: Duration,
@@ -66,6 +68,7 @@ impl Args {
             db: default_db_path(),
             config: default_config_path(),
             words: default_words_path(),
+            emoji: default_emoji_path(),
             hint: None,
             debug_sleep: Duration::ZERO,
             idle_exit: Duration::from_secs(30 * 60),
@@ -99,6 +102,10 @@ impl Args {
                     args.words = Some(PathBuf::from(it.next().ok_or("--words 需要一个路径")?));
                 }
                 "--no-words" => args.words = None,
+                "--emoji" => {
+                    args.emoji = Some(PathBuf::from(it.next().ok_or("--emoji 需要一个路径")?));
+                }
+                "--no-emoji" => args.emoji = None,
                 "--hint" => {
                     let raw = it
                         .next()
@@ -158,6 +165,8 @@ fn print_help() {
     println!("  --no-config          不读配置文件，全部取默认值");
     println!("  --words <file>       自定义词库（默认 %APPDATA%\\Heinrich\\words.tsv）");
     println!("  --no-words           不读自定义词库");
+    println!("  --emoji <file>       emoji 用户层（默认 %APPDATA%\\Heinrich\\emoji.user.toml）");
+    println!("  --no-emoji           不读 emoji 用户层（内置表照旧）");
     println!("  --hint <mode>        码提示：mixed / first_time / off（压过配置文件）");
     println!("  --debug-sleep <ms>   每次查询前故意睡若干毫秒（验零阻塞）");
     println!("  --idle-exit <secs>   无连接多久后退出，0 = 不退出（默认 1800）");
@@ -190,6 +199,15 @@ fn default_config_path() -> Option<PathBuf> {
 fn default_words_path() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join("Heinrich").join("words.tsv"))
+}
+
+/// emoji 用户层默认位置：`%APPDATA%\Heinrich\emoji.user.toml`（§6.4）。
+///
+/// 后缀 `.user.` 是给排障用的：一眼能看出它**不是**随版本发布的
+/// `<方案目录>\emoji.toml`，升级替换的是后者，前者永远不动。
+fn default_emoji_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("emoji.user.toml"))
 }
 
 /// 默认方案目录：与 exe 同级的 `data/wubi86`。
@@ -365,6 +383,52 @@ fn selftest_roots(host: &mut Host) -> i32 {
     failed
 }
 
+/// emoji 自测（§6.4 / D66）：词组戴、单字不戴。
+///
+/// 方案目录里没有 `emoji.toml` 不是失败——那是「这份数据没装」的正常降级，
+/// 与拼音词库缺失同一个口径：跳过并说清楚，不假装通过。
+fn selftest_emoji(host: &mut Host) -> i32 {
+    let count = host.emoji_count();
+    if count == 0 {
+        println!("  emoji    → 方案目录里没有 emoji.toml，跳过");
+        return 0;
+    }
+    let mut failed = 0;
+    println!("  emoji    → 生效 {count} 条");
+
+    // ① 词组：`wqvb` → 你好，内置表里是 👋
+    let word = host.query("wqvb", 3);
+    let got = word
+        .entries
+        .iter()
+        .find(|e| e.word == "你好")
+        .map(|e| e.emoji.as_str());
+    failed += check(
+        "词组带 emoji",
+        got == Some("👋"),
+        format!("wqvb 你好 → {:?}", got.unwrap_or("（无此词）")),
+    );
+
+    // ② 单字：`vbg` → 好，一个字都不该挂（§6.4：一行好几个单字，挂上会加宽行）
+    let single = host.query("vbg", 9);
+    let dirty: Vec<&str> = single
+        .entries
+        .iter()
+        .filter(|e| !e.emoji.is_empty())
+        .map(|e| e.word.as_str())
+        .collect();
+    failed += check(
+        "单字不挂 emoji",
+        dirty.is_empty(),
+        if dirty.is_empty() {
+            format!("{} 条单字候选全部无 emoji", single.entries.len())
+        } else {
+            format!("不该挂的：{}", dirty.join(" / "))
+        },
+    );
+    failed
+}
+
 /// 码提示自测（§6.3）。三档必须**各有不同的可观测行为**，否则「配置项存在但不生效」
 /// 这种状态也会被当成通过。
 ///
@@ -523,6 +587,14 @@ fn main() {
     };
     host.configure_words(words_path);
 
+    // emoji 用户层同理：自测不吃开发机上的绑定。
+    let emoji_path = if args.selftest {
+        None
+    } else {
+        args.emoji.clone()
+    };
+    host.configure_emoji(emoji_path);
+
     if args.selftest {
         let code = selftest(&mut host);
         std::process::exit(code);
@@ -589,6 +661,9 @@ fn selftest(host: &mut Host) -> i32 {
 
     // ---- 字根表（§6.7）：键位图的唯一数据来源 ----
     failed += selftest_roots(host);
+
+    // ---- emoji（§6.4 / D66）：词组戴、单字不戴 ----
+    failed += selftest_emoji(host);
 
     // ---- 学习（§5）：第一次不计分，用够次数就该翻过来 ----
     // 记基线：上面的码提示用例也会回报一次上屏（first_time 需要它），

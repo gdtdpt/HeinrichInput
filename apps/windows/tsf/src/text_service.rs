@@ -450,6 +450,7 @@ impl Core {
                     reply.words,
                     reply.codes,
                     reply.hint_ats,
+                    reply.emojis,
                     reply.primary_len,
                 );
                 self.show_candidates(context, fallback_caret);

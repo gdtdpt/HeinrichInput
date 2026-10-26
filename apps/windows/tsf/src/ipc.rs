@@ -182,6 +182,11 @@ pub struct Reply {
     /// 与 `words` 等长的 chip 词中位置（D64）：chip 挂在第几个字符之后，
     /// `0` = 词尾。多段组合的 chip 贴着拼音段的字。
     pub hint_ats: Vec<u8>,
+    /// 与 `words` 等长的 emoji（§6.4）。空串 = 这条不挂。
+    ///
+    /// 与 `codes` 同一条纪律：挂不挂由 server 裁决（词长、两层映射、总开关），
+    /// DLL 只负责「非空就画」。
+    pub emojis: Vec<String>,
     /// 首屏候选来自拼音（`Frame::Result::source`）
     pub pinyin: bool,
     /// 前多少条属于首屏；`words` 的其余部分是折叠区
@@ -192,6 +197,7 @@ impl Reply {
     fn from_result(entries: Vec<Entry>, source: u8, primary_len: u16) -> Self {
         let words: Vec<String> = entries.iter().map(|e| e.word.clone()).collect();
         let codes: Vec<String> = entries.iter().map(|e| e.code.clone()).collect();
+        let emojis: Vec<String> = entries.iter().map(|e| e.emoji.clone()).collect();
         let hint_ats: Vec<u8> = entries.into_iter().map(|e| e.hint_at).collect();
         // 协议里的 `primary_len` 是 server 算的，仍然夹一次：万一 server 版本对不上
         // 给了个越界值，DLL 这边最多画错分区，不能因此切片 panic。
@@ -200,6 +206,7 @@ impl Reply {
             words,
             codes,
             hint_ats,
+            emojis,
             pinyin: source == proto_source::PINYIN,
             primary_len,
         }
@@ -953,6 +960,7 @@ mod tests {
             words: words.iter().map(|w| w.to_string()).collect(),
             codes: vec![String::new(); words.len()],
             hint_ats: vec![0; words.len()],
+            emojis: vec![String::new(); words.len()],
             pinyin: false,
             primary_len: words.len(),
         }

@@ -5,6 +5,7 @@
 //!   这是 M0b 的唯一验收手段：词序是否按 §5 浮动，只能靠连续打字看出来。
 //! - `look`：查一次就退出（`look vbz` / `look "hao'vb"`），给脚本与回归用。
 //! - `check`：装载方案并复核完整性（哈希、计数、前缀索引、一级简码键位）。
+//! - `emoji`：词组 emoji 映射的校验 / 列举 / 重置（§6.4、D66）。
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use heinrich_core::{Engine, MemoryStore, Mixed, RankingConfig, Source, Tier};
 use heinrich_scheme::user::{self as user_words, UserWord};
-use heinrich_scheme::{Code, PinyinLexicon, Roots, Scheme};
+use heinrich_scheme::{Code, EmojiLayer, EmojiMap, PinyinLexicon, Roots, Scheme};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -190,9 +191,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "emoji" => {
+            let args = positional(rest);
+            let sub = args.first().copied().unwrap_or("");
+            match emoji_cmd(sub, &data, pinyin_dir.as_deref(), rest) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给时自动用 <--data 的同级>/pinyin（存在时）。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n  heinrich-cli emoji check  [--data <目录>] [--file <用户层>]   校验 emoji 映射（哈希 / 词库命中 / 重复）\n  heinrich-cli emoji list   [--data <目录>] [--file <用户层>] [--limit <n>]  列出生效中的映射\n  heinrich-cli emoji reset  [--file <用户层>]                  备份并清空用户层\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给时自动用 <--data 的同级>/pinyin（存在时）。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。\n  emoji 用户层默认 %APPDATA%\\Heinrich\\emoji.user.toml：`list` / `reset` 默认就用它，`check` 默认不读（要查自己的绑定加 --file）。"
             );
             ExitCode::SUCCESS
         }
@@ -937,4 +950,383 @@ fn word_cmd(
             "未知的 word 子命令 `{other}`。可用：add / list / rm / import"
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 词组 emoji（§6.4 / D66）
+// ---------------------------------------------------------------------------
+
+/// `%APPDATA%\Heinrich\emoji.user.toml`：与 server 的 `--emoji` 默认值同一个。
+fn default_emoji_user_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("emoji.user.toml"))
+}
+
+/// 清空用户层后写回的内容：只留说明与注释样例，解析出来是 0 条。
+const EMOJI_USER_TEMPLATE: &str = "\
+# 亨利输入法 · 词组 emoji 用户层（§6.4）
+# 保存即生效（≤ 1 秒），不用重启输入法。整份删掉 = 回到只用内置表。
+#
+# [[emoji]]
+# word = \"好评\"        # 按词绑定：只影响这一个候选
+# emoji = \"👍\"
+#
+# [[emoji]]
+# code = \"vbyg\"        # 按码绑定：这个码下的候选都挂（vbyg = 好评）
+# emoji = \"👏\"
+#
+# [[emoji]]
+# word = \"开心\"
+# emoji = \"😊\"
+# enabled = false       # 停用：把内置表里同 key 的那条吃掉
+";
+
+fn emoji_cmd(
+    sub: &str,
+    data: &Path,
+    pinyin_dir: Option<&Path>,
+    args: &[String],
+) -> Result<bool, String> {
+    match sub {
+        // `check` 默认**不读**用户层：回归要「同一份代码在任何机器上结论相同」，
+        // 读开发机上的绑定会把这条保证打掉。要看自己的绑定，显式给 `--file`。
+        "check" => {
+            let user = take_arg(args, "--file");
+            emoji_check(data, user.as_deref(), pinyin_dir)
+        }
+        // `list` 反过来：它的用途就是「我现在生效的是什么」，所以默认读默认路径。
+        "list" => {
+            let user = take_arg(args, "--file").or_else(default_emoji_user_path);
+            let limit = match take_str(args, "--limit") {
+                Some(s) => s
+                    .parse::<usize>()
+                    .map_err(|_| format!("--limit 不是数字：{s}"))?,
+                None => 40,
+            };
+            emoji_list(data, user.as_deref(), limit)
+        }
+        "reset" => {
+            let path = take_arg(args, "--file")
+                .or_else(default_emoji_user_path)
+                .ok_or("取不到 %APPDATA%，请用 --file 指定用户层路径")?;
+            emoji_reset(&path)
+        }
+        other => Err(format!(
+            "未知的 emoji 子命令 `{other}`。可用：check / list / reset"
+        )),
+    }
+}
+
+/// 校验 emoji 映射：内置层完整性 + 两层合并后的交叉核对。
+///
+/// 「emoji 是不是单个字符」「单字没挂」「码的形状」在解析期就已经拦掉了
+/// （`heinrich_scheme::emoji`），这里只看**解析层看不到的东西**：词库与码表。
+fn emoji_check(
+    data: &Path,
+    user_path: Option<&Path>,
+    pinyin_dir: Option<&Path>,
+) -> Result<bool, String> {
+    let builtin_path = data.join("emoji.toml");
+    let (builtin, builtin_err) = EmojiLayer::load(&builtin_path);
+    let user: Option<(EmojiLayer, Option<String>)> = user_path.map(|p| {
+        let (l, e) = EmojiLayer::load(p);
+        (l, e)
+    });
+
+    println!(
+        "内置层：{}（{} 条）",
+        builtin_path.display(),
+        builtin.entries.len()
+    );
+    match (user_path, &user) {
+        (Some(p), Some((l, _))) => println!("用户层：{}（{} 条）", p.display(), l.entries.len()),
+        _ => {
+            println!("用户层：未指定（`emoji check` 默认不读 %APPDATA%；要看自己的绑定加 --file）")
+        }
+    }
+
+    let mut ok = true;
+    let mut line = |name: &str, pass: bool, detail: String| {
+        println!(
+            "[{}] {name}：{detail}",
+            if pass { "通过" } else { "未通过" }
+        );
+        if !pass {
+            ok = false;
+        }
+    };
+
+    line(
+        "内置层可读",
+        builtin_path.is_file() && builtin_err.is_none(),
+        match (&builtin_err, builtin_path.is_file()) {
+            (Some(e), _) => e.clone(),
+            (None, false) => "文件不存在（先跑 tools/gen.ps1 -Kind emoji）".into(),
+            (None, true) => "读到了".into(),
+        },
+    );
+    // 2000 这个下界来自 CLDR 过滤后的实测规模（2395 条）。低于它多半是
+    // 关键词过滤突然变严了，而不是「这批数据刚好小」。
+    line(
+        "内置层规模",
+        builtin.entries.len() >= 2000,
+        format!("{} 条（CLDR zh 过滤后预期 2000+）", builtin.entries.len()),
+    );
+    match builtin.verify() {
+        None => line("内置层正文哈希", true, "与头部声明一致".into()),
+        Some(w) => line("内置层正文哈希", false, w),
+    }
+    if let Some(n) = builtin.entry_count {
+        line(
+            "头部条目数与正文一致",
+            n == builtin.entries.len(),
+            format!("声明 {n} / 实得 {}", builtin.entries.len()),
+        );
+    }
+    line(
+        "内置层没有坏行",
+        builtin.warnings.is_empty(),
+        warnings_detail(&builtin.warnings),
+    );
+    if let Some((l, err)) = &user {
+        line(
+            "用户层可读",
+            err.is_none(),
+            err.clone().unwrap_or_else(|| "读到了".into()),
+        );
+        line(
+            "用户层没有坏行",
+            l.warnings.is_empty(),
+            warnings_detail(&l.warnings),
+        );
+    }
+
+    let empty = EmojiLayer::default();
+    let user_layer = user.as_ref().map(|(l, _)| l).unwrap_or(&empty);
+    let map = EmojiMap::build(&[&builtin, user_layer]);
+
+    // ---- 交叉核对：词库 / 码表 ----
+    let scheme =
+        Scheme::load(data).map_err(|e| format!("装载方案 {} 失败：{e}", data.display()))?;
+    let lex = pinyin_dir.and_then(|d| PinyinLexicon::load(d).ok());
+    let hit_word = |w: &str| {
+        scheme.entries.iter().any(|e| e.word == w) || lex.as_ref().is_some_and(|l| l.has_word(w))
+    };
+
+    let words = map.words();
+    let missing: Vec<&str> = words
+        .iter()
+        .map(|(w, _)| *w)
+        .filter(|w| !hit_word(w))
+        .collect();
+    let mut detail = format!(
+        "{} 条绑定／{} 条命中",
+        words.len(),
+        words.len() - missing.len()
+    );
+    if !missing.is_empty() {
+        detail.push_str(&format!("；查不到：{}", sample(&missing)));
+    }
+    if lex.is_none() {
+        detail.push_str("（本机没装拼音词库，只查过五笔词库）");
+    }
+    line("按词绑定都在词库里", missing.is_empty(), detail);
+
+    let codes = map.codes();
+    let bad_codes: Vec<&str> = codes
+        .iter()
+        .map(|(c, _)| *c)
+        .filter(|c| match Code::parse(c) {
+            Some(code) => scheme.exact_indices(&code).is_empty(),
+            None => true,
+        })
+        .collect();
+    let mut detail = format!(
+        "{} 条绑定／{} 条命中",
+        codes.len(),
+        codes.len() - bad_codes.len()
+    );
+    if !bad_codes.is_empty() {
+        detail.push_str(&format!("；码表里没有：{}", sample(&bad_codes)));
+    }
+    line("按码绑定都在码表里", bad_codes.is_empty(), detail);
+
+    // 重复键不是错误（后写覆盖先写，正是「改绑不必删旧行」的用法），但要让人
+    // 知道「你写了 3 条，实际生效 1 条」。
+    let dup = duplicates(&builtin) + duplicates(user_layer);
+    line(
+        "一词一 emoji",
+        true,
+        if dup == 0 {
+            "无重复键".to_string()
+        } else {
+            format!("{dup} 处重复键，以最后一条为准")
+        },
+    );
+
+    println!(
+        "生效：{} 条（按词 {} / 按码 {}）",
+        map.word_len() + map.code_len(),
+        map.word_len(),
+        map.code_len()
+    );
+    if ok {
+        println!("emoji 映射校验通过");
+    }
+    Ok(ok)
+}
+
+/// 一个层里重复出现的键数（word 与 code 各自算一次）。
+fn duplicates(layer: &EmojiLayer) -> usize {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for e in &layer.entries {
+        if let Some(w) = &e.word {
+            *seen.entry(w.as_str()).or_default() += 1;
+        }
+        if let Some(c) = &e.code {
+            *seen.entry(c.as_str()).or_default() += 1;
+        }
+    }
+    seen.values().filter(|n| **n > 1).count()
+}
+
+/// 警告的三段式呈现：没有就说「没有」，太多就只列前三条。
+fn warnings_detail(warnings: &[String]) -> String {
+    match warnings.len() {
+        0 => "没有".into(),
+        n if n <= 3 => format!("{n} 行：{}", warnings.join("；")),
+        n => format!(
+            "{n} 行，前三条：{}；……（`--file` 指到文件后逐条改）",
+            warnings
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("；")
+        ),
+    }
+}
+
+fn sample(items: &[&str]) -> String {
+    let head: Vec<&str> = items.iter().take(5).copied().collect();
+    if items.len() > head.len() {
+        format!("{} 等 {} 条", head.join("、"), items.len())
+    } else {
+        head.join("、")
+    }
+}
+
+/// 列出生效中的映射：按词、按码两段。`limit = 0` 表示全部。
+fn emoji_list(data: &Path, user_path: Option<&Path>, limit: usize) -> Result<bool, String> {
+    let builtin_path = data.join("emoji.toml");
+    let (builtin, _) = EmojiLayer::load(&builtin_path);
+    let (user, user_err) = match user_path {
+        Some(p) => EmojiLayer::load(p),
+        None => (EmojiLayer::default(), None),
+    };
+    if let Some(e) = user_err {
+        return Err(e);
+    }
+    if builtin.entries.is_empty() && user.entries.is_empty() {
+        println!(
+            "没有可用的 emoji 表：{} 不存在，用户层也没有条目。\n先生成内置表：tools/gen.ps1 -Kind emoji",
+            builtin_path.display()
+        );
+        return Ok(true);
+    }
+    let map = EmojiMap::build(&[&builtin, &user]);
+    println!(
+        "内置 {} 条 · 用户层 {} 条 → 生效 {} 条（按词 {} / 按码 {}）",
+        builtin.entries.len(),
+        user.entries.len(),
+        map.word_len() + map.code_len(),
+        map.word_len(),
+        map.code_len()
+    );
+    if let Some(p) = user_path {
+        println!("用户层：{}", p.display());
+    }
+
+    let cap = if limit == 0 { usize::MAX } else { limit };
+    println!("\n按词绑定：");
+    for (w, e) in map.words().iter().take(cap) {
+        println!("  {} {}", pad_right(w, 10), e);
+    }
+    if map.word_len() > cap {
+        println!("  … 另有 {} 条（--limit 0 看全部）", map.word_len() - cap);
+    }
+    if !map.codes().is_empty() {
+        println!("\n按码绑定：");
+        for (c, e) in map.codes().iter().take(cap) {
+            println!("  {} {}", pad_right(c, 10), e);
+        }
+        if map.code_len() > cap {
+            println!("  … 另有 {} 条（--limit 0 看全部）", map.code_len() - cap);
+        }
+    }
+    Ok(true)
+}
+
+/// 备份并清空用户层。文件不存在就没什么可重置的（**不算错**）。
+///
+/// 写回的是「带注释样例的空文件」而不是删掉文件：删了之后用户下次想改
+/// 还得自己摸格式，而空文件本身就是一份说明书。
+fn emoji_reset(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        println!("{} 不存在，没有需要重置的内容", path.display());
+        return Ok(true);
+    }
+    let backup = path.with_extension(format!("toml.bak-{}", local_stamp()));
+    std::fs::copy(path, &backup).map_err(|e| format!("备份 {} 失败：{e}", backup.display()))?;
+    std::fs::write(path, EMOJI_USER_TEMPLATE)
+        .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    println!("已备份到 {}", backup.display());
+    println!(
+        "用户层已清空（{}），回到只用内置表；下一次按键生效",
+        path.display()
+    );
+    println!("要退回这次重置：把备份文件拷回上面的路径即可");
+    Ok(true)
+}
+
+/// 备份文件名用的本地时间戳 `YYYYmmdd-HHMMSS`。
+///
+/// `std` 只给 UTC，而备份名是给人看的——UTC 在东八区会差 8 小时，跟「刚才改的」
+/// 对不上，所以走一次 `GetLocalTime`（与 `heinrich-log` 的日期同一个来源）。
+#[cfg(windows)]
+fn local_stamp() -> String {
+    #[repr(C)]
+    struct SysTime {
+        year: u16,
+        month: u16,
+        dow: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    }
+    extern "system" {
+        fn GetLocalTime(t: *mut SysTime);
+    }
+    let mut t = SysTime {
+        year: 0,
+        month: 0,
+        dow: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        ms: 0,
+    };
+    unsafe { GetLocalTime(&mut t) };
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        t.year, t.month, t.day, t.hour, t.minute, t.second
+    )
+}
+
+#[cfg(not(windows))]
+fn local_stamp() -> String {
+    format!("{}", now_unix().max(0))
 }

@@ -52,6 +52,11 @@ Invoke-Step '拼音数据校验' { & cargo run --release -q -p heinrich-cli -- c
 # 字根表是码位键位图（§6.7）的唯一数据源，而且它是**手写**的：130 条里错一条、
 # 少一撇，界面上看不出来，只有「一级简码与码表对不上」这一项能被机器抓住。
 Invoke-Step '字根表校验' { & cargo run --release -q -p heinrich-cli -- roots check --data $DataDir }
+# emoji 映射（M4c / D66）是生成物里的第二份「手可以改」的数据：内置表头部声明了
+# 正文哈希，用户层带自己的绑定。这一步盯的是「生成器与装载期对同一份表理解一致」
+# ——哈希、条目数、绑定词是否真在词库里（CLI 的 `check` 默认不读 %APPDATA%，
+# 所以它是机器无关的；要看自己的绑定得显式 --file）。
+Invoke-Step 'emoji 映射校验' { & cargo run --release -q -p heinrich-cli -- emoji check --data $DataDir }
 # server 自测要真装载 13.6 万条词库并跑几条查询：能过说明「装得进、查得对」，
 # 这一步不需要真的开管道客户端，所以在 CI/提交前就能跑。
 # 带上拼音目录：混输是 M3 的主路径，自测会在装了拼音时额外断言「hao 判拼音、
@@ -60,9 +65,9 @@ Invoke-Step 'server 自测' { & cargo run --release -q -p heinrich-server -- --s
 # 候选窗是唯一没法单测的部分（HWND/D2D/DWrite 全靠肉眼），但它的**行为**可以自测：
 # 会不会抢前台、点候选命中的是不是同一个、点箭头会不会误选词、窗口尺寸与布局是否一致。
 # 需要交互桌面（要真建一个窗口），所以这一条只在有桌面会话的机器上有意义。
-# 带 `--hint --split 2`：跑的是「两段 + 码提示 chip」那条最复杂的排版路径，
-# 顺带断言 chip 不越出自己的项、也不压到邻居。
-Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-preview -- --selftest --hint --split 2 }
+# 带 `--hint --split 2 --emoji`：跑的是「两段 + 码提示 chip + 词尾 emoji」那条最复杂的
+# 排版路径，顺带断言 chip 与 emoji 都不越出自己的项、也不压到邻居。
+Invoke-Step '候选窗自测' { & cargo run --release -q -p heinrich-cand-preview -- --selftest --hint --split 2 --emoji }
 # 键位图（§6.7）是第二个分层窗口：尺寸、越界、抢前台这三类问题与候选窗同源，
 # 但数据换成真实字根表，所以它同时验「roots.toml 装得进几何层、13 个字的键帽
 # 也放得下」。`vbg` 覆盖的是最常走的 3 码路径。
@@ -131,6 +136,40 @@ Invoke-Step '自定义词自测' {
     }
     finally {
         Remove-Item $tmp -ErrorAction SilentlyContinue
+    }
+}
+
+# emoji 用户层（M4c / D66）：`check` 要能读用户层、`reset` 要真留下备份。
+# 顺带验掉一个只有 Windows 才会踩的点——`Set-Content -Encoding utf8` 在 5.1 里
+# 写的是**带 BOM** 的 UTF-8，解析层必须吃掉 BOM 才认第一行。
+Invoke-Step 'emoji 用户层自测' {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-emoji-{0}.toml" -f $PID)
+    Remove-Item "$tmp*" -ErrorAction SilentlyContinue
+    try {
+        "[[emoji]]`nword = `"你好`"`nemoji = `"🙋`"" | Set-Content -Path $tmp -Encoding utf8
+        $chk = & cargo run --release -q -p heinrich-cli -- emoji check --data $DataDir --file $tmp 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "用户层校验没通过（带 BOM 的合法文件应当通过）：`n$chk" -ForegroundColor Red
+            exit 1
+        }
+        if (-not ($chk -match '用户层：.*1 条')) {
+            Write-Host "用户层条目数不对（应为 1 条）：`n$chk" -ForegroundColor Red
+            exit 1
+        }
+        $reset = & cargo run --release -q -p heinrich-cli -- emoji reset --file $tmp 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Host "reset 失败：`n$reset" -ForegroundColor Red; exit 1 }
+        if (-not (Get-ChildItem "$tmp.bak-*" -ErrorAction SilentlyContinue)) {
+            Write-Host "reset 没留下备份：`n$reset" -ForegroundColor Red
+            exit 1
+        }
+        $after = & cargo run --release -q -p heinrich-cli -- emoji check --data $DataDir --file $tmp 2>&1
+        if (-not ($after -match '用户层：.*0 条')) {
+            Write-Host "reset 之后用户层应为 0 条：`n$after" -ForegroundColor Red
+            exit 1
+        }
+    }
+    finally {
+        Remove-Item "$tmp*" -ErrorAction SilentlyContinue
     }
 }
 

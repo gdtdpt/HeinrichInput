@@ -76,6 +76,8 @@ pub struct Config {
     ranking_gain: Option<f64>,
     /// `ranking.half_life_days`，同上。
     ranking_half_life: Option<f64>,
+    /// `emoji.enabled`。`None` = 没写（按默认「开」处理，见 [`Self::emoji_enabled`]）。
+    emoji_enabled: Option<bool>,
     /// 磁盘上是否真有这个文件。`false` 表示全用默认值。
     found: bool,
     warnings: Vec<String>,
@@ -172,6 +174,22 @@ impl Config {
         let ranking_gain = read_number(&map, "ranking.learning_gain", 0.0, &mut warnings);
         let ranking_half_life = read_number(&map, "ranking.half_life_days", 1.0, &mut warnings);
 
+        // emoji 总开关（D66）。没写 = 开：§6.4 定的默认就是「仅词组候选附加」。
+        // 写坏了也不翻成「关」——那会让一个笔误静默改变界面表现，且用户看不出原因。
+        let emoji_enabled = match map.get("emoji.enabled") {
+            None => None,
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "on" | "yes" | "1" => Some(true),
+                "false" | "off" | "no" | "0" => Some(false),
+                other => {
+                    warnings.push(format!(
+                        "emoji.enabled 的值 `{other}` 不认识（可用 true / false），按开启处理"
+                    ));
+                    None
+                }
+            },
+        };
+
         // 已退役的排序键。它们都曾经真的生效过，用户照旧文档写了会以为还在起作用，
         // 所以必须逐个说清楚「这行被忽略」——静默吞掉比报错更难查。
         for (key, why) in [
@@ -191,6 +209,7 @@ impl Config {
             hint_mode,
             ranking_gain,
             ranking_half_life,
+            emoji_enabled,
             found: false,
             warnings,
         }
@@ -212,6 +231,19 @@ impl Config {
     /// 配置文件里写的半衰期（天）；没写或写坏为 `None`。
     pub fn ranking_half_life_days(&self) -> Option<f64> {
         self.ranking_half_life
+    }
+
+    /// emoji 标签是否开启（§6.4 / D66）。**没写这一行就是开**——§6.4 的默认。
+    ///
+    /// 写坏（`emoji.enabled = maybe`）也返回 `true`：一个笔误不该静默把界面
+    /// 改了个样，而用户完全看不出原因；警告已经进了 `warnings`。
+    pub fn emoji_enabled(&self) -> bool {
+        self.emoji_enabled.unwrap_or(true)
+    }
+
+    /// 配置文件里有没有显式写 `emoji.enabled`（写回时用来区分「删掉」与「写默认值」）。
+    pub fn emoji_enabled_raw(&self) -> Option<bool> {
+        self.emoji_enabled
     }
 
     pub fn found(&self) -> bool {

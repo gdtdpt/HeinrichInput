@@ -46,13 +46,15 @@ use std::fmt;
 ///   之后**）：chip 前面有几个字符，`0` = 挂词尾（单段候选与通配的既有行为）。
 ///   多段组合（`hao'ktn` → 好吃）的 chip 必须贴着拼音段的字（`好[vbg]吃`），
 ///   挂词尾会被误读成整个词的五笔码。
+/// - v7：M4c/D66 emoji 标签。`Entry` 加 `emoji`（**字符串，追加在 `hint_at` 之后**）：
+///   词组候选右侧挂的那枚 emoji，空串 = 本次不挂（单字、用户停用、或总开关关掉）。
+///   emoji 由 server 裁决、DLL 只画——与 `code` 同一条纪律，规则只有一处实现。
 ///
-/// **v7 没有发生**：D65 自定义词组最初打算加一条 `Reload` 帧让 CLI 通知 server
-/// 重载词库，实现时发现 server 本来就有「按 mtime 热更新配置文件」的机制，把
-/// `words.tsv` 挂进同一条路径即可——改完文件，下一次按键就生效，而按键本来就是
-/// 看到候选的前提。升协议的真实代价是「旧 DLL 被 `Bye` 拒 → 重装 → 重启所有
-/// 程序」，为一个看不见的差别付这个代价不值。
-pub const PROTO_VERSION: u16 = 6;
+/// **v7 之前那次「v7 没有发生」**：D65 自定义词组最初打算加一条 `Reload` 帧让 CLI
+/// 通知 server 重载词库，实现时发现 server 本来就有「按 mtime 热更新配置文件」的
+/// 机制，把 `words.tsv` 挂进同一条路径即可——改完文件，下一次按键就生效，而按键
+/// 本来就是看到候选的前提。那次没升版；M4c 的 emoji 字段才是真正的 v7。
+pub const PROTO_VERSION: u16 = 7;
 
 /// 单帧体积上限。一个 `Result` 最多 32 个候选，正常远小于这个数；
 /// 上限的作用是**不让一个坏掉的长度前缀把对端的内存吃光**。
@@ -119,12 +121,17 @@ impl Mode {
 /// `hint_at` 是 chip 的**词中位置**（D64）：`code` 非空时，chip 画在词的第
 /// `hint_at` 个字符之后（`0` = 词尾）。多段组合 `hao'ktn` → 好吃 时 server 给
 /// `hint_at = 1`、`code = vbg`，DLL 画成 `好[vbg]吃`；单段候选与通配恒为 `0`。
+///
+/// `emoji` 是词组右侧要挂的那枚 emoji（D66）：**单个字符**，空串 = 不挂。
+/// 挂不挂由 server 裁决（词长、两层映射、`emoji.enabled` 都在 server 侧），
+/// DLL 只负责「非空就画」——与 `code` 同一条纪律。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub word: String,
     pub label: String,
     pub code: String,
     pub hint_at: u8,
+    pub emoji: String,
 }
 
 /// 一个键位上的字根（[`Frame::Roots`] 的一条）。
@@ -311,6 +318,8 @@ impl Frame {
                     put_str(&mut body, &e.code);
                     // v6 的追加字段：chip 的词中位置（D64）。
                     body.push(e.hint_at);
+                    // v7 的追加字段：emoji 标签（D66）。
+                    put_str(&mut body, &e.emoji);
                 }
             }
             Frame::SetMode { mode } => body.push(mode.as_u8()),
@@ -419,6 +428,7 @@ fn decode_body(body: &[u8]) -> Result<Frame, DecodeError> {
                     label: r.string()?,
                     code: r.string()?,
                     hint_at: r.u8()?,
+                    emoji: r.string()?,
                 });
             }
             Frame::Result {
@@ -572,12 +582,14 @@ mod tests {
                     label: "全码".into(),
                     code: "vbg".into(),
                     hint_at: 0,
+                    emoji: String::new(),
                 },
                 Entry {
                     word: "好玩".into(),
                     label: "全码".into(),
                     code: "vbgf".into(),
                     hint_at: 0,
+                    emoji: String::new(),
                 },
             ],
         });
@@ -725,6 +737,7 @@ mod tests {
                 label: "三级简码".into(),
                 code: "vbgf".into(),
                 hint_at: 0,
+                emoji: String::new(),
             }],
         };
         let bytes = f.encode();
@@ -746,12 +759,14 @@ mod tests {
                     label: "全码".into(),
                     code: "vb".into(),
                     hint_at: 0,
+                    emoji: String::new(),
                 },
                 Entry {
                     word: "号".into(),
                     label: "全码".into(),
                     code: "kgn".into(),
                     hint_at: 0,
+                    emoji: String::new(),
                 },
             ],
         };
@@ -779,6 +794,7 @@ mod tests {
                 label: "全码".into(),
                 code: String::new(),
                 hint_at: 0,
+                emoji: String::new(),
             }],
         };
         assert_eq!(Frame::decode(&f.encode()).unwrap(), f);
@@ -798,6 +814,7 @@ mod tests {
                 label: "多段".into(),
                 code: "vbg".into(),
                 hint_at: 1,
+                emoji: String::new(),
             }],
         };
         let back = Frame::decode(&f.encode()).unwrap();
@@ -805,6 +822,44 @@ mod tests {
         match back {
             Frame::Result { entries, .. } => {
                 assert_eq!(entries[0].hint_at, 1, "chip 挂在第 1 个字符之后");
+            }
+            other => panic!("解出了别的帧：{other:?}"),
+        }
+    }
+
+    /// v7 的 emoji 标签（D66）：emoji 是 4 字节 UTF-8，且常与 chip 同时出现
+    /// ——两个追加字段的**先后顺序**必须与解码一致，否则 chip 位置会被读成 emoji
+    /// 的第一个字节。
+    #[test]
+    fn entry_emoji_roundtrips() {
+        let f = Frame::Result {
+            code: "vbyg".into(),
+            source: source::WUBI,
+            primary_len: 1,
+            entries: vec![
+                Entry {
+                    word: "好评".into(),
+                    label: "全码".into(),
+                    code: "vbyg".into(),
+                    hint_at: 0,
+                    emoji: "👍".into(),
+                },
+                Entry {
+                    word: "好评如潮".into(),
+                    label: "全码".into(),
+                    code: "vbyg".into(),
+                    hint_at: 2,
+                    emoji: "👏".into(),
+                },
+            ],
+        };
+        let back = Frame::decode(&f.encode()).unwrap();
+        assert_eq!(f, back);
+        match back {
+            Frame::Result { entries, .. } => {
+                assert_eq!(entries[0].emoji, "👍");
+                assert_eq!(entries[1].hint_at, 2, "chip 位置不能被 emoji 顶掉");
+                assert_eq!(entries[1].emoji, "👏");
             }
             other => panic!("解出了别的帧：{other:?}"),
         }

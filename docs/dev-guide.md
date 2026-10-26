@@ -1494,7 +1494,113 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 滚动条是带箭头的 Win95 灰条，`SetWindowTheme` 也救不了——视觉样式没激活时它全是空操作。
 
 
+### 4.23 词组 emoji（M4c / D66、D82）
+
+**一句话架构**：emoji 是**呈现层**。`Candidate` 与 `heinrich-core` 的排序一个字段都没动，
+`Host::query` 把候选建好之后才逐条附加 `emoji`；DLL 拿到空串就不画。这与 `code`（D51）是同一条
+纪律：**裁决在 server，DLL 只画**。
+
+| 环节 | 文件 | 说明 |
+|---|---|---|
+| 渲染探针 | `apps/windows/ui/examples/emoji_probe.rs` | 判「D2D 1.0 能不能出彩色」。结论：能，**不需要 D2D 1.1 DeviceContext** |
+| 生成器 | `crates/heinrich-gen/src/emoji.rs`（`--kind emoji`） | CLDR `zh.xml` → `data/wubi86/emoji.toml` + `out/m4c-emoji-report.md` |
+| 映射层 | `crates/heinrich-scheme/src/emoji.rs` | `EmojiLayer` 解析 / `EmojiMap` 两层叠加 / `is_emoji` / `valid_emoji` |
+| 挂载 | `crates/heinrich-server/src/host.rs` 的 `EmojiState` | 1 秒 mtime 热重载（与 `words.tsv` 同一套）+ 总开关 |
+| 协议 | `crates/heinrich-proto`（v7） | `Entry.emoji`，**在 `hint_at` 之后**，encode/decode 必须同序 |
+| 布局 | `crates/heinrich-ui/src/layout.rs` | `emoji_w` 独立列、`emoji_gap = 0.22 字号`、压窄先丢 emoji |
+| 绘制 | `apps/windows/ui/src/{text,render}.rs` | `measure_emoji`（实测前进宽度）+ `ENABLE_COLOR_FONT` |
+| 透传 | `apps/windows/tsf/src/{ipc,cand,text_service}.rs` | `Reply.emojis` → `Cands.emojis` → `Candidates.emojis`（与 `texts` 等长） |
+| CLI | `crates/heinrich-cli`（`emoji check/list/reset`） | 见下 |
+
+**为什么不用 D2D 1.1**：探针拿同一个 `ID2D1DCRenderTarget` 画两行「👍🎉😊 彩色?」，一行带
+`D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`、一行不带，数「不同的颜色个数」：**105 vs 13**。
+升 1.1 要换 `ID2D1DeviceContext` + 全链路改 `D2D1_BITMAP`，收益为零。判据不要用「看起来像不像彩色」，
+用颜色计数——灰度抗锯齿也会产生几十种灰。
+
+**数据管线（CLDR `common/annotations/zh.xml`，292 KB，Unicode License）**：
+
+```
+<annotation cp="👍">赞 | 顶 | 大拇指</annotation>      ← 取这个
+<annotation cp="👍" type="tts">竖大拇指</annotation>   ← 跳过（tts = 朗读名）
+```
+
+| 规则 | 为什么 |
+|---|---|
+| 只收**单码位** emoji（跳过 ZWJ / 旗帜 / 肤色修饰） | 多码位序列在候选行里撑两三个字宽，§6.4 的约束是「不给候选行加宽」 |
+| 关键词 ≥2 字、全汉字、且**在拼音词库里** | 「赞 | 顶」这种单字关键词会把「赞」绑上 👍，而单字本来就不挂；不在词库的关键词配不出可打的词 |
+| 同一个词命中多个 emoji 时取 `(词库名次, 码位)` 最小 | 结果与 `HashMap` 遍历顺序无关 ⇒ 两次生成字节级相同 |
+| 头部写 `entry_count` + 正文 `sha256`（只覆盖 `词\temoji\n`） | 装载期 `verify()` 自校验；手改过就报「与声明不符」，不静默 |
+
+产物 **2395 条**（生成两次 `sha256` 完全相同）。重新生成：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\fetch-data.ps1 -Only cldr   # 缺 zh.xml 时
+powershell -ExecutionPolicy Bypass -File tools\gen.ps1 -Kind emoji
+```
+
+**两层映射的语义（`EmojiMap::build(&[&builtin, &user])`）**：
+
+| 情形 | 结果 |
+|---|---|
+| 用户层同 key（`word` 或 `code`）再次出现 | 覆盖内置 |
+| 用户层 `enabled = false` | **删掉**同 key —— 不是「不覆盖」。跳过的话停用等于无声失败 |
+| 同一个词同时有按词与按码两条 | 按词优先（词比码具体） |
+| 文件内同一个 key 写两次 | 后写覆盖先写（改绑不必删旧行） |
+| `word` 只有 1 个字 | 解析期就丢掉并给带行号的警告；`lookup` 里另有一道「词长 < 2 直接返回 None」的闸 |
+
+**查表用的码与码提示无关**：拼音候选的 `code` 是拼音串，所以查表用装载期反查的 `wubi`；
+五笔候选用 `code`。因此 `hint.mode = off` 时按码绑定的 emoji 照样生效（有单测钉死）。
+实现上要注意顺序：`wubi` / `code` 在 `match` 里会被 move 进 `Entry`，`emoji_codes` 必须在
+`match` **之前** clone 出来。
+
+**布局（验收 ① 与 ⑥）**：
+
+- emoji 单开一列：`emoji_w` 不计入词宽，位置在词尾（有 chip 时在 chip 之后），间距 `0.22 × 字号`；
+- **压窄顺序**：整行超宽 → 先把所有 `emoji_w` 清零重算 → 还超才按比例压词。
+  没走到「压词」这一步就不算 `clipped`（`clipped` 的语义是「词被截了」，emoji 掉了不算）；
+- 关掉 emoji 时布局必须与 v6 **逐字段一致**：`None` / 空串 / 宽度 0 三条路径都有单测。
+
+**绘制**：`text_in_with(target, text, format, rect, color, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT)`。
+宽度用 `measure_emoji`（走主字号 format 的 `GetMetrics`），**不能按「字号 × 1.0」估**：
+emoji 落到彩色字体（Segoe UI Emoji）后前进宽度与正文字体不同，估出来的值和实际差 1–2dp，
+一列五个候选就会看到间距忽宽忽窄。
+
+**开关与热更新**：`config.toml` 里 `emoji.enabled = false`（也认 `on/off`、`1/0`；写坏按「开」处理并警告）。
+`HintState` 每秒随 config 一起读，`EmojiState.refresh()` 按 mtime 重装用户层，整份重建映射
+（不做原地改）。日志里能看到 `emoji：N 条生效（内置 X + 用户层 Y）`。
+
+**CLI**：
+
+| 命令 | 行为 |
+|---|---|
+| `emoji check [--file <用户层>]` | 内置层可读/规模/哈希/条目数/坏行 + 合并后「按词绑定是否都在词库」「按码绑定是否都在码表」「重复键」。**默认不读 `%APPDATA%`**（回归要机器无关），要查自己的绑定就显式 `--file` |
+| `emoji list [--file] [--limit n]` | 反过来：默认读用户层（这就是「我现在生效的是什么」）。`--limit 0` 看全部 |
+| `emoji reset [--file]` | 备份成 `emoji.user.toml.bak-<本地时间戳>`，再写回带注释样例的空文件（删掉的话用户下次还得自己摸格式） |
+
+**怎么验**：
+
+```powershell
+cargo run --release -p heinrich-cli -- emoji check
+cargo run --release -p heinrich-cli -- emoji list --limit 10
+cargo run --release -p heinrich-server -- --selftest           # 里有「emoji → 生效 2395 条」
+cargo run --release -p heinrich-cand-preview -- --emoji --hint --selftest --save-bmp out\cand.bmp
+```
+
+`cand-preview --save-bmp` 落的 BMP 是 **top-down（高度字段为负）+ 24 位 BGR**：转 PNG 时必须
+`h = abs(h)`、按 `off + y*rowsz` 正序读、并且 `BGR → RGB` 换序。按 bottom-up 假设翻一次，
+会得到一张上下颠倒、左右也像镜像的图——那不是渲染错，是转换脚本错。
+
+**踩过的坑**：
+
+- `usize::to_le_bytes()` 是 **8 字节**。BMP 头字段是 `u32`，直接写会整体错位 4 字节（探针第一版
+  写出来的图打不开）。写完 BMP 用 `xxd -l 64` 看一眼偏移 0x0A（数据起点）= 54、0x12（宽）、0x16（高）。
+- 彩色字形**只在 DC 渲染目标上验过**：`ID2D1DCRenderTarget::BindDC` + DIB 的路径没变，
+  `UpdateLayeredWindow` 的预乘 alpha 也不受影响（emoji 自身不透明）。
+- 单字 gate 在**两处**：解析期（`word` 少于 2 字丢条目）与查表期（`lookup` 再看一次词长）。
+  只留一处的话，`enabled = false` 的删 key 路径会绕过解析期的检查。
+
 ## 5. 数据管线
+
 
 ```
 data/raw/wubi86.dict.yaml     Rime 词典：`...` 之后是 词 \t 码 \t 权重
@@ -1903,7 +2009,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4a 设置窗口 + 词组页 | ✅ **已真机功能验收（2026-10-23，D75）**（§4.18 / §6.10：`apps/windows/settings`，Win32 原生控件；只写 `words.tsv` 靠 mtime 热重载，无 IPC；`--selftest` 七项 + `check.ps1` 步骤）。六项功能通过；UI 细节 F46/F47/F48/DPI 属前序已修项，本轮未重走 |
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
-| M4c emoji 引擎 | ⬜ 未开始（D66 / §6.4：渲染探针 → CLDR `zh.xml` 数据管线 → 两层映射 → `Host::query` 之后挂载 → 协议 v7 `Entry.emoji` → 布局留宽 + CLI `emoji`） |
+| M4c emoji 引擎 | ✅ **已实现（2026-10-26，D66 / D82，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色，不升 1.1；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`Host::query` 之后挂载 + 1 秒热重载 + `emoji.enabled`；协议 v7 `Entry.emoji`；布局 `emoji_w` 独立列且**先丢 emoji 再压词**；CLI `emoji check/list/reset`；`cand-preview --emoji` 自测 12 项） |
 | M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |

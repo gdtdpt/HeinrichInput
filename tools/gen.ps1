@@ -15,6 +15,11 @@
                报告 out/m3-pinyin-report.md
                验收：① 常用字覆盖必须 100%  ② 拼音串只含 a-z  ③ 音节 ≤ 6 字母
 
+      emoji  → data/wubi86/emoji.toml（词组 → emoji，随方案目录发布）
+               报告 out/m4c-emoji-report.md
+               验收：① 条目 2000–3000  ② 全为 ≥2 字汉字词组  ③ 一词一条
+               依赖 data/pinyin/lexicon.tsv（词来源），要排在 pinyin 之后跑
+
     产物不含时间戳、不依赖哈希表遍历顺序，同输入必得同字节、同哈希。
     任一验收项不通过时脚本返回非零退出码。
 
@@ -24,7 +29,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'wubi', 'pinyin')]
+    [ValidateSet('all', 'wubi', 'pinyin', 'emoji')]
     [string]$Kind = 'all',
     [string]$RawDir,
     [string]$OutDir,
@@ -47,17 +52,21 @@ if ($Kind -eq 'all' -and ($OutDir -or $Report)) {
     throw "-Kind all 时不能指定 -OutDir / -Report（两套产物默认落在 data\wubi86 与 data\pinyin）"
 }
 
-$jobs = if ($Kind -eq 'all') { @('wubi', 'pinyin') } else { @($Kind) }
+$jobs = if ($Kind -eq 'all') { @('wubi', 'pinyin', 'emoji') } else { @($Kind) }
 
 foreach ($k in $jobs) {
     if ($k -eq 'wubi') {
         $input = 'wubi86.dict.yaml'
         $defaultOut = '..\data\wubi86'
         $defaultReport = '..\out\m0a-report.md'
-    } else {
+    } elseif ($k -eq 'pinyin') {
         $input = 'pinyin_simp.dict.yaml'
         $defaultOut = '..\data\pinyin'
         $defaultReport = '..\out\m3-pinyin-report.md'
+    } else {
+        $input = 'cldr-annotations-zh.xml'
+        $defaultOut = '..\data\wubi86'
+        $defaultReport = '..\out\m4c-emoji-report.md'
     }
 
     if (-not (Test-Path (Join-Path $RawDir $input))) {
