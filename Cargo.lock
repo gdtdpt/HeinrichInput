@@ -154,6 +154,7 @@ name = "heinrich-settings"
 version = "0.1.0"
 dependencies = [
  "heinrich-core",
+ "heinrich-font",
  "heinrich-scheme",
  "heinrich-tip-id",
  "rusqlite",

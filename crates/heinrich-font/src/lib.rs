@@ -66,8 +66,41 @@ impl EmojiSupport {
     }
 }
 
+/// 现场判一枚 emoji（M4d 设置窗口的改绑框用）：[`EmojiSupport::detect`] 只认识
+/// 探测时给过的那批码位，用户现场粘贴进来的不在里面，得单独问一次字体。
+///
+/// 一次完整的 COM 探测只查这一个 emoji，毫秒级；变体选择符 `U+FE0F` 不查
+/// ——它有没有字形不随字体变，彩色与否取决于基字符那一 位。
+/// `None` = 判不出来（找不到字体族 / 不在 Windows），调用方按「放行」处理。
 #[cfg(windows)]
-fn probe(wanted: &HashSet<char>) -> Option<HashSet<char>> {
+pub fn probe_one(emoji: &str) -> Option<bool> {
+    with_emoji_font(|font| {
+        let mut ok = true;
+        for c in emoji.chars() {
+            if c == '\u{FE0F}' {
+                continue;
+            }
+            match unsafe { font.HasCharacter(c as u32) } {
+                Ok(found) if found.as_bool() => {}
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        Some(ok)
+    })
+}
+
+#[cfg(not(windows))]
+pub fn probe_one(_emoji: &str) -> Option<bool> {
+    None
+}
+
+#[cfg(windows)]
+fn with_emoji_font<T>(
+    f: impl FnOnce(&windows::Win32::Graphics::DirectWrite::IDWriteFont) -> Option<T>,
+) -> Option<T> {
     use windows::core::HSTRING;
     use windows::Win32::Graphics::DirectWrite::{
         DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
@@ -102,17 +135,23 @@ fn probe(wanted: &HashSet<char>) -> Option<HashSet<char>> {
                 DWRITE_FONT_STYLE_NORMAL,
             )
             .ok()?;
+        f(&font)
+    }
+}
 
+#[cfg(windows)]
+fn probe(wanted: &HashSet<char>) -> Option<HashSet<char>> {
+    with_emoji_font(|font| {
         let mut ok = HashSet::with_capacity(wanted.len());
         for &c in wanted {
-            if let Ok(found) = font.HasCharacter(c as u32) {
+            if let Ok(found) = unsafe { font.HasCharacter(c as u32) } {
                 if found.as_bool() {
                     ok.insert(c);
                 }
             }
         }
         Some(ok)
-    }
+    })
 }
 
 #[cfg(not(windows))]

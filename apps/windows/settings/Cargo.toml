@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 heinrich-scheme = { workspace = true }
+# emoji 页的字形门槛：改绑框里现场判「这枚 emoji 本机画不画得出来」，
+# 与 server 装载期用同一份判据（DWrite HasCharacter），不在这里抄第二遍。
+heinrich-font = { workspace = true }
 # 学习数据页要读 learn.db；学习分公式与 server 共用一份，不在这里抄第二遍
 heinrich-core = { workspace = true }
 # 窗口类名与设置程序文件名放在这个零依赖的常量 crate 里，DLL 侧用的是同一份。

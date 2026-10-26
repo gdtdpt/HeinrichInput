@@ -1,0 +1,602 @@
+//! emoji 页的数据层（M4d / D85）：两层映射的合并视图 + 用户层的三个写操作。
+//!
+//! 刻意不依赖任何 Win32（与 `model.rs` / `general.rs` 同一条纪律）：
+//! `--selftest` 直接跑这一层，窗口只负责把 [`EmojiRow`] 画进 ListView、
+//! 把编辑框的内容交回 [`EmojiPage`] 的方法。
+//!
+//! ## 写盘口径
+//!
+//! 内置表（`data/wubi86/emoji.toml`）永远只读；一切改动都落用户层
+//! `%APPDATA%\Heinrich\emoji.user.toml`。用户层是**机器拥有的文件**（头部注释是
+//! 我们的模板），所以整份重写、临时文件 + 改名——server 那边每秒 stat 一次，
+//! 不能让它读到半个文件。
+//!
+//! ## 单字（D85）
+//!
+//! 内置表由生成器保证只挂词组；用户层显式给单字绑就照办。数据层不做拦截，
+//! 只把 `single` 标出来给界面提示「那一行会变宽」。
+
+use std::path::{Path, PathBuf};
+
+use heinrich_scheme::emoji::{valid_emoji, EmojiEntry, EmojiLayer, EmojiMap};
+
+/// 列表里的一行：合并视图（内置 + 用户层叠加后的现状）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmojiRow {
+    /// 按词绑定的词（与 `code` 二者必有其一）。
+    pub word: Option<String>,
+    /// 按码绑定的五笔码。
+    pub code: Option<String>,
+    /// 当前生效的 emoji（停用时是「恢复后会用的那个」）。
+    pub emoji: String,
+    /// 内置层的值；`None` = 内置没有这条（用户新增的绑定）。
+    pub builtin_emoji: Option<String>,
+    /// 用户层有没有这条（改绑过 / 停用过 / 新增）。
+    pub user: bool,
+    /// 当前是否生效（用户层 `enabled = false` 且吃掉了内置 → `false`）。
+    pub enabled: bool,
+}
+
+impl EmojiRow {
+    /// 列表第一列：词，或「码 …」形状。
+    pub fn key_cell(&self) -> String {
+        match (&self.word, &self.code) {
+            (Some(w), _) => w.clone(),
+            (None, Some(c)) => format!("码 {c}"),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// 「绑定」列：按词 / 按码；单字再补一个记号，提示那一行会变宽。
+    pub fn bind_cell(&self) -> String {
+        let base = if self.word.is_some() {
+            "按词"
+        } else {
+            "按码"
+        };
+        match self.word.as_deref() {
+            Some(w) if w.chars().count() == 1 => format!("{base}·单字"),
+            _ => base.to_string(),
+        }
+    }
+
+    /// 「状态」列：内置 / 已改绑 / 已停用 / 新增。
+    pub fn state_cell(&self) -> &'static str {
+        match (self.user, self.enabled) {
+            (false, true) => "内置",
+            (true, true) => {
+                if self.builtin_emoji.is_some() {
+                    "已改绑"
+                } else {
+                    "新增"
+                }
+            }
+            (_, false) => "已停用",
+        }
+    }
+}
+
+/// emoji 页模型：两份层 + 指向它们的路径。
+pub struct EmojiPage {
+    pub builtin_path: PathBuf,
+    pub user_path: PathBuf,
+    pub builtin: EmojiLayer,
+    pub user: EmojiLayer,
+    /// 读内置层的错误（缺文件不算错，那是「没装 emoji 数据」的降级）。
+    pub builtin_err: Option<String>,
+    /// 读用户层的错误（不存在不算错）。
+    pub user_err: Option<String>,
+}
+
+impl EmojiPage {
+    pub fn load(builtin_path: PathBuf, user_path: PathBuf) -> Self {
+        let (builtin, builtin_err) = EmojiLayer::load(&builtin_path);
+        let (user, user_err) = EmojiLayer::load(&user_path);
+        Self {
+            builtin_path,
+            user_path,
+            builtin,
+            user,
+            builtin_err,
+            user_err,
+        }
+    }
+
+    /// 合并视图。排序：按词绑定的按词排、按码绑定的按码排，词在前——
+    /// 与 `heinrich-cli emoji list` 同一口径，搜索时两边都能按前缀找到。
+    pub fn rows(&self) -> Vec<EmojiRow> {
+        let mut out: Vec<EmojiRow> = Vec::new();
+        let mut push = |word: Option<String>,
+                        code: Option<String>,
+                        builtin: Option<String>,
+                        user: bool,
+                        enabled: bool,
+                        emoji: String| {
+            out.push(EmojiRow {
+                word,
+                code,
+                emoji,
+                builtin_emoji: builtin,
+                user,
+                enabled,
+            });
+        };
+
+        // 内置的每一条：看用户层有没有同 key 的覆盖
+        let user_word = |w: &str| {
+            self.user
+                .entries
+                .iter()
+                .find(|e| e.word.as_deref() == Some(w))
+        };
+        let user_code = |c: &str| {
+            self.user
+                .entries
+                .iter()
+                .find(|e| e.code.as_deref() == Some(c))
+        };
+        for e in &self.builtin.entries {
+            if let Some(w) = &e.word {
+                match user_word(w) {
+                    Some(u) => push(
+                        Some(w.clone()),
+                        None,
+                        Some(e.emoji.clone()),
+                        true,
+                        u.enabled,
+                        u.emoji.clone(),
+                    ),
+                    None => push(
+                        Some(w.clone()),
+                        None,
+                        Some(e.emoji.clone()),
+                        false,
+                        e.enabled,
+                        e.emoji.clone(),
+                    ),
+                }
+            }
+            if let Some(c) = &e.code {
+                match user_code(c) {
+                    Some(u) => push(
+                        None,
+                        Some(c.clone()),
+                        Some(e.emoji.clone()),
+                        true,
+                        u.enabled,
+                        u.emoji.clone(),
+                    ),
+                    None => push(
+                        None,
+                        Some(c.clone()),
+                        Some(e.emoji.clone()),
+                        false,
+                        e.enabled,
+                        e.emoji.clone(),
+                    ),
+                }
+            }
+        }
+        // 用户层独有的（内置没有的 key）：改绑的新词、单字、新增按码绑定
+        for e in &self.user.entries {
+            let covered = match (&e.word, &e.code) {
+                (Some(w), _) => self
+                    .builtin
+                    .entries
+                    .iter()
+                    .any(|b| b.word.as_deref() == Some(w)),
+                (None, Some(c)) => self
+                    .builtin
+                    .entries
+                    .iter()
+                    .any(|b| b.code.as_deref() == Some(c)),
+                (None, None) => false,
+            };
+            // 既没词也没码的条目解析期就拦掉了，这里只是防御
+            if !covered && (e.word.is_some() || e.code.is_some()) {
+                push(
+                    e.word.clone(),
+                    e.code.clone(),
+                    None,
+                    true,
+                    e.enabled,
+                    e.emoji.clone(),
+                );
+            }
+        }
+
+        out.sort_by(|a, b| match (&a.word, &b.word) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.code.cmp(&b.code),
+        });
+        out
+    }
+
+    /// 当前生效的查表结构。界面目前只画合并视图，用不到它；单测靠它断言
+    /// 「写盘之后查表语义跟着变」（这正是用户在意的东西）。
+    #[allow(dead_code)]
+    pub fn map(&self) -> EmojiMap {
+        EmojiMap::build(&[&self.builtin, &self.user])
+    }
+
+    /// 内置表里出现过的全部 emoji（去重、排序）——「从内置表选」下拉的数据。
+    pub fn builtin_choices(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .builtin
+            .entries
+            .iter()
+            .map(|e| e.emoji.clone())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// 改绑 / 新增：把 key 指到 `emoji`。校验不过就返回人话，**不写盘**。
+    pub fn rebind(&mut self, key: &Key, emoji: &str) -> Result<(), String> {
+        let emoji = emoji.trim();
+        if emoji.is_empty() {
+            return Err("emoji 不能为空".into());
+        }
+        if !valid_emoji(emoji) {
+            return Err("要单个 emoji（两个拼一起、ZWJ 序列都不行）".into());
+        }
+        // 词与码里出现引号/反斜杠时直接拒绝：解析层的 TOML 子集不认转义
+        // （中文词、a–y 的码本来就不会有），写出去一个解析不回的文件才是事故。
+        let text = match key {
+            Key::Word(w) => w.as_str(),
+            Key::Code(c) => c.as_str(),
+        };
+        if text.contains('"') || text.contains('\\') {
+            return Err("词或码里不能有引号和反斜杠".into());
+        }
+        self.remove_user_entries(key);
+        self.user.entries.push(EmojiEntry {
+            word: key.word().map(str::to_string),
+            code: key.code().map(str::to_string),
+            emoji: emoji.to_string(),
+            enabled: true,
+            line: 0,
+        });
+        self.save()
+    }
+
+    /// 停用 / 恢复。对内置有的 key 写 `enabled = false`（吃掉内置值）；
+    /// 对用户新增的 key，「停用」就是删掉——没有内置值可回退。
+    pub fn set_disabled(&mut self, key: &Key, disabled: bool) -> Result<(), String> {
+        let has_builtin = self.builtin_entry(key).is_some();
+        if !has_builtin {
+            if disabled {
+                return Err("这条是用户新增的，停用等于删掉，请用「恢复内置」".to_string());
+            }
+            return self.restore(key);
+        }
+        let emoji = match self.user_entry(key) {
+            Some(u) => u.emoji.clone(),
+            None => self
+                .builtin_entry(key)
+                .map(|b| b.emoji.clone())
+                .unwrap_or_default(),
+        };
+        self.remove_user_entries(key);
+        self.user.entries.push(EmojiEntry {
+            word: key.word().map(str::to_string),
+            code: key.code().map(str::to_string),
+            emoji,
+            enabled: !disabled,
+            line: 0,
+        });
+        self.save()
+    }
+
+    /// 恢复内置：删掉用户层里这个 key 的全部条目。内置没有的 key 等于删绑定。
+    pub fn restore(&mut self, key: &Key) -> Result<(), String> {
+        self.remove_user_entries(key);
+        self.save()
+    }
+
+    fn builtin_entry(&self, key: &Key) -> Option<&EmojiEntry> {
+        self.builtin.entries.iter().find(|e| key.matches(e))
+    }
+
+    fn user_entry(&self, key: &Key) -> Option<&EmojiEntry> {
+        self.user.entries.iter().find(|e| key.matches(e))
+    }
+
+    fn remove_user_entries(&mut self, key: &Key) {
+        self.user.entries.retain(|e| !key.matches(e));
+    }
+
+    /// 整份重写用户层：模板头（与 `heinrich-cli emoji reset` 同一份说明）+ 条目。
+    /// 临时文件 + 改名，server 的每秒 stat 读不到半个文件。
+    fn save(&self) -> Result<(), String> {
+        let mut text = String::from(HEADER);
+        for e in &self.user.entries {
+            text.push_str("[[emoji]]\n");
+            if let Some(w) = &e.word {
+                text.push_str(&format!("word = \"{}\"\n", w));
+            }
+            if let Some(c) = &e.code {
+                text.push_str(&format!("code = \"{}\"\n", c));
+            }
+            text.push_str(&format!("emoji = \"{}\"\n", e.emoji));
+            if !e.enabled {
+                text.push_str("enabled = false\n");
+            }
+            text.push('\n');
+        }
+        if let Some(dir) = self.user_path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("创建目录 {} 失败：{e}", dir.display()))?;
+        }
+        let tmp = self.user_path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text.as_bytes())
+            .map_err(|e| format!("写 {} 失败：{e}", tmp.display()))?;
+        std::fs::rename(&tmp, &self.user_path)
+            .map_err(|e| format!("落盘 {} 失败：{e}", self.user_path.display()))?;
+        Ok(())
+    }
+}
+
+/// 一条绑定的 key（按词或按码）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Key {
+    Word(String),
+    Code(String),
+}
+
+impl Key {
+    pub fn word(&self) -> Option<&str> {
+        match self {
+            Key::Word(w) => Some(w),
+            Key::Code(_) => None,
+        }
+    }
+
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Key::Code(c) => Some(c),
+            Key::Word(_) => None,
+        }
+    }
+
+    fn matches(&self, e: &EmojiEntry) -> bool {
+        match self {
+            Key::Word(w) => e.word.as_deref() == Some(w.as_str()),
+            Key::Code(c) => e.code.as_deref() == Some(c.as_str()),
+        }
+    }
+}
+
+/// 用户层头部说明（与 `heinrich-cli emoji reset` 写出的样例同一口径）。
+const HEADER: &str = "\
+# 亨利输入法 · 词组 emoji 用户层（§6.4）
+# 保存即生效（≤ 1 秒），不用重启输入法。整份删掉 = 回到只用内置表。
+# 这份文件通常由设置窗口的 emoji 页维护；手改也认，格式同下。
+#
+";
+
+/// `emoji.enabled` 现在的值（没写 = 开）。
+pub fn emoji_enabled(config_path: &Path) -> bool {
+    heinrich_scheme::Config::load(config_path).emoji_enabled()
+}
+
+/// 总开关写盘。**开 = 删行**（默认就是开，写死 `true` 等于把默认值钉在文件里，
+/// 与通用页「恢复默认 = 删行」同一纪律）；关 = 写 `false`。
+pub fn set_emoji_enabled(config_path: &Path, on: bool) -> std::io::Result<()> {
+    heinrich_scheme::edit_config_file(
+        config_path,
+        &[("emoji.enabled", if on { None } else { Some("false") })],
+    )
+}
+
+/// 用户层默认位置：`%APPDATA%\Heinrich\emoji.user.toml`（与 server 的 `--emoji` 默认一致）。
+pub fn default_user_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(base).join("Heinrich").join("emoji.user.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        // 计数器：测试并行跑，同名目录会被另一个线程 remove_dir_all 掉
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!(
+            "heinrich-emoji-page-{}-{tag}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn builtin_with(entries: &str) -> PathBuf {
+        let d = temp_dir("builtin");
+        let p = d.join("emoji.toml");
+        std::fs::write(&p, entries).unwrap();
+        p
+    }
+
+    const BUILTIN: &str = "\
+[[emoji]]
+word = \"你好\"
+emoji = \"👋\"
+
+[[emoji]]
+word = \"好评\"
+emoji = \"👍\"
+
+[[emoji]]
+code = \"vbg\"
+emoji = \"👌\"
+";
+
+    #[test]
+    fn 合并视图三个状态() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("merged").join("emoji.user.toml");
+        std::fs::write(
+            &up,
+            "[[emoji]]\nword = \"你好\"\nemoji = \"👏\"\n\n[[emoji]]\nword = \"好评\"\nemoji = \"👍\"\nenabled = false\n",
+        )
+        .unwrap();
+        let page = EmojiPage::load(bp, up);
+        let rows = page.rows();
+        let you = rows.iter().find(|r| r.key_cell() == "你好").unwrap();
+        assert_eq!(you.emoji, "👏");
+        assert_eq!(you.state_cell(), "已改绑");
+        let hao = rows.iter().find(|r| r.key_cell() == "好评").unwrap();
+        assert_eq!(hao.emoji, "👍", "停用时显示的是恢复后会用的值");
+        assert_eq!(hao.state_cell(), "已停用");
+        assert!(!hao.enabled);
+        let code = rows.iter().find(|r| r.key_cell() == "码 vbg").unwrap();
+        assert_eq!(code.state_cell(), "内置");
+        assert_eq!(code.bind_cell(), "按码");
+    }
+
+    #[test]
+    fn 改绑落盘且能读回() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("rebind").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp.clone(), up.clone());
+        page.rebind(&Key::Word("你好".into()), "🎉").unwrap();
+        // 没有 .tmp 残留
+        assert!(!up.with_extension("toml.tmp").exists());
+        // 重读：合并视图与生效查表都是新值
+        let back = EmojiPage::load(bp, up.clone());
+        let rows = back.rows();
+        let you = rows.iter().find(|r| r.key_cell() == "你好").unwrap();
+        assert_eq!(you.emoji, "🎉");
+        assert_eq!(you.state_cell(), "已改绑");
+        assert_eq!(back.map().lookup("你好", ""), Some("🎉"));
+        let _ = std::fs::remove_dir_all(up.parent().unwrap());
+    }
+
+    #[test]
+    fn 停用与恢复内置() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("disable").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp.clone(), up.clone());
+        page.set_disabled(&Key::Word("你好".into()), true).unwrap();
+        let rows = EmojiPage::load(bp.clone(), up.clone()).rows();
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.key_cell() == "你好")
+                .unwrap()
+                .state_cell(),
+            "已停用"
+        );
+        assert_eq!(
+            EmojiPage::load(bp.clone(), up.clone())
+                .map()
+                .lookup("你好", ""),
+            None,
+            "停用后查表就是没有"
+        );
+        page.restore(&Key::Word("你好".into())).unwrap();
+        let rows = EmojiPage::load(bp, up.clone()).rows();
+        let you = rows.iter().find(|r| r.key_cell() == "你好").unwrap();
+        assert_eq!(you.state_cell(), "内置");
+        assert_eq!(you.emoji, "👋");
+        let _ = std::fs::remove_dir_all(up.parent().unwrap());
+    }
+
+    /// 用户新增的绑定（内置没有的词 / 单字）：停用 = 删掉，恢复也是删掉。
+    #[test]
+    fn 用户新增与单字条目() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("new").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp.clone(), up.clone());
+        // 单字放行（D85）
+        page.rebind(&Key::Word("好".into()), "👍").unwrap();
+        let rows = EmojiPage::load(bp.clone(), up.clone()).rows();
+        let hao = rows.iter().find(|r| r.key_cell() == "好").unwrap();
+        assert_eq!(hao.bind_cell(), "按词·单字");
+        assert_eq!(hao.state_cell(), "新增");
+        assert_eq!(
+            EmojiPage::load(bp.clone(), up.clone())
+                .map()
+                .lookup("好", ""),
+            Some("👍")
+        );
+
+        // 新增条目的「停用」走不通（没有内置可回退），删掉才是正路
+        assert!(page
+            .set_disabled(&Key::Word("好".into()), true)
+            .unwrap_err()
+            .contains("新增"));
+        page.restore(&Key::Word("好".into())).unwrap();
+        assert!(EmojiPage::load(bp, up.clone())
+            .map()
+            .lookup("好", "")
+            .is_none());
+        let _ = std::fs::remove_dir_all(up.parent().unwrap());
+    }
+
+    #[test]
+    fn 非法emoji不写盘() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("bad").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp, up.clone());
+        assert!(page.rebind(&Key::Word("你好".into()), "").is_err());
+        assert!(page.rebind(&Key::Word("你好".into()), "👍👍").is_err());
+        assert!(page.rebind(&Key::Word("你好".into()), "abc").is_err());
+        assert!(!up.exists(), "校验不过不该碰盘");
+        let _ = std::fs::remove_dir_all(up.parent().unwrap());
+    }
+
+    /// 词里出现引号/反斜杠直接拒绝（解析层的 TOML 子集不认转义，
+    /// 写出去一个解析不回的文件才是事故）。
+    #[test]
+    fn 特殊字符拒绝() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("escape").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp, up.clone());
+        assert!(page
+            .rebind(&Key::Word("说\"你好\"".into()), "👍")
+            .unwrap_err()
+            .contains("引号"));
+        assert!(page
+            .rebind(&Key::Code("vb\\g".into()), "👍")
+            .unwrap_err()
+            .contains("反斜杠"));
+        assert!(!up.exists(), "校验不过不该碰盘");
+        let _ = std::fs::remove_dir_all(up.parent().unwrap());
+    }
+
+    /// 三份用户文件互不干扰（M4d 验收 ③ 的数据层部分）：
+    /// 改 emoji 用户层不许碰 config.toml / words.tsv。
+    #[test]
+    fn 三份用户文件都保留() {
+        let d = temp_dir("three");
+        let cfg = d.join("config.toml");
+        std::fs::write(&cfg, "# 手写注释\nhint.mode = \"off\"\n").unwrap();
+        let words = d.join("words.tsv");
+        std::fs::write(&words, "微信\ttmwy\t\t\n").unwrap();
+        let bp = builtin_with(BUILTIN);
+        let up = d.join("emoji.user.toml");
+
+        let mut page = EmojiPage::load(bp, up);
+        page.rebind(&Key::Word("你好".into()), "🎉").unwrap();
+        set_emoji_enabled(&cfg, false).unwrap();
+
+        assert!(std::fs::read_to_string(&cfg)
+            .unwrap()
+            .contains("# 手写注释"));
+        assert!(std::fs::read_to_string(&words).unwrap().starts_with("微信"));
+        assert!(!emoji_enabled(&cfg));
+        // 再删行恢复默认 = 开
+        set_emoji_enabled(&cfg, true).unwrap();
+        assert!(emoji_enabled(&cfg), "开 = 删行（默认值）");
+        assert!(!std::fs::read_to_string(&cfg)
+            .unwrap()
+            .contains("emoji.enabled"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

@@ -101,12 +101,25 @@ const ID_B_SEARCH: usize = 302;
 const ID_LEARN_LIST: usize = 303;
 const ID_B_FORGET: usize = 304;
 
+// emoji 页（M4d / D85）。40x 列表与搜索，41x 按钮，42x 说明，43x 输入。
+const ID_EMOJI_LIST: usize = 401;
+const ID_E_EMOJI_SEARCH: usize = 402;
+const ID_BE_SAVE: usize = 410;
+const ID_BE_DISABLE: usize = 411;
+const ID_BE_RESTORE: usize = 412;
+const ID_BE_TOGGLE: usize = 413;
+const ID_BE_OPEN: usize = 414;
+const ID_NOTE_EMOJI: usize = 420;
+const ID_C_EMOJI_PICK: usize = 430;
+const ID_E_EMOJI_NEW: usize = 431;
+
 /// 页序号。**与页签顺序、`pages` 数组的下标三者必须一致**。
 const PAGE_GENERAL: usize = 0;
 const PAGE_WORDS: usize = 1;
-const PAGE_LEARN: usize = 2;
-const PAGE_COUNT: usize = 3;
-const PAGE_TITLES: [&str; PAGE_COUNT] = ["通用", "词组", "学习数据"];
+const PAGE_EMOJI: usize = 2;
+const PAGE_LEARN: usize = 3;
+const PAGE_COUNT: usize = 4;
+const PAGE_TITLES: [&str; PAGE_COUNT] = ["通用", "词组", "emoji", "学习数据"];
 /// 码提示的三段选择器文案与取值，顺序 = `HintMode` 的映射顺序。
 const HINT_SEGMENTS: [&str; 3] = ["总是", "首次", "关闭"];
 
@@ -182,6 +195,15 @@ struct Geo {
     /// 学习页：搜索框外框、列表卡。
     learn_search_box: RECT,
     learn_card: RECT,
+    /// emoji 页：搜索框外框、列表卡、编辑面板卡、面板内新 emoji 框与下拉框外框、
+    /// 「选中」信息行与新 emoji 标签。
+    emoji_search_box: RECT,
+    emoji_card: RECT,
+    emoji_panel_card: RECT,
+    emoji_new_box: RECT,
+    emoji_combo_box: RECT,
+    emoji_sel_label: RECT,
+    emoji_new_label: RECT,
 }
 
 pub struct App {
@@ -216,6 +238,18 @@ pub struct App {
     learn_list: HWND,
     b_forget: HWND,
     n_learn: HWND,
+
+    // emoji 页
+    emoji_list: HWND,
+    e_emoji_search: HWND,
+    e_emoji_new: HWND,
+    c_emoji_pick: HWND,
+    b_emoji_save: HWND,
+    b_emoji_disable: HWND,
+    b_emoji_restore: HWND,
+    b_emoji_toggle: HWND,
+    b_emoji_open: HWND,
+    n_emoji: HWND,
 
     /// 每页的控件，按下标显隐。**建完就固定**，切页只动可见性。
     pages: [Vec<HWND>; PAGE_COUNT],
@@ -266,6 +300,16 @@ pub struct App {
     db_path: PathBuf,
     /// 学习数据页当前列出的行（下标即 ListView 行号）
     learn_rows: Vec<crate::learn::Row>,
+
+    // emoji 页（M4d / D85）
+    /// 合并视图模型（内置只读 + 用户层读写）
+    emoji: crate::emoji_page::EmojiPage,
+    /// 当前（过滤后）展示的行，下标即 ListView 行号
+    emoji_rows: Vec<crate::emoji_page::EmojiRow>,
+    /// 编辑面板挂着哪一行
+    emoji_sel: Option<usize>,
+    /// 本机字形覆盖：列表标灰与「能不能保存」共用同一份判据
+    emoji_support: heinrich_font::EmojiSupport,
 }
 
 impl App {
@@ -274,13 +318,14 @@ impl App {
         words: Option<PathBuf>,
         config: Option<PathBuf>,
         db: Option<PathBuf>,
+        emoji: Option<PathBuf>,
     ) -> Result<Self, String> {
         let path = words
             .or_else(crate::lex::default_words_path)
             .ok_or("取不到 %APPDATA%，请用 --words 指定词库文件")?;
         let model =
             Model::load(path.clone()).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-        let (lex, lex_note) = match find_data_dir(data) {
+        let (lex, lex_note) = match find_data_dir(data.clone()) {
             Some(dir) => match Lexicons::load(&dir) {
                 Ok(l) => (Some(l), None),
                 Err(e) => (None, Some(e)),
@@ -302,6 +347,29 @@ impl App {
         let db_path = db
             .or_else(crate::learn::default_path)
             .unwrap_or_else(|| PathBuf::from("learn.db"));
+        // emoji 页：内置表在数据目录（缺了就降级成「只有用户层」），用户层允许
+        // 不存在（`--emoji` 是给自测用的，真路径默认 %APPDATA%）。
+        let emoji_builtin = find_data_dir(data.clone()).map(|d| d.join("emoji.toml"));
+        let emoji_user = emoji.or_else(crate::emoji_page::default_user_path);
+        let emoji_model = match (emoji_builtin, emoji_user) {
+            (Some(b), Some(u)) => crate::emoji_page::EmojiPage::load(b, u),
+            (Some(_), None) => {
+                return Err("取不到 %APPDATA%，请用 --emoji 指定 emoji 用户层路径".into())
+            }
+            (None, u) => {
+                let u = u.ok_or("取不到 %APPDATA%，请用 --emoji 指定 emoji 用户层路径")?;
+                crate::emoji_page::EmojiPage::load(PathBuf::from("emoji.toml"), u)
+            }
+        };
+        let emoji_support = {
+            let chars = emoji_model
+                .builtin_choices()
+                .iter()
+                .chain(emoji_model.rows().iter().map(|r| &r.emoji))
+                .flat_map(|s| s.chars())
+                .collect::<Vec<_>>();
+            heinrich_font::EmojiSupport::detect(chars)
+        };
         Ok(Self {
             hwnd: HWND::default(),
             dpi,
@@ -329,7 +397,17 @@ impl App {
             learn_list: HWND::default(),
             b_forget: HWND::default(),
             n_learn: HWND::default(),
-            pages: [Vec::new(), Vec::new(), Vec::new()],
+            emoji_list: HWND::default(),
+            e_emoji_search: HWND::default(),
+            e_emoji_new: HWND::default(),
+            c_emoji_pick: HWND::default(),
+            b_emoji_save: HWND::default(),
+            b_emoji_disable: HWND::default(),
+            b_emoji_restore: HWND::default(),
+            b_emoji_toggle: HWND::default(),
+            b_emoji_open: HWND::default(),
+            n_emoji: HWND::default(),
+            pages: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             page: PAGE_GENERAL,
             initial_page: PAGE_GENERAL,
             tab_hot: -1,
@@ -354,6 +432,10 @@ impl App {
             config_path,
             db_path,
             learn_rows: Vec::new(),
+            emoji: emoji_model,
+            emoji_rows: Vec::new(),
+            emoji_sel: None,
+            emoji_support,
         })
     }
 
@@ -371,6 +453,7 @@ impl App {
         self.create_words_page()?;
         self.create_general_page()?;
         self.create_learn_page()?;
+        self.create_emoji_page()?;
         Ok(())
     }
 
@@ -639,11 +722,144 @@ impl App {
         Ok(())
     }
 
-    /// 两个列表的底色/文字色统一在**两页都建完之后**上色（`create_words_page`
+    /// emoji 页：搜索 + 列表 + 编辑面板（新 emoji 框 + 从内置表选）+ 页级操作。
+    ///
+    /// 搜索框走 `EN_CHANGE` 实时过滤（不像学习页要按「搜」）：emoji 表 2400 条，
+    /// 边打边缩是这条页最自然的使用方式。下拉框（ComboBox）是这一页唯一的原生
+    /// 下拉——「从内置表选」的候选有一千多种，三段选择器那套自绘管不过来；
+    /// D79 保留原生 Edit/ListView 的同一条理由在这里对 ComboBox 同样成立。
+    fn create_emoji_page(&mut self) -> windows::core::Result<()> {
+        let hwnd = self.hwnd;
+        self.emoji_list = child(
+            hwnd,
+            w!("SysListView32"),
+            "",
+            WINDOW_STYLE(
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_TABSTOP.0
+                    | LVS_REPORT
+                    | LVS_SINGLESEL
+                    | LVS_SHOWSELALWAYS,
+            ),
+            ID_EMOJI_LIST,
+            self.font,
+        )?;
+        for (i, (title, width, fmt)) in [
+            ("词 / 码", 200, LVCFMT_LEFT),
+            ("绑定", 90, LVCFMT_CENTER),
+            ("emoji", 130, LVCFMT_LEFT),
+            ("状态", 120, LVCFMT_CENTER),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut text = vec![0u16; 32];
+            put_utf16(&mut text, title);
+            let mut col = LVCOLUMNW {
+                mask: windows::Win32::UI::Controls::LVCOLUMNW_MASK(
+                    LVCF_FMT | LVCF_WIDTH | LVCF_TEXT,
+                ),
+                fmt,
+                cx: self.s(width),
+                pszText: PWSTR(text.as_mut_ptr()),
+                ..Default::default()
+            };
+            unsafe {
+                send(
+                    self.emoji_list,
+                    LVM_INSERTCOLUMNW,
+                    WPARAM(i),
+                    LPARAM(&mut col as *mut _ as isize),
+                );
+            }
+        }
+
+        let edit_style = WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | 0x0080);
+        self.e_emoji_search = child(
+            hwnd,
+            w!("Edit"),
+            "",
+            edit_style,
+            ID_E_EMOJI_SEARCH,
+            self.font,
+        )?;
+        self.e_emoji_new = child(hwnd, w!("Edit"), "", edit_style, ID_E_EMOJI_NEW, self.font)?;
+
+        // 「从内置表选」：只列**本机画得出来**的（画不出来的选了也是方块，
+        // 不给它进下拉的机会）
+        const CB_ADDSTRING: u32 = 0x0143;
+        self.c_emoji_pick = child(
+            hwnd,
+            w!("ComboBox"),
+            "",
+            WINDOW_STYLE(
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_TABSTOP.0
+                    | 0x0003 /* CBS_DROPDOWNLIST */
+                    | 0x0100 /* CBS_SORT */
+                    | 0x0020, /* WS_VSCROLL */
+            ),
+            ID_C_EMOJI_PICK,
+            self.font,
+        )?;
+        for emoji in self.emoji.builtin_choices() {
+            if self.emoji_support.supports(&emoji) {
+                let text = wide(&emoji);
+                unsafe {
+                    send(
+                        self.c_emoji_pick,
+                        CB_ADDSTRING,
+                        WPARAM(0),
+                        LPARAM(text.as_ptr() as isize),
+                    );
+                }
+            }
+        }
+
+        // 建子控件的顺序 = Tab 键顺序：改绑是主操作，第一个建
+        self.b_emoji_save = child(
+            hwnd,
+            w!("Button"),
+            "改绑",
+            WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
+            ID_BE_SAVE,
+            self.font,
+        )?;
+        self.b_emoji_disable = button(hwnd, "停用", ID_BE_DISABLE, self.font)?;
+        self.b_emoji_restore = button(hwnd, "恢复内置", ID_BE_RESTORE, self.font)?;
+        self.b_emoji_toggle = button(hwnd, "", ID_BE_TOGGLE, self.font)?;
+        self.b_emoji_open = button(hwnd, "打开文件位置", ID_BE_OPEN, self.font)?;
+        self.n_emoji = child(
+            hwnd,
+            w!("Static"),
+            "",
+            WINDOW_STYLE(0),
+            ID_NOTE_EMOJI,
+            self.fonts.caption,
+        )?;
+
+        self.pages[PAGE_EMOJI] = vec![
+            self.emoji_list,
+            self.e_emoji_search,
+            self.e_emoji_new,
+            self.c_emoji_pick,
+            self.b_emoji_save,
+            self.b_emoji_disable,
+            self.b_emoji_restore,
+            self.b_emoji_toggle,
+            self.b_emoji_open,
+            self.n_emoji,
+        ];
+        Ok(())
+    }
+
+    /// 两个列表的底色/文字色统一在**各页都建完之后**上色（`create_words_page`
     /// 跑的时候 `learn_list` 还不存在，那里碰不到它）。
     fn style_lists(&self) {
         unsafe {
-            for &h in &[self.list, self.learn_list] {
+            for &h in &[self.list, self.learn_list, self.emoji_list] {
                 send(
                     h,
                     LVM_SETBKCOLOR,
@@ -782,6 +998,7 @@ impl App {
         self.layout_general(m, y_after_title, cw2, content_bottom);
         self.layout_words(m, content_top, cw2, content_bottom);
         self.layout_learn(m, content_top, cw2, content_bottom);
+        self.layout_emoji(m, content_top, cw2, content_bottom);
 
         self.round_edits();
 
@@ -798,8 +1015,12 @@ impl App {
     /// 两条边」正是这个）。region 让 Edit 自己的轮廓也是圆角，内外两圈才贴得住。
     fn round_edits(&self) {
         let r = self.s(4);
-        // 两个列表用卡片的圆角，其余是输入框的 4px
-        for (h, rad) in [(self.list, self.s(8)), (self.learn_list, self.s(8))] {
+        // 三个列表用卡片的圆角，其余是输入框的 4px
+        for (h, rad) in [
+            (self.list, self.s(8)),
+            (self.learn_list, self.s(8)),
+            (self.emoji_list, self.s(8)),
+        ] {
             round_control(h, rad);
         }
         for &h in &[
@@ -810,6 +1031,8 @@ impl App {
             self.e_pinyin,
             self.e_code,
             self.e_weight,
+            self.e_emoji_search,
+            self.e_emoji_new,
         ] {
             let mut rc = RECT::default();
             unsafe {
@@ -1129,6 +1352,109 @@ impl App {
         // 权重：词、上屏次数、上次使用、学习分、档位。数字列给足宽度，
         // 右对齐的数字才有「小数点成列」的效果
         self.fit_columns(self.learn_list, &[20, 18, 20, 18, 24]);
+    }
+
+    /// emoji 页：搜索行 + 列表卡 + 编辑面板卡（两行）+ 按钮行 + 说明行。
+    ///
+    /// 节奏与词组页一致（列表卡 → 面板卡 → 按钮行 → 说明，全部从底往上排），
+    /// 多出来的只有搜索行——它和学习页同一摆位，两页切换时视线不用重新找。
+    fn layout_emoji(&mut self, cx: i32, cy: i32, cw2: i32, bottom: i32) {
+        let btn_h = self.s(30);
+        let row = self.s(30);
+        let note_h = self.s(22);
+        let search_y = cy + self.s(56);
+        // 面板卡两行：「选中」信息行 + 「新 emoji」输入行
+        let panel_h = row * 2 + self.s(28);
+        let note_y = bottom - note_h;
+        let btn_y = note_y - self.s(8) - btn_h;
+        let panel_y = btn_y - self.s(12) - panel_h;
+        let list_y = search_y + self.s(38);
+        let list_h = (panel_y - self.s(14) - list_y).max(self.s(120));
+
+        self.geo.emoji_search_box = Self::rect(cx + self.s(40), search_y, self.s(320), btn_h);
+        self.center_in_box(self.e_emoji_search, self.geo.emoji_search_box);
+
+        let card = Self::rect(cx, list_y, cw2, list_h);
+        self.geo.emoji_card = card;
+        let panel = Self::rect(cx, panel_y, cw2, panel_h);
+        self.geo.emoji_panel_card = panel;
+
+        // 面板行 1：「选中」信息（纯自绘文字）；行 2：标签 + 新 emoji 框 + 下拉框
+        let info = Self::inset(panel, self.s(16));
+        self.geo.emoji_sel_label = Self::rect(
+            info.left,
+            panel.top + self.s(14),
+            info.right - info.left,
+            row,
+        );
+        let input_y = panel.top + self.s(14) + row;
+        let new_label_w = self.s(14 * 3);
+        self.geo.emoji_new_label = Self::rect(info.left, input_y, new_label_w, row);
+        let box_x = info.left + new_label_w + self.s(8);
+        // 框 130、下拉 240，中间留 12；剩余给右侧按钮行外的空白
+        self.geo.emoji_new_box = Self::rect(box_x, input_y, self.s(130), row);
+        self.geo.emoji_combo_box = Self::rect(
+            self.geo.emoji_new_box.right + self.s(12),
+            input_y,
+            self.s(240),
+            row,
+        );
+
+        unsafe {
+            // 搜索框右侧是「总开关」（破坏性弱、但要一眼看到状态），靠右放，
+            // 与学习页「清除」同一摆位
+            let toggle_w = self.btn_w_from("停用 emoji 候选", 140);
+            let _ = MoveWindow(
+                self.b_emoji_toggle,
+                cx + cw2 - toggle_w,
+                search_y,
+                toggle_w,
+                btn_h,
+                true,
+            );
+            move_rect(self.emoji_list, Self::inset(card, self.s(8)), true);
+            self.center_in_box(self.e_emoji_new, self.geo.emoji_new_box);
+            move_rect(self.c_emoji_pick, self.geo.emoji_combo_box, true);
+            let _ = MoveWindow(self.n_emoji, cx, note_y + self.s(2), cw2, note_h, true);
+        }
+
+        // 按钮行：改绑（主）→ 停用 → 恢复内置；「打开文件位置」靠右
+        let gap = self.s(8);
+        let mut bx = cx;
+        for (h, text, min_w) in [
+            (self.b_emoji_save, "改绑", 72),
+            (self.b_emoji_disable, "停用", 72),
+            (self.b_emoji_restore, "恢复内置", 96),
+        ] {
+            let w = self.btn_w_from(text, min_w);
+            unsafe {
+                let _ = MoveWindow(h, bx, btn_y, w, btn_h, true);
+            }
+            bx += w + gap;
+        }
+        let open_w = self.btn_w_from("打开文件位置", 104);
+        unsafe {
+            let _ = MoveWindow(
+                self.b_emoji_open,
+                cx + cw2 - open_w,
+                btn_y,
+                open_w,
+                btn_h,
+                true,
+            );
+        }
+        // 权重：词/码、绑定、emoji、状态
+        self.fit_columns(self.emoji_list, &[34, 14, 26, 26]);
+    }
+
+    /// [`Self::btn_w`] 的免借 DC 版：布局里连续量好几个按钮时少开几次 DC。
+    fn btn_w_from(&self, text: &str, min: i32) -> i32 {
+        let hdc = unsafe { GetDC(Some(self.hwnd)) };
+        let w = self.btn_w(hdc, text, min);
+        if !hdc.0.is_null() {
+            unsafe { ReleaseDC(Some(self.hwnd), hdc) };
+        }
+        w
     }
 
     /// 重算推导列并重填 ListView（保留当前选中项）。
@@ -1713,6 +2039,332 @@ impl App {
     }
 }
 
+// -------------------------------------------------------- emoji 页（M4d / D85）
+impl App {
+    /// 重填列表：合并视图 + 搜索过滤。选中项按 key 找回（过滤后下标会变）。
+    fn refresh_emoji(&mut self) {
+        let needle = get_text(self.e_emoji_search).trim().to_lowercase();
+        let all = self.emoji.rows();
+        self.emoji_rows = all
+            .into_iter()
+            .filter(|r| {
+                needle.is_empty()
+                    || r.key_cell().to_lowercase().contains(&needle)
+                    || r.emoji.contains(&needle)
+                    || r.state_cell().contains(&needle)
+            })
+            .collect();
+        unsafe {
+            send(self.emoji_list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
+        }
+        for (i, r) in self.emoji_rows.iter().enumerate() {
+            insert_emoji_row(self.emoji_list, i, r, &self.emoji_support);
+        }
+        self.update_emoji_note();
+        self.update_emoji_buttons();
+    }
+
+    /// 刷新并按 key（词/码）找回选中项。改绑/停用/恢复之后行内容变了，
+    /// 下标会挪，只能按内容找。
+    fn refresh_emoji_keep_sel(&mut self, key: &str) {
+        self.refresh_emoji();
+        if let Some(i) = self.emoji_rows.iter().position(|r| r.key_cell() == key) {
+            self.emoji_sel = Some(i);
+            select_item(self.emoji_list, i);
+            self.fill_emoji_panel(Some(i));
+        } else {
+            self.emoji_sel = None;
+            self.fill_emoji_panel(None);
+        }
+        self.update_emoji_buttons();
+        self.update_emoji_note();
+    }
+
+    fn selected_emoji(&self) -> Option<usize> {
+        let r = unsafe {
+            send(
+                self.emoji_list,
+                LVM_GETNEXTITEM,
+                WPARAM(usize::MAX),
+                LPARAM(LVNI_SELECTED as isize),
+            )
+        };
+        (r.0 >= 0).then_some(r.0 as usize)
+    }
+
+    /// 当前面板挂着的行的 key（改绑/停用/恢复都作用于它）。
+    fn emoji_key_of(&self, idx: usize) -> Option<crate::emoji_page::Key> {
+        let row = self.emoji_rows.get(idx)?;
+        match (&row.word, &row.code) {
+            (Some(w), _) => Some(crate::emoji_page::Key::Word(w.clone())),
+            (None, Some(c)) => Some(crate::emoji_page::Key::Code(c.clone())),
+            (None, None) => None,
+        }
+    }
+
+    /// 面板：「新 emoji」框回填当前值 + 信息行 + 按钮态。
+    fn fill_emoji_panel(&self, idx: Option<usize>) {
+        let emoji = idx
+            .and_then(|i| self.emoji_rows.get(i))
+            .map(|r| r.emoji.clone())
+            .unwrap_or_default();
+        set_text(self.e_emoji_new, &emoji);
+        self.update_emoji_note();
+        self.update_emoji_buttons();
+    }
+
+    /// 面板行 1 的信息文字（绘制取，也给说明行复用）。
+    fn emoji_info_text(&self) -> String {
+        match self.emoji_sel.and_then(|i| self.emoji_rows.get(i)) {
+            Some(r) => {
+                let mut s = format!(
+                    "选中「{}」→ {}（{}）",
+                    r.key_cell(),
+                    r.emoji,
+                    r.state_cell()
+                );
+                if !self.emoji_support.supports(&r.emoji) {
+                    s.push_str(" · 本机字体画不出，候选窗里会是方块");
+                }
+                if r.bind_cell().contains("单字") {
+                    s.push_str(" · 单字绑定会让该字所在的候选行变宽");
+                }
+                s
+            }
+            None => "在列表里点一条（可先搜索），改完 emoji 点「改绑」；总开关在右上角".to_string(),
+        }
+    }
+
+    /// 说明行（列表底下的 Static）。
+    fn update_emoji_note(&self) {
+        let total = self.emoji.builtin.entries.len();
+        let user_n = self.emoji.user.entries.len();
+        let mut s = format!(
+            "内置 {total} 条（{}）· 用户层改动 {user_n} 条 · {}",
+            self.emoji.builtin_path.display(),
+            self.emoji.user_path.display()
+        );
+        match (&self.emoji.builtin_err, &self.emoji.user_err) {
+            (Some(e), _) => s.push_str(&format!(" · 内置表：{e}")),
+            (_, Some(e)) => s.push_str(&format!(" · {e}")),
+            _ => {}
+        }
+        set_text(self.n_emoji, &s);
+    }
+
+    fn update_emoji_buttons(&self) {
+        let row = self.emoji_sel.and_then(|i| self.emoji_rows.get(i));
+        let dirty = !get_text(self.e_emoji_new).trim().is_empty();
+        // 「改绑」要有选中行且填了 emoji；值没变时也允许点（等于重写同值，无害）
+        enable_window(self.b_emoji_save, row.is_some() && dirty);
+        // 「停用」只对内置有的条目有意义：用户新增的停用等于删，走「恢复内置」
+        enable_window(
+            self.b_emoji_disable,
+            row.is_some_and(|r| r.enabled && r.builtin_emoji.is_some()),
+        );
+        // 「恢复内置」= 删用户层条目；没动过的内置条目没什么可恢复
+        enable_window(self.b_emoji_restore, row.is_some_and(|r| r.user));
+    }
+
+    /// 下拉框选中 → 填进「新 emoji」框（不直接落盘，保存仍走「改绑」）。
+    fn on_emoji_pick(&mut self) {
+        const CB_GETCURSEL: u32 = 0x0147;
+        const CB_GETLBTEXT: u32 = 0x0148;
+        const CB_GETLBTEXTLEN: u32 = 0x0149;
+        let sel = unsafe { send(self.c_emoji_pick, CB_GETCURSEL, WPARAM(0), LPARAM(0)) };
+        if sel.0 < 0 {
+            return;
+        }
+        let len = unsafe {
+            send(
+                self.c_emoji_pick,
+                CB_GETLBTEXTLEN,
+                WPARAM(sel.0 as usize),
+                LPARAM(0),
+            )
+        }
+        .0 as usize;
+        if len == 0 || len > 64 {
+            return;
+        }
+        let mut buf = vec![0u16; len + 1];
+        unsafe {
+            send(
+                self.c_emoji_pick,
+                CB_GETLBTEXT,
+                WPARAM(sel.0 as usize),
+                LPARAM(buf.as_mut_ptr() as isize),
+            );
+        }
+        let emoji = String::from_utf16_lossy(&buf[..len]);
+        set_text(self.e_emoji_new, &emoji);
+        set_focus(self.e_emoji_new);
+        self.update_emoji_buttons();
+        self.repaint();
+    }
+
+    fn on_emoji_save(&mut self) {
+        let Some(idx) = self.emoji_sel else {
+            return;
+        };
+        let Some(key) = self.emoji_key_of(idx) else {
+            return;
+        };
+        let label = self
+            .emoji_rows
+            .get(idx)
+            .map(|r| r.key_cell())
+            .unwrap_or_default();
+        let emoji = get_text(self.e_emoji_new);
+        // 本机字形门槛：画不出来的 emoji 不让存——存了就是候选窗里一排方块
+        if heinrich_font::probe_one(&emoji) == Some(false) {
+            self.set_status("这枚 emoji 本机字体画不出来（候选窗里会是方块），换一枚吧");
+            return;
+        }
+        match self.emoji.rebind(&key, &emoji) {
+            Ok(()) => {
+                self.refresh_emoji_keep_sel(&label);
+                self.set_status(&format!("「{label}」已改绑 {emoji} · 1 秒内生效"));
+            }
+            Err(e) => self.set_status(&e),
+        }
+    }
+
+    fn on_emoji_disable(&mut self) {
+        let Some(idx) = self.emoji_sel else {
+            return;
+        };
+        let Some(key) = self.emoji_key_of(idx) else {
+            return;
+        };
+        let label = self
+            .emoji_rows
+            .get(idx)
+            .map(|r| r.key_cell())
+            .unwrap_or_default();
+        match self.emoji.set_disabled(&key, true) {
+            Ok(()) => {
+                self.refresh_emoji_keep_sel(&label);
+                self.set_status(&format!(
+                    "「{label}」已停用，后面不再出现 emoji 候选 · 1 秒内生效"
+                ));
+            }
+            Err(e) => self.set_status(&e),
+        }
+    }
+
+    fn on_emoji_restore(&mut self) {
+        let Some(idx) = self.emoji_sel else {
+            return;
+        };
+        let Some(key) = self.emoji_key_of(idx) else {
+            return;
+        };
+        let label = self
+            .emoji_rows
+            .get(idx)
+            .map(|r| r.key_cell())
+            .unwrap_or_default();
+        match self.emoji.restore(&key) {
+            Ok(()) => {
+                self.refresh_emoji_keep_sel(&label);
+                self.set_status(&format!(
+                    "「{label}」已恢复内置（或删掉新增绑定）· 1 秒内生效"
+                ));
+            }
+            Err(e) => self.set_status(&e),
+        }
+    }
+
+    /// 总开关：开 = 删 `emoji.enabled` 行（默认就是开），关 = 写 `false`。
+    fn on_emoji_toggle(&mut self) {
+        let on = crate::emoji_page::emoji_enabled(&self.config_path);
+        match crate::emoji_page::set_emoji_enabled(&self.config_path, !on) {
+            Ok(()) => {
+                self.sync_emoji_toggle_text();
+                self.repaint();
+                self.set_status(if on {
+                    "已关闭 emoji 候选 · 1 秒内生效（候选行宽与没有这个功能时完全一样）"
+                } else {
+                    "已开启 emoji 候选 · 1 秒内生效"
+                });
+            }
+            Err(e) => message(
+                self.hwnd,
+                "写配置失败",
+                &format!("{}：{e}", self.config_path.display()),
+            ),
+        }
+    }
+
+    /// 开关按钮的文字跟着配置走（开窗、切换之后各同步一次）。
+    fn sync_emoji_toggle_text(&self) {
+        let on = crate::emoji_page::emoji_enabled(&self.config_path);
+        set_text(
+            self.b_emoji_toggle,
+            if on {
+                "停用 emoji 候选"
+            } else {
+                "启用 emoji 候选"
+            },
+        );
+    }
+
+    fn on_emoji_open(&mut self) {
+        let path = self.emoji.user_path.clone();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let target = wide(&format!("/select,\"{}\"", path.display()));
+        unsafe {
+            ShellExecuteW(
+                Some(self.hwnd),
+                w!("open"),
+                w!("explorer.exe"),
+                PCWSTR(target.as_ptr()),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+}
+
+/// emoji 列表的一行。列序：词/码、绑定、emoji、状态（缺字形的在状态里点名）。
+fn insert_emoji_row(
+    list: HWND,
+    idx: usize,
+    r: &crate::emoji_page::EmojiRow,
+    support: &heinrich_font::EmojiSupport,
+) {
+    let state = if support.supports(&r.emoji) {
+        r.state_cell().to_string()
+    } else {
+        format!("{}·本机缺字形", r.state_cell())
+    };
+    let cells = [r.key_cell(), r.bind_cell(), r.emoji.clone(), state];
+    for (k, cell) in cells.iter().enumerate() {
+        let mut text = wide(cell);
+        let mut item = LVITEMW {
+            mask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_FLAGS(
+                LVIF_TEXT | if k == 0 { LVIF_PARAM } else { 0 },
+            ),
+            iItem: idx as i32,
+            iSubItem: k as i32,
+            pszText: PWSTR(text.as_mut_ptr()),
+            lParam: LPARAM(idx as isize),
+            ..Default::default()
+        };
+        let msg = if k == 0 {
+            LVM_INSERTITEMW
+        } else {
+            LVM_SETITEMW
+        };
+        unsafe {
+            send(list, msg, WPARAM(0), LPARAM(&mut item as *mut _ as isize));
+        }
+    }
+}
+
 fn insert_row(list: HWND, idx: usize, r: &Row) {
     let mut text = wide(&r.raw.word);
     let mut item = LVITEMW {
@@ -1824,6 +2476,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     app.refresh_general();
                     app.refresh_learn();
                     app.refresh();
+                    app.sync_emoji_toggle_text();
+                    app.refresh_emoji();
                     // 刻意**不**自动选中第一行：面板是给「新词」用的，一开窗就
                     // 躺着上次的词会让人以为已经选中了它，改完点保存就把那条词改了。
                     app.set_status("");
@@ -1919,6 +2573,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (EN_CHANGE, ID_E_WORD | ID_E_PINYIN | ID_E_CODE | ID_E_WEIGHT) => {
                         app.update_buttons()
                     }
+                    // emoji 页：搜索框实时过滤，新 emoji 框只管按钮态
+                    (EN_CHANGE, ID_E_EMOJI_SEARCH) => app.refresh_emoji(),
+                    (EN_CHANGE, ID_E_EMOJI_NEW) => app.update_emoji_buttons(),
+                    // CBN_SELCHANGE = 1（与 EN_ 段相邻的通知码）
+                    (1, ID_C_EMOJI_PICK) => app.on_emoji_pick(),
                     (0, ID_B_CLEAR) => app.on_clear(),
                     (0, ID_B_SAVE) => app.on_save(),
                     (0, ID_B_DEL) => app.on_delete(),
@@ -1930,6 +2589,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (0, ID_B_OPEN_CFG) => app.on_open_cfg(),
                     (0, ID_B_SEARCH) => app.on_search(),
                     (0, ID_B_FORGET) => app.on_forget(),
+                    (0, ID_BE_SAVE) => app.on_emoji_save(),
+                    (0, ID_BE_DISABLE) => app.on_emoji_disable(),
+                    (0, ID_BE_RESTORE) => app.on_emoji_restore(),
+                    (0, ID_BE_TOGGLE) => app.on_emoji_toggle(),
+                    (0, ID_BE_OPEN) => app.on_emoji_open(),
                     _ => {}
                 }
             }
@@ -1952,6 +2616,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // 两个 ListView 同时存在，「有没有选中」要各问各的：
                     // 拿词语列表的选中项去判「能不能清除学习分」会指错行
                     app.update_learn_buttons();
+                } else if hdr.code == LVN_ITEMCHANGED && hdr.hwndFrom == app.emoji_list {
+                    // 三个列表同理：emoji 面板挂的是自己的选中行
+                    if let Some(idx) = app.selected_emoji() {
+                        if app.emoji_sel != Some(idx) {
+                            app.emoji_sel = Some(idx);
+                            app.fill_emoji_panel(Some(idx));
+                        }
+                    }
                 }
             }
             LRESULT(0)
@@ -2139,6 +2811,7 @@ impl App {
         match self.page {
             PAGE_GENERAL => self.draw_general(hdc),
             PAGE_WORDS => self.draw_words(hdc),
+            PAGE_EMOJI => self.draw_emoji(hdc),
             _ => self.draw_learn(hdc),
         }
         unsafe {
@@ -2438,6 +3111,97 @@ impl App {
         }
     }
 
+    /// emoji 页：搜索框描边 + 列表卡 + 面板卡（选中信息 + 新 emoji 框描边）。
+    fn draw_emoji(&self, hdc: HDC) {
+        self.draw_page_head(hdc, "emoji", "候选改绑");
+        // 搜索框 + 标签：与学习页同一摆位同一画法
+        let border = if self.focus_id == ID_E_EMOJI_SEARCH {
+            self.colors.accent
+        } else {
+            self.colors.input_border
+        };
+        round_rect_w(
+            hdc,
+            self.geo.emoji_search_box,
+            self.colors.card,
+            border,
+            self.s(4),
+            self.s(1),
+        );
+        draw_text_center(
+            hdc,
+            "搜索",
+            Self::rect(
+                self.geo.emoji_search_box.left - self.s(36),
+                self.geo.emoji_search_box.top,
+                self.s(32),
+                self.geo.emoji_search_box.bottom - self.geo.emoji_search_box.top,
+            ),
+            self.fonts.caption,
+            self.colors.text2,
+        );
+        round_rect_w(
+            hdc,
+            self.geo.emoji_card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+        round_rect_w(
+            hdc,
+            self.geo.emoji_panel_card,
+            self.colors.card,
+            self.colors.card_border,
+            self.s(8),
+            self.s(1),
+        );
+        // 面板行 1：选中信息（文字较长，左对齐铺到卡片右内衬）
+        draw_text(
+            hdc,
+            &self.emoji_info_text(),
+            self.geo.emoji_sel_label,
+            self.fonts.caption,
+            self.colors.text2,
+        );
+        // 面板行 2：标签 + 新 emoji 框描边（无边框 Edit 的框画在卡片上）
+        draw_text_align(
+            hdc,
+            "新 emoji",
+            self.geo.emoji_new_label,
+            self.fonts.caption,
+            self.colors.text2,
+            true,
+        );
+        let border = if self.focus_id == ID_E_EMOJI_NEW {
+            self.colors.accent
+        } else {
+            self.colors.input_border
+        };
+        round_rect_w(
+            hdc,
+            self.geo.emoji_new_box,
+            self.colors.card,
+            border,
+            self.s(4),
+            self.s(1),
+        );
+        // 下拉框前的说明
+        draw_text_align(
+            hdc,
+            "从内置表选 →",
+            Self::rect(
+                self.geo.emoji_combo_box.left - self.s(14 * 6 + 8),
+                self.geo.emoji_combo_box.top,
+                self.s(14 * 6),
+                self.geo.emoji_combo_box.bottom - self.geo.emoji_combo_box.top,
+            ),
+            self.fonts.caption,
+            self.colors.text3,
+            true,
+        );
+    }
+
     /// 学习数据页：搜索框描边 + 列表卡。
     fn draw_learn(&self, hdc: HDC) {
         self.draw_page_head(hdc, "学习数据", "按学习分排序");
@@ -2577,7 +3341,7 @@ enum ButtonKind {
 
 fn button_kind(id: usize) -> ButtonKind {
     match id {
-        ID_B_APPLY | ID_B_SAVE => ButtonKind::Primary,
+        ID_B_APPLY | ID_B_SAVE | ID_BE_SAVE => ButtonKind::Primary,
         ID_B_OPEN_CFG => ButtonKind::Ghost,
         _ => ButtonKind::Secondary,
     }
@@ -3160,7 +3924,7 @@ pub fn run(app: Box<App>) -> Result<i32, String> {
 ///
 /// 这两样正是 F44 的病根——Tab 盖住页控件时，界面看起来一切正常，所有点击却都
 /// 落空；只发 `WM_COMMAND` 的脚本测不出它，只有查 z 序才测得出。
-pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
+pub fn selftest_ui(_data: Option<PathBuf>) -> Result<(), String> {
     let dir = std::env::temp_dir().join("heinrich-settings-uitest");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("建临时目录失败：{e}"))?;
@@ -3191,12 +3955,30 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
         )
         .map_err(|e| format!("写学习记录失败：{e}"))?;
     }
+    // emoji 页的两份映射也是临时造的（自测改用户的真 emoji 绑定同样不可接受）。
+    // `data` 指到自测目录后 find_data_dir 就不会摸到仓库里的真数据，
+    // 四页的断言都建立在已知夹具上。scheme.toml 不存在 → 词库降级，
+    // 词组页/emoji 页不依赖它。
+    let data_dir = dir.join("data");
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("造数据目录失败：{e}"))?;
+    std::fs::write(
+        data_dir.join("emoji.toml"),
+        "[[emoji]]\nword = \"你好\"\nemoji = \"👋\"\n\n[[emoji]]\nword = \"好评\"\nemoji = \"👍\"\n",
+    )
+    .map_err(|e| format!("造 emoji 内置表失败：{e}"))?;
+    let emoji_path = dir.join("emoji.user.toml");
+    std::fs::write(
+        &emoji_path,
+        "[[emoji]]\nword = \"你好\"\nemoji = \"👏\"\n\n[[emoji]]\nword = \"好\"\nemoji = \"👍\"\n",
+    )
+    .map_err(|e| format!("造 emoji 用户层失败：{e}"))?;
 
     let mut app = Box::new(App::new(
-        data,
+        Some(data_dir.clone()),
         Some(path.clone()),
         Some(cfg_path.clone()),
         Some(db_path.clone()),
+        Some(emoji_path.clone()),
     )?);
     let hwnd = create_window(&app)?;
     // 不抢焦点地显示一下：真实路径里窗口是可见的，z 序表现才一致
@@ -3214,6 +3996,10 @@ pub fn selftest_ui(data: Option<PathBuf>) -> Result<(), String> {
         switch_page(&mut app, PAGE_WORDS);
         check_z_order(hwnd, PAGE_WORDS)?;
         check_panel_flow(&app, &path)?;
+
+        switch_page(&mut app, PAGE_EMOJI);
+        check_z_order(hwnd, PAGE_EMOJI)?;
+        check_emoji_page(&app, &emoji_path)?;
 
         switch_page(&mut app, PAGE_LEARN);
         check_z_order(hwnd, PAGE_LEARN)?;
@@ -3307,6 +4093,124 @@ fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
             "恢复默认后界面应显示内置默认值，实际 g={:?} H={:?}",
             get_text(app.e_gain),
             get_text(app.e_half)
+        ));
+    }
+    Ok(())
+}
+
+/// emoji 页（M4d / D85）：列表条数、单字条目在列、改绑真落盘、
+/// 「停用/恢复内置」按钮的可用性与选中态联动。
+///
+/// 落盘断言看**磁盘上的文件**（与 `check_panel_flow` 同一口径）：
+/// 消息链通了但文件没写等于没做。
+fn check_emoji_page(app: &App, emoji_path: &std::path::Path) -> Result<(), String> {
+    let click = |b: HWND| unsafe {
+        send(b, 0x00F5, WPARAM(0), LPARAM(0)); // BM_CLICK
+    };
+    // 夹具：内置 = {你好 👋, 好评 👍}；用户层 = {你好 → 👏, 好 → 👍}。
+    // 合并视图按词排序（Unicode 码位）→ 你好（已改绑）/ 好（新增·单字）/
+    // 好评（内置），共 3 行。
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 3 {
+        return Err(format!("emoji 页应列出 3 行合并视图，实际 {count} 条"));
+    }
+    if cell_text(app.emoji_list, 1, 0) != "好" || cell_text(app.emoji_list, 1, 1) != "按词·单字"
+    {
+        return Err(format!(
+            "第 2 行应是单字「好」（D85 的口子要从列表里看出来），实际 {:?} / {:?}",
+            cell_text(app.emoji_list, 1, 0),
+            cell_text(app.emoji_list, 1, 1)
+        ));
+    }
+    if cell_text(app.emoji_list, 0, 3) != "已改绑" || cell_text(app.emoji_list, 2, 3) != "内置"
+    {
+        return Err(format!(
+            "状态列应为 已改绑 / 内置，实际 {:?} / {:?}",
+            cell_text(app.emoji_list, 0, 3),
+            cell_text(app.emoji_list, 2, 3)
+        ));
+    }
+
+    // 搜索实时过滤：EN_CHANGE 走真实消息链
+    set_text(app.e_emoji_search, "好评");
+    drain_messages();
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 1 || cell_text(app.emoji_list, 0, 0) != "好评" {
+        return Err(format!("按「好评」过滤应剩 1 条，实际 {count} 条"));
+    }
+    set_text(app.e_emoji_search, "");
+    drain_messages();
+
+    // 改绑：点中「好评」（内置条目）→ 面板回填 → 换 emoji → 改绑 → 文件里变新值
+    select_item(app.emoji_list, 2);
+    drain_messages();
+    if get_text(app.e_emoji_new) != "👍" {
+        return Err(format!(
+            "点中行后面板应回填当前 emoji，实际 {:?}",
+            get_text(app.e_emoji_new)
+        ));
+    }
+    if is_enabled(app.b_emoji_restore) {
+        return Err("没动过的内置条目「恢复内置」应当是灰的".into());
+    }
+    if !is_enabled(app.b_emoji_disable) {
+        return Err("内置条目「停用」应当可点".into());
+    }
+    set_text(app.e_emoji_new, "🎉");
+    drain_messages();
+    if !is_enabled(app.b_emoji_save) {
+        return Err("填了新 emoji 后「改绑」应当可点".into());
+    }
+    click(app.b_emoji_save);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if !text.contains("🎉") || !text.contains("word = \"好评\"") {
+        return Err(format!("改绑后文件里应有「好评 → 🎉」：\n{text}"));
+    }
+    if !text.contains("word = \"好\"") {
+        return Err(format!("改绑不能动别的条目（单字「好」丢了）：\n{text}"));
+    }
+    if emoji_path.with_extension("toml.tmp").exists() {
+        return Err("保存后留下了 .tmp——原子落盘 broken".into());
+    }
+    if !is_enabled(app.b_emoji_restore) {
+        return Err("改绑后「恢复内置」应当可点（删掉用户层条目即回内置）".into());
+    }
+
+    // 停用：文件里出现 enabled = false，再「恢复内置」把它删掉
+    click(app.b_emoji_disable);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if !text.contains("enabled = false") {
+        return Err(format!("停用后文件里应有 enabled = false：\n{text}"));
+    }
+    click(app.b_emoji_restore);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if text.contains("好评") {
+        return Err(format!("恢复内置后用户层里不该再有「好评」：\n{text}"));
+    }
+    if !text.contains("word = \"好\"") {
+        return Err(format!("恢复内置不能动别的条目：\n{text}"));
+    }
+
+    // 总开关：关 = 写 emoji.enabled = false，开 = 删行（默认值不落盘）
+    click(app.b_emoji_toggle);
+    drain_messages();
+    let cfg_text =
+        std::fs::read_to_string(&app.config_path).map_err(|e| format!("回读配置失败：{e}"))?;
+    if !cfg_text.contains("enabled = false") {
+        return Err(format!(
+            "关闭后配置里应有 [emoji] enabled = false：\n{cfg_text}"
+        ));
+    }
+    click(app.b_emoji_toggle);
+    drain_messages();
+    let cfg_text =
+        std::fs::read_to_string(&app.config_path).map_err(|e| format!("回读配置失败：{e}"))?;
+    if cfg_text.contains("enabled") {
+        return Err(format!(
+            "开启 = 删行，配置里不该再有 emoji 的 enabled：\n{cfg_text}"
         ));
     }
     Ok(())
@@ -3450,6 +4354,17 @@ fn check_z_order(hwnd: HWND, page: usize) -> Result<(), String> {
             ID_B_DEL,
             ID_B_IMPORT,
             ID_B_UNDO,
+        ],
+        PAGE_EMOJI => &[
+            ID_EMOJI_LIST,
+            ID_E_EMOJI_SEARCH,
+            ID_E_EMOJI_NEW,
+            ID_C_EMOJI_PICK,
+            ID_BE_SAVE,
+            ID_BE_DISABLE,
+            ID_BE_RESTORE,
+            ID_BE_TOGGLE,
+            ID_BE_OPEN,
         ],
         _ => &[ID_E_SEARCH, ID_B_SEARCH, ID_LEARN_LIST, ID_B_FORGET],
     };

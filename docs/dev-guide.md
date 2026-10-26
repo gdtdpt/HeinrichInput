@@ -1106,7 +1106,8 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 
 | 文件 | 职责 |
 |---|---|
-| `main.rs` | 参数（`--words` / `--data` / `--selftest`）、DPI 声明、`--selftest` 七项断言 |
+| `main.rs` | 参数（`--words` / `--data` / `--config` / `--db` / `--emoji` / `--page` / `--selftest`）、DPI 声明、`--selftest` 七项断言 |
+| `emoji_page.rs` | emoji 页数据层（M4d / D85）：两层映射合并视图、`Key`（按词/按码）、改绑 / 停用 / 恢复内置、整份重写用户层（临时文件 + 改名）、`emoji.enabled` 开关（开 = 删行）；不依赖 Win32，`--selftest` 直跑 |
 | `lex.rs` | 找 `data/wubi86`（exe 同级 → 上三级 → cwd）、装载 `Scheme` + `PinyinLexicon` |
 | `model.rs` | **不依赖 Win32**：`Model`（文件 + 词条）、`Row`（原文 + 推导列）、`*_cell()` 的 `*` 约定 |
 | `ui.rs` | 窗口类、Tab、ListView、编辑面板、按钮动作、`layout()` |
@@ -1633,10 +1634,11 @@ cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/e
   `FindFamilyName(name, &mut index, &mut BOOL)` 都是原始指针风格，别按返回值直接接。
   `HasCharacter` 在 `IDWriteFont` 上（`Result<BOOL>`），不在 `IDWriteFontFace` 上。
 - **插入 emoji 后折叠分界**：`primary_len` 是全局序号，插入会整体后移（见上）。
-- 单字 gate 在**两处**：解析期（`word` 少于 2 字丢条目）与查表期（`lookup` 再看一次词长）。
-  只留一处的话，`enabled = false` 的删 key 路径会绕过解析期的检查。
-  ⇒ 「`你好` 有 emoji、单个 `好` 没有」是**设计行为**（`vb` 一行能挤好几条单字，每条再挂一枚
-  会把行宽撑成两倍），不是版本装错；用户报这个时先看 `emoji list | grep 好`。
+- **单字条目（D85 放行后）**：解析期与查表期的词长 gate 都已撤掉——内置表仍只挂词组
+  （生成器只收 ≥2 字关键词），用户层显式给单字绑就照办（含按码绑定扫到同码单字）。
+  代价（该字所在候选行变宽）由写条目的人承担：设置窗口在「绑定」列标 `按词·单字` 并
+  在信息行提示，`emoji check` 打一行提醒（不算错）。
+  ⇒ 用户报「`你好` 有 emoji、单个 `好` 没有」时先讲清这条默认规则，再问他要不要绑。
 
 ## 5. 数据管线
 
@@ -2049,7 +2051,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
-| M4d emoji 改绑页 + `config_version` | ⬜ 未开始 |
+| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + 「从内置表选」下拉只列本机画得出的 + 总开关；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿） |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 

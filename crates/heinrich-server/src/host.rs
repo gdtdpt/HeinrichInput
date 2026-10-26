@@ -1628,6 +1628,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// D85：用户层显式给单字绑定要生效（内置表由生成器保证只挂词组，
+    /// 所以「有单字条目」只可能来自用户层——那是写的人自己选的）。
+    #[test]
+    fn emoji_user_layer_may_bind_a_single_char() {
+        let dir = temp_scheme("single", None);
+        let user = temp_emoji_user("single", "[[emoji]]\nword = \"好\"\nemoji = \"👋\"\n");
+        let mut h = Host::load(&dir).expect("夹具应可装载");
+        h.configure_emoji(Some(user.clone()));
+        let next = following(&mut h, "vbg", "好").expect("好 之后应有条目");
+        assert_eq!(next.word, "👋", "单字绑定后该字后面紧跟 emoji 候选");
+        assert_eq!(next.kind, EntryKind::Emoji);
+        let _ = std::fs::remove_file(&user);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 验收 ②③：用户层改绑覆盖内置、`enabled = false` 吃掉内置值（emoji 候选随之消失）。
     #[test]
     fn emoji_user_layer_overrides_then_disables() {

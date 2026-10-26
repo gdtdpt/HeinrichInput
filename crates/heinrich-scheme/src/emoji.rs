@@ -179,13 +179,9 @@ impl EmojiLayer {
                 .push(format!("第 {line} 行：`{emoji}` 不是单个 emoji，已跳过"));
             return;
         }
-        if word.as_ref().is_some_and(|w| w.chars().count() < 2) {
-            self.warnings.push(format!(
-                "第 {line} 行：`{}` 是单字，单字不挂 emoji（§6.4），已跳过",
-                word.unwrap_or_default()
-            ));
-            return;
-        }
+        // 单字条目**放行**（D85）：内置表由生成器保证只挂词组，能到这里还写着
+        // 单字的只有用户层——那是显式意图，照办。代价（该字所在的行会变宽）
+        // 由写的人自己承担，`emoji check` 会给一句提示。
         if let Some(c) = &code {
             // 只做**形状**校验（a–y、≤4 码）。「这个码在不在码表里」是
             // `heinrich-cli emoji check` 的活——解析层看不到词库。
@@ -287,12 +283,11 @@ impl EmojiMap {
     /// 查一个候选该挂哪个 emoji。
     ///
     /// `word` 是候选词，`code` 是它的五笔码（没有就传空串）。规则：
-    /// ① 单字不挂（§6.4：一个词只挂一个，而单字候选一行好几个，挂上会让行宽翻倍）；
-    /// ② 按词绑定优先于按码绑定——词比码具体，两者都给时以词为准。
+    /// ① 挂不挂只看**有没有绑定**：内置表只挂词组（生成器保证 ≥2 字），用户层
+    /// 显式给单字绑了就生效（D85）——包括按码绑会扫到同码的单字候选，那也是
+    /// 写这条绑定的人自己选的；② 按词绑定优先于按码绑定——词比码具体，两者都
+    /// 给时以词为准。
     pub fn lookup(&self, word: &str, code: &str) -> Option<&str> {
-        if word.chars().count() < 2 {
-            return None;
-        }
         if let Some(e) = self.by_word.get(word) {
             return Some(e.as_str());
         }
@@ -465,17 +460,21 @@ enabled = false
         assert_eq!(map.lookup("好评", ""), Some("👏"));
     }
 
-    /// 验收 ④：单字候选不挂 emoji（内置与用户层都拦）。
+    /// 验收 ④（D85 改判）：单字**用户层显式绑定生效**，内置表仍只有词组
+    /// （生成器保证）；按码绑定会扫到同码的单字候选。
     #[test]
-    fn 单字不挂() {
+    fn 用户层单字显式绑定生效() {
         let l = layer("[[emoji]]\nword = \"好\"\nemoji = \"👍\"\n");
-        assert!(l.entries.is_empty(), "单字条目应在解析期就被拒");
-        assert_eq!(l.warnings.len(), 1);
+        assert_eq!(l.entries.len(), 1, "单字条目放行，不再解析期拒绝");
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        let map = EmojiMap::build(&[&l]);
+        assert_eq!(map.lookup("好", ""), Some("👍"));
+        assert_eq!(map.lookup("好评", ""), None, "没绑的词照旧没有");
 
-        let good = layer("[[emoji]]\nword = \"好评\"\nemoji = \"👍\"\n");
-        let map = EmojiMap::build(&[&good]);
-        assert_eq!(map.lookup("好", ""), None);
-        assert_eq!(map.lookup("好评", ""), Some("👍"));
+        // 按码绑会覆盖到该码下的单字候选——写条目的人显式选的
+        let by_code = layer("[[emoji]]\ncode = \"vbg\"\nemoji = \"👌\"\n");
+        let map = EmojiMap::build(&[&by_code]);
+        assert_eq!(map.lookup("好", "vbg"), Some("👌"));
     }
 
     /// 验收 ⑤：同一个词只出一个 emoji；按词绑定压过按码绑定。

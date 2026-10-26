@@ -1019,8 +1019,9 @@ fn emoji_cmd(
 
 /// 校验 emoji 映射：内置层完整性 + 两层合并后的交叉核对。
 ///
-/// 「emoji 是不是单个字符」「单字没挂」「码的形状」在解析期就已经拦掉了
+/// 「emoji 是不是单个字符」「码的形状」在解析期就已经拦掉了
 /// （`heinrich_scheme::emoji`），这里只看**解析层看不到的东西**：词库与码表。
+/// 单字条目自 D85 起放行（用户层显式意图），这里只给一句宽度提示，不算错。
 fn emoji_check(
     data: &Path,
     user_path: Option<&Path>,
@@ -1104,6 +1105,22 @@ fn emoji_check(
     let empty = EmojiLayer::default();
     let user_layer = user.as_ref().map(|(l, _)| l).unwrap_or(&empty);
     let map = EmojiMap::build(&[&builtin, user_layer]);
+
+    // 单字条目（D85 放行后只可能来自用户层）：不参与通过/失败，只提醒
+    // 「那个字所在的候选行会变宽」——这是写条目时要自己掂量的代价。
+    let singles: Vec<&str> = user_layer
+        .entries
+        .iter()
+        .filter_map(|e| e.word.as_deref())
+        .filter(|w| w.chars().count() == 1)
+        .collect();
+    if !singles.is_empty() {
+        println!(
+            "单字绑定：{} 条（{}）——单字候选一行好几个，挂上后那一行会更宽",
+            singles.len(),
+            sample(&singles)
+        );
+    }
 
     // ---- 本机字体能画出多少条 ----
     //
