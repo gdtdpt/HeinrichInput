@@ -78,6 +78,8 @@ impl EmojiRow {
 
 /// emoji 页模型：两份层 + 指向它们的路径。
 pub struct EmojiPage {
+    /// 内置表路径（保留给错误信息与将来的「打开内置表」入口）
+    #[allow(dead_code)]
     pub builtin_path: PathBuf,
     pub user_path: PathBuf,
     pub builtin: EmojiLayer,
@@ -221,7 +223,7 @@ impl EmojiPage {
         EmojiMap::build(&[&self.builtin, &self.user])
     }
 
-    /// 内置表里出现过的全部 emoji（去重、排序）——「从内置表选」下拉的数据。
+    /// 内置表里出现过的全部 emoji（去重、排序）——选择器与字形探测的数据源。
     pub fn builtin_choices(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .builtin
@@ -229,6 +231,20 @@ impl EmojiPage {
             .iter()
             .map(|e| e.emoji.clone())
             .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// 选择器展示的全集：内置表用过的 ∪ 用户层写过的。
+    ///
+    /// 只列内置表就给「配一枚表里没有的 emoji」留了死角——用户手动往用户层
+    /// 写过的那几枚（比如他自己加的 🫠）也该出现在网格里，否则他想把同一枚
+    /// 用到第二个词上还得再粘一次。
+    pub fn choices_for_picker(&self) -> Vec<String> {
+        let mut v = self.builtin_choices();
+        v.extend(self.user.entries.iter().map(|e| e.emoji.clone()));
+        v.retain(|e| !e.is_empty());
         v.sort();
         v.dedup();
         v

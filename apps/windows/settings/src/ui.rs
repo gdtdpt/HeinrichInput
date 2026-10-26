@@ -32,21 +32,22 @@ use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
+use windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
     FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect,
     ScreenToClient, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, HBRUSH, HDC, HFONT,
-    PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    HGDIOBJ, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Controls::{
-    ShowScrollBar, DRAWITEMSTRUCT, LVCFMT_CENTER, LVCFMT_LEFT, LVCFMT_RIGHT, LVCOLUMNW,
-    LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM,
-    LVM_ENSUREVISIBLE, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
-    LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
-    LVM_SETITEMW, LVNI_SELECTED, LVN_ITEMCHANGED,
+    ShowScrollBar, DRAWITEMSTRUCT, LVCFMT_LEFT, LVCFMT_RIGHT, LVCOLUMNW, LVIR_BOUNDS, LVIS_FOCUSED,
+    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM, LVM_ENSUREVISIBLE,
+    LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+    LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW,
+    LVNI_SELECTED, LVN_ITEMCHANGED, NMLVCUSTOMDRAW,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -56,16 +57,16 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect,
     GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, LoadCursorW, MessageBoxW,
-    MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW, SendMessageW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, ShowWindowAsync,
-    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA,
-    GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
-    MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
-    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WNDPROC, WS_CHILD,
-    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, KillTimer, LoadCursorW,
+    MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint, RegisterClassW,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    ShowWindowAsync, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+    GWLP_ID, GWLP_USERDATA, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES, MB_ICONINFORMATION,
+    MB_ICONWARNING, MB_OK, MB_YESNO, MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -110,10 +111,13 @@ const ID_BE_RESTORE: usize = 412;
 const ID_BE_TOGGLE: usize = 413;
 const ID_BE_OPEN: usize = 414;
 const ID_NOTE_EMOJI: usize = 420;
-const ID_C_EMOJI_PICK: usize = 430;
 const ID_E_EMOJI_NEW: usize = 431;
+const ID_BE_BROWSE: usize = 432;
 
 /// 页序号。**与页签顺序、`pages` 数组的下标三者必须一致**。
+/// `--picker` 用的定时器 id（只在这个开发者开关下出现）。
+const PICKER_TIMER: usize = 7;
+
 const PAGE_GENERAL: usize = 0;
 const PAGE_WORDS: usize = 1;
 const PAGE_EMOJI: usize = 2;
@@ -129,6 +133,7 @@ const LVS_REPORT: u32 = 0x0001;
 const LVS_SINGLESEL: u32 = 0x0004;
 const LVS_SHOWSELALWAYS: u32 = 0x0008;
 const LVS_EX_FULLROWSELECT: usize = 0x0000_0020;
+const LVS_EX_DOUBLEBUFFER: usize = 0x0001_0000;
 const LVIF_TEXT: u32 = 0x0001;
 const LVIF_PARAM: u32 = 0x0004;
 const LVCF_WIDTH: u32 = 0x0002;
@@ -137,9 +142,11 @@ const LVCF_TEXT: u32 = 0x0004;
 /// 于是「上屏次数」「学习分」这种数字列会顶着列头左端排，一列数字参差不齐。
 const LVCF_FMT: u32 = 0x0001;
 /// ListView 背景与文字色（`LVM_FIRST = 0x1000`）。
+/// 通用的 `NM_CUSTOMDRAW`（`NM_FIRST - 12` = -12）：列表要自绘行时
+/// 先发这个通知问我们画不画。**不是** `LVN_FIRST - 12`，两者差 88。
+const NM_CUSTOMDRAW: u32 = 0xFFFF_FFF4;
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_SETTEXTCOLOR: u32 = 0x1024;
-const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 /// `WM_COMMAND` 的通知码。EN_* 在 winuser.h 是 0x01xx 段。
 const EN_CHANGE: u32 = 0x0300;
 const EN_SETFOCUS: u32 = 0x0100;
@@ -195,13 +202,12 @@ struct Geo {
     /// 学习页：搜索框外框、列表卡。
     learn_search_box: RECT,
     learn_card: RECT,
-    /// emoji 页：搜索框外框、列表卡、编辑面板卡、面板内新 emoji 框与下拉框外框、
+    /// emoji 页：搜索框外框、列表卡、编辑面板卡、面板内新 emoji 框外框、
     /// 「选中」信息行与新 emoji 标签。
     emoji_search_box: RECT,
     emoji_card: RECT,
     emoji_panel_card: RECT,
     emoji_new_box: RECT,
-    emoji_combo_box: RECT,
     emoji_sel_label: RECT,
     emoji_new_label: RECT,
 }
@@ -243,7 +249,7 @@ pub struct App {
     emoji_list: HWND,
     e_emoji_search: HWND,
     e_emoji_new: HWND,
-    c_emoji_pick: HWND,
+    b_emoji_browse: HWND,
     b_emoji_save: HWND,
     b_emoji_disable: HWND,
     b_emoji_restore: HWND,
@@ -296,6 +302,8 @@ pub struct App {
 
     /// `config.toml`（通用页读写）
     config_path: PathBuf,
+    /// `--picker`：窗口起来后自动弹一次 emoji 选择器（截图验收用；平时为 false）
+    open_picker: bool,
     /// `learn.db`（学习数据页只读）
     db_path: PathBuf,
     /// 学习数据页当前列出的行（下标即 ListView 行号）
@@ -400,7 +408,7 @@ impl App {
             emoji_list: HWND::default(),
             e_emoji_search: HWND::default(),
             e_emoji_new: HWND::default(),
-            c_emoji_pick: HWND::default(),
+            b_emoji_browse: HWND::default(),
             b_emoji_save: HWND::default(),
             b_emoji_disable: HWND::default(),
             b_emoji_restore: HWND::default(),
@@ -430,6 +438,7 @@ impl App {
             editing: None,
             undo: None,
             config_path,
+            open_picker: false,
             db_path,
             learn_rows: Vec::new(),
             emoji: emoji_model,
@@ -442,6 +451,14 @@ impl App {
     /// 启动时停在第几页（`--page`）。越界一律收到最后一页。
     pub fn set_initial_page(&mut self, page: usize) {
         self.initial_page = page.min(PAGE_COUNT - 1);
+    }
+
+    /// `--picker`：起来后自动弹一次 emoji 选择器。
+    ///
+    /// 是给截图验收用的：选择器是**模态**的，`PrintWindow` 只能截「已经开着」的
+    /// 窗口，没这个开关就只能靠人手点，脚本没法复现。
+    pub fn set_open_picker(&mut self, on: bool) {
+        self.open_picker = on;
     }
 
     /// 逻辑像素 → 物理像素。窗口按 96 DPI 设计，乘上系统缩放即可。
@@ -477,21 +494,13 @@ impl App {
             ID_LIST,
             self.font,
         )?;
-        unsafe {
-            send(
-                self.list,
-                LVM_SETEXTENDEDLISTVIEWSTYLE,
-                WPARAM(LVS_EX_FULLROWSELECT),
-                LPARAM(LVS_EX_FULLROWSELECT as isize),
-            );
-        }
         for (i, (title, width, fmt)) in [
             ("词", 140, LVCFMT_LEFT),
             ("拼音", 190, LVCFMT_LEFT),
             ("码", 90, LVCFMT_LEFT),
             // 权重是「数字 + *」：左对齐时一位数与两位数左端齐、右端不齐，
             // 一列看下来像随手打的。居中后整列有轴线。
-            ("权重", 110, LVCFMT_CENTER),
+            ("权重", 110, LVCFMT_LEFT),
             ("提示", 250, LVCFMT_LEFT),
         ]
         .into_iter()
@@ -666,9 +675,9 @@ impl App {
         for (i, (title, width, fmt)) in [
             ("词", 110, LVCFMT_LEFT),
             ("上屏次数", 90, LVCFMT_RIGHT),
-            ("上次使用", 120, LVCFMT_CENTER),
+            ("上次使用", 120, LVCFMT_LEFT),
             ("学习分", 90, LVCFMT_RIGHT),
-            ("档位", 80, LVCFMT_CENTER),
+            ("档位", 80, LVCFMT_LEFT),
         ]
         .into_iter()
         .enumerate()
@@ -703,12 +712,6 @@ impl App {
         )?;
 
         unsafe {
-            send(
-                self.learn_list,
-                LVM_SETEXTENDEDLISTVIEWSTYLE,
-                WPARAM(LVS_EX_FULLROWSELECT),
-                LPARAM(LVS_EX_FULLROWSELECT as isize),
-            );
             let _ = SetWindowSubclass(self.e_search, Some(enter_proc), 2, ID_B_SEARCH);
         }
 
@@ -747,9 +750,9 @@ impl App {
         )?;
         for (i, (title, width, fmt)) in [
             ("词 / 码", 200, LVCFMT_LEFT),
-            ("绑定", 90, LVCFMT_CENTER),
+            ("绑定", 90, LVCFMT_LEFT),
             ("emoji", 130, LVCFMT_LEFT),
-            ("状态", 120, LVCFMT_CENTER),
+            ("状态", 120, LVCFMT_LEFT),
         ]
         .into_iter()
         .enumerate()
@@ -786,37 +789,10 @@ impl App {
         )?;
         self.e_emoji_new = child(hwnd, w!("Edit"), "", edit_style, ID_E_EMOJI_NEW, self.font)?;
 
-        // 「从内置表选」：只列**本机画得出来**的（画不出来的选了也是方块，
-        // 不给它进下拉的机会）
-        const CB_ADDSTRING: u32 = 0x0143;
-        self.c_emoji_pick = child(
-            hwnd,
-            w!("ComboBox"),
-            "",
-            WINDOW_STYLE(
-                WS_CHILD.0
-                    | WS_VISIBLE.0
-                    | WS_TABSTOP.0
-                    | 0x0003 /* CBS_DROPDOWNLIST */
-                    | 0x0100 /* CBS_SORT */
-                    | 0x0020, /* WS_VSCROLL */
-            ),
-            ID_C_EMOJI_PICK,
-            self.font,
-        )?;
-        for emoji in self.emoji.builtin_choices() {
-            if self.emoji_support.supports(&emoji) {
-                let text = wide(&emoji);
-                unsafe {
-                    send(
-                        self.c_emoji_pick,
-                        CB_ADDSTRING,
-                        WPARAM(0),
-                        LPARAM(text.as_ptr() as isize),
-                    );
-                }
-            }
-        }
+        // 挑 emoji 走自绘网格选择器（D86 返工）：原生 ComboBox 一千多项只能滚，
+        // 还看不出分类；而之前的 0x0020（本想写 WS_VSCROLL）恰好撞上
+        // CBS_OWNERDRAWVARIABLE，下拉框变成自绘模式、里面一片空白。
+        self.b_emoji_browse = button(hwnd, "浏览 emoji…", ID_BE_BROWSE, self.font)?;
 
         // 建子控件的顺序 = Tab 键顺序：改绑是主操作，第一个建
         self.b_emoji_save = child(
@@ -844,7 +820,6 @@ impl App {
             self.emoji_list,
             self.e_emoji_search,
             self.e_emoji_new,
-            self.c_emoji_pick,
             self.b_emoji_save,
             self.b_emoji_disable,
             self.b_emoji_restore,
@@ -855,9 +830,15 @@ impl App {
         Ok(())
     }
 
-    /// 两个列表的底色/文字色统一在**各页都建完之后**上色（`create_words_page`
+    /// 三个列表的底色/文字色与扩展样式统一在**各页都建完之后**上（`create_words_page`
     /// 跑的时候 `learn_list` 还不存在，那里碰不到它）。
+    ///
+    /// **不设 `LVM_SETTEXTBKCOLOR`**：那个消息把「文字背后的颜色」钉成卡片色，
+    /// 系统画的选中高亮就被它盖住了——只剩行尾一小截空白变色，看起来像「点了
+    /// 一行却什么都没选中」。真机反馈「不知道点哪里才能选中」就是这个。
+    /// 底色 `LVM_SETBKCOLOR` 不影响高亮，留着让空行也是卡片色而不是白底。
     fn style_lists(&self) {
+        let ex = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER;
         unsafe {
             for &h in &[self.list, self.learn_list, self.emoji_list] {
                 send(
@@ -872,12 +853,22 @@ impl App {
                     WPARAM(0),
                     LPARAM(self.colors.text1.0 as isize),
                 );
+                // 整行选中：点「emoji」那一格也算选中这一行（默认只有第一列可点，
+                // 而这一页用户想点的常常是右边那几格）。双击缓冲避免滚动闪白。
                 send(
                     h,
-                    LVM_SETTEXTBKCOLOR,
-                    WPARAM(0),
-                    LPARAM(self.colors.card.0 as isize),
+                    LVM_SETEXTENDEDLISTVIEWSTYLE,
+                    WPARAM(ex),
+                    LPARAM(ex as isize),
                 );
+                // `LVS_SHOWSELALWAYS` 是**普通**样式，走 GWL_STYLE 而不是扩展样式。
+                // 没有它，焦点一进「搜索」框，列表的选中就淡成看不见——用户转头
+                // 回来又不确定自己选的是哪一行（真机反馈的另一半）。
+                let style = GetWindowLongPtrW(h, GWL_STYLE) as u32;
+                if style & LVS_SHOWSELALWAYS == 0 {
+                    SetWindowLongPtrW(h, GWL_STYLE, (style | LVS_SHOWSELALWAYS) as isize);
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
             }
         }
     }
@@ -1379,7 +1370,7 @@ impl App {
         let panel = Self::rect(cx, panel_y, cw2, panel_h);
         self.geo.emoji_panel_card = panel;
 
-        // 面板行 1：「选中」信息（纯自绘文字）；行 2：标签 + 新 emoji 框 + 下拉框
+        // 面板行 1：「选中」信息（纯自绘文字）；行 2：标签 + 新 emoji 框 + 浏览按钮
         let info = Self::inset(panel, self.s(16));
         self.geo.emoji_sel_label = Self::rect(
             info.left,
@@ -1388,17 +1379,13 @@ impl App {
             row,
         );
         let input_y = panel.top + self.s(14) + row;
-        let new_label_w = self.s(14 * 3);
+        // 「新 emoji」是 2 个汉字 + 空格 + 5 个字母，按 3 个汉字的宽度算会截成
+        // 「新 e…」（真机截图），给足 64dp
+        let new_label_w = self.s(64);
         self.geo.emoji_new_label = Self::rect(info.left, input_y, new_label_w, row);
         let box_x = info.left + new_label_w + self.s(8);
-        // 框 130、下拉 240，中间留 12；剩余给右侧按钮行外的空白
-        self.geo.emoji_new_box = Self::rect(box_x, input_y, self.s(130), row);
-        self.geo.emoji_combo_box = Self::rect(
-            self.geo.emoji_new_box.right + self.s(12),
-            input_y,
-            self.s(240),
-            row,
-        );
+        self.geo.emoji_new_box = Self::rect(box_x, input_y, self.s(120), row);
+        let browse_x = self.geo.emoji_new_box.right + self.s(12);
 
         unsafe {
             // 搜索框右侧是「总开关」（破坏性弱、但要一眼看到状态），靠右放，
@@ -1414,7 +1401,8 @@ impl App {
             );
             move_rect(self.emoji_list, Self::inset(card, self.s(8)), true);
             self.center_in_box(self.e_emoji_new, self.geo.emoji_new_box);
-            move_rect(self.c_emoji_pick, self.geo.emoji_combo_box, true);
+            let browse_w = self.btn_w_from("浏览 emoji…", 116);
+            let _ = MoveWindow(self.b_emoji_browse, browse_x, input_y, browse_w, row, true);
             let _ = MoveWindow(self.n_emoji, cx, note_y + self.s(2), cw2, note_h, true);
         }
 
@@ -2111,6 +2099,122 @@ impl App {
         set_text(self.e_emoji_new, &emoji);
         self.update_emoji_note();
         self.update_emoji_buttons();
+        // 面板行 1 是**自绘**文字（原生 Edit 会自己刷，文字不会）：不重绘的话
+        // 选了行之后那句话还停在上一句，看着像「点了没反应」
+        self.repaint();
+    }
+
+    /// 列表行自绘：选中行由我们整行画（浅蓝底 + 深色字）。
+    ///
+    /// 为什么要 `CDRF_SKIPDEFAULT` 自己画：开着视觉主题时，选中行的底色由
+    /// 主题绘制，`clrTextBk` 被直接忽略（实测填什么都不变色，一直是系统蓝）；
+    /// 而关掉主题虽然能让它生效，列头与滚动条会一起退回经典外观——那是一次
+    /// 看得见的倒退。自己画整行两头都保住。
+    ///
+    /// 与列表**同进程**，所以 `LVM_GETITEMTEXTW` 可以直接传结构指针（跨进程
+    /// 传指针会立刻崩，验收脚本踩过这个坑）。
+    fn list_custom_draw(&self, lparam: LPARAM) -> LRESULT {
+        const CDDS_PREPAINT: u32 = 0x0000_0001;
+        const CDDS_ITEMPREPAINT: u32 = 0x0001_0001;
+        const CDRF_DODEFAULT: isize = 0;
+        const CDRF_NOTIFYITEMDRAW: isize = 0x0000_0020;
+        const CDRF_SKIPDEFAULT: isize = 0x0000_0004;
+        const LVM_GETCOLUMNWIDTH: u32 = 0x101D;
+        const LVM_GETITEMTEXTW: u32 = 0x1073;
+        const LVIF_TEXT_ONLY: u32 = 0x0001;
+        // #E8F0FB（COLORREF 是 0x00BBGGRR）
+        const SEL_BG: COLORREF = COLORREF(0x00FB_F0E8);
+
+        let cd = unsafe { &mut *(lparam.0 as *mut NMLVCUSTOMDRAW) };
+        let stage = cd.nmcd.dwDrawStage.0;
+        if stage == CDDS_PREPAINT {
+            return LRESULT(CDRF_NOTIFYITEMDRAW);
+        }
+        if stage != CDDS_ITEMPREPAINT {
+            return LRESULT(CDRF_DODEFAULT);
+        }
+        // 判据用「列表自己说哪一行选中」而不是 `uItemState & CDIS_SELECTED`：
+        // 那个字段在这个阶段的位与文档不一致（实测所有行都带 0x1，一涂
+        // 就是整片蓝）。问列表要选中项，语义唯一。
+        let list = cd.nmcd.hdr.hwndFrom;
+        let sel = unsafe {
+            send(
+                list,
+                LVM_GETNEXTITEM,
+                WPARAM(usize::MAX),
+                LPARAM(LVNI_SELECTED as isize),
+            )
+        }
+        .0;
+        if sel < 0 || cd.nmcd.dwItemSpec as isize != sel {
+            return LRESULT(CDRF_DODEFAULT);
+        }
+
+        let hdc = cd.nmcd.hdc;
+        let rc = cd.nmcd.rc;
+        unsafe {
+            let brush = CreateSolidBrush(SEL_BG);
+            if !brush.0.is_null() {
+                FillRect(hdc, &rc, brush);
+                let _ = DeleteObject(brush.into());
+            }
+            // 用列表自己的字体，别让自绘的行和旁边几行字重/字宽不一致
+            // WM_GETFONT = 0x0031（列表自己知道它用的是哪个字体）
+            let font = send(list, 0x0031, WPARAM(0), LPARAM(0));
+            let old = if font.0 != 0 {
+                SelectObject(hdc, HGDIOBJ(font.0 as *mut core::ffi::c_void))
+            } else {
+                HGDIOBJ::default()
+            };
+            let _ = SetBkMode(hdc, TRANSPARENT);
+            let _ = SetTextColor(hdc, self.colors.text1);
+
+            let mut x = rc.left;
+            for col in 0..4 {
+                let w = send(list, LVM_GETCOLUMNWIDTH, WPARAM(col), LPARAM(0)).0 as i32;
+                if w <= 0 {
+                    break;
+                }
+                let mut buf = [0u16; 128];
+                let mut item = LVITEMW {
+                    mask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_FLAGS(LVIF_TEXT_ONLY),
+                    iSubItem: col as i32,
+                    pszText: PWSTR(buf.as_mut_ptr()),
+                    cchTextMax: buf.len() as i32,
+                    ..Default::default()
+                };
+                send(
+                    list,
+                    LVM_GETITEMTEXTW,
+                    WPARAM(cd.nmcd.dwItemSpec),
+                    LPARAM(&mut item as *mut _ as isize),
+                );
+                let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                let text = String::from_utf16_lossy(&buf[..n]);
+                if !text.is_empty() {
+                    // 列一律左对齐（三张表的列头也都是左对齐）：自绘行只画
+                    // 一遍文字，居中列会让选中行那几格和列头错开一截
+                    let mut cell = RECT {
+                        left: x + 8,
+                        top: rc.top,
+                        right: x + w - 8,
+                        bottom: rc.bottom,
+                    };
+                    let mut wide = text.encode_utf16().collect::<Vec<u16>>();
+                    DrawTextW(
+                        hdc,
+                        &mut wide,
+                        &mut cell,
+                        DRAW_TEXT_FORMAT(DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
+                    );
+                }
+                x += w;
+            }
+            if !old.0.is_null() {
+                SelectObject(hdc, old);
+            }
+        }
+        LRESULT(CDRF_SKIPDEFAULT)
     }
 
     /// 面板行 1 的信息文字（绘制取，也给说明行复用）。
@@ -2136,14 +2240,13 @@ impl App {
     }
 
     /// 说明行（列表底下的 Static）。
+    ///
+    /// **只放一行短文**：原来拼了两条完整路径，Static 不换行、直接画到窗口
+    /// 底边之外，真机截图上那行只剩半截。路径有「打开文件位置」按钮兜着。
     fn update_emoji_note(&self) {
         let total = self.emoji.builtin.entries.len();
         let user_n = self.emoji.user.entries.len();
-        let mut s = format!(
-            "内置 {total} 条（{}）· 用户层改动 {user_n} 条 · {}",
-            self.emoji.builtin_path.display(),
-            self.emoji.user_path.display()
-        );
+        let mut s = format!("内置 {total} 条 · 用户层改动 {user_n} 条");
         match (&self.emoji.builtin_err, &self.emoji.user_err) {
             (Some(e), _) => s.push_str(&format!(" · 内置表：{e}")),
             (_, Some(e)) => s.push_str(&format!(" · {e}")),
@@ -2166,41 +2269,20 @@ impl App {
         enable_window(self.b_emoji_restore, row.is_some_and(|r| r.user));
     }
 
-    /// 下拉框选中 → 填进「新 emoji」框（不直接落盘，保存仍走「改绑」）。
-    fn on_emoji_pick(&mut self) {
-        const CB_GETCURSEL: u32 = 0x0147;
-        const CB_GETLBTEXT: u32 = 0x0148;
-        const CB_GETLBTEXTLEN: u32 = 0x0149;
-        let sel = unsafe { send(self.c_emoji_pick, CB_GETCURSEL, WPARAM(0), LPARAM(0)) };
-        if sel.0 < 0 {
-            return;
+    /// 「浏览 emoji…」→ 网格选择器，选中就填进「新 emoji」框（仍要点「改绑」才落盘）。
+    fn on_emoji_browse(&mut self) {
+        let choices = self.emoji.choices_for_picker();
+        // 打开时停在这个已选 emoji 所属的分类上：改绑多半是「同一类里换一枚」
+        let current = get_text(self.e_emoji_new);
+        let initial = (!current.trim().is_empty()).then_some(current.as_str());
+        if let Some(e) =
+            crate::emoji_picker::pick(self.hwnd, self.dpi, &choices, &self.emoji_support, initial)
+        {
+            set_text(self.e_emoji_new, &e);
         }
-        let len = unsafe {
-            send(
-                self.c_emoji_pick,
-                CB_GETLBTEXTLEN,
-                WPARAM(sel.0 as usize),
-                LPARAM(0),
-            )
-        }
-        .0 as usize;
-        if len == 0 || len > 64 {
-            return;
-        }
-        let mut buf = vec![0u16; len + 1];
-        unsafe {
-            send(
-                self.c_emoji_pick,
-                CB_GETLBTEXT,
-                WPARAM(sel.0 as usize),
-                LPARAM(buf.as_mut_ptr() as isize),
-            );
-        }
-        let emoji = String::from_utf16_lossy(&buf[..len]);
-        set_text(self.e_emoji_new, &emoji);
-        set_focus(self.e_emoji_new);
         self.update_emoji_buttons();
         self.repaint();
+        set_focus(self.e_emoji_new);
     }
 
     fn on_emoji_save(&mut self) {
@@ -2481,6 +2563,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // 刻意**不**自动选中第一行：面板是给「新词」用的，一开窗就
                     // 躺着上次的词会让人以为已经选中了它，改完点保存就把那条词改了。
                     app.set_status("");
+                    if app.open_picker {
+                        // 等窗口画完第一帧再弹：否则选择器的居中位置按未布局的
+                        // 父窗口算，会歪到屏幕角上
+                        unsafe {
+                            let _ = SetTimer(Some(hwnd), PICKER_TIMER, 250, None);
+                        }
+                    }
                 }
             }
             LRESULT(0)
@@ -2508,6 +2597,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             } else {
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
+        }
+        WM_TIMER if wparam.0 == PICKER_TIMER => {
+            unsafe {
+                let _ = KillTimer(Some(hwnd), PICKER_TIMER);
+            }
+            if let Some(app) = unsafe { app_of(hwnd) } {
+                app.open_picker = false;
+                app.on_emoji_browse();
+            }
+            LRESULT(0)
         }
         WM_PAINT => {
             if let Some(app) = unsafe { app_of(hwnd) } {
@@ -2577,7 +2676,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (EN_CHANGE, ID_E_EMOJI_SEARCH) => app.refresh_emoji(),
                     (EN_CHANGE, ID_E_EMOJI_NEW) => app.update_emoji_buttons(),
                     // CBN_SELCHANGE = 1（与 EN_ 段相邻的通知码）
-                    (1, ID_C_EMOJI_PICK) => app.on_emoji_pick(),
+                    (0, ID_BE_BROWSE) => app.on_emoji_browse(),
                     (0, ID_B_CLEAR) => app.on_clear(),
                     (0, ID_B_SAVE) => app.on_save(),
                     (0, ID_B_DEL) => app.on_delete(),
@@ -2602,6 +2701,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_NOTIFY => {
             let hdr = unsafe { &*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR) };
             if let Some(app) = unsafe { app_of(hwnd) } {
+                if hdr.code == NM_CUSTOMDRAW {
+                    // 三个列表共用一套：选中行浅蓝底，失焦也不淡
+                    return app.list_custom_draw(lparam);
+                }
                 if hdr.code == LVN_ITEMCHANGED && hdr.hwndFrom == app.list {
                     // 不读 NMLISTVIEW 的字段，直接问「现在选的是谁」——少一处
                     // 结构体布局的假设，行为一样
@@ -3185,20 +3288,6 @@ impl App {
             border,
             self.s(4),
             self.s(1),
-        );
-        // 下拉框前的说明
-        draw_text_align(
-            hdc,
-            "从内置表选 →",
-            Self::rect(
-                self.geo.emoji_combo_box.left - self.s(14 * 6 + 8),
-                self.geo.emoji_combo_box.top,
-                self.s(14 * 6),
-                self.geo.emoji_combo_box.bottom - self.geo.emoji_combo_box.top,
-            ),
-            self.fonts.caption,
-            self.colors.text3,
-            true,
         );
     }
 
@@ -4359,7 +4448,7 @@ fn check_z_order(hwnd: HWND, page: usize) -> Result<(), String> {
             ID_EMOJI_LIST,
             ID_E_EMOJI_SEARCH,
             ID_E_EMOJI_NEW,
-            ID_C_EMOJI_PICK,
+            ID_BE_BROWSE,
             ID_BE_SAVE,
             ID_BE_DISABLE,
             ID_BE_RESTORE,

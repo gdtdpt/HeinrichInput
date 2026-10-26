@@ -20,6 +20,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod emoji_page;
+mod emoji_picker;
 mod general;
 mod learn;
 mod lex;
@@ -38,6 +39,8 @@ struct Args {
     emoji: Option<PathBuf>,
     /// 启动时停在哪一页（0 通用 / 1 词组 / 2 emoji / 3 学习数据）。截图验收要能直接打开某一页。
     page: usize,
+    /// 起来后自动弹一次 emoji 选择器（截图验收用）
+    picker: bool,
     selftest: bool,
     selftest_ui: bool,
 }
@@ -50,6 +53,7 @@ fn parse_args() -> Args {
         db: None,
         emoji: None,
         page: 0,
+        picker: false,
         selftest: false,
         selftest_ui: false,
     };
@@ -62,12 +66,13 @@ fn parse_args() -> Args {
             "--db" => args.db = it.next().map(PathBuf::from),
             "--emoji" => args.emoji = it.next().map(PathBuf::from),
             "--page" => args.page = it.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0),
+            "--picker" => args.picker = true,
             "--selftest" => args.selftest = true,
             "--selftest-ui" => args.selftest_ui = true,
             other => {
                 if other == "--help" || other == "-h" {
                     println!(
-                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n                   [--config <config.toml>] [--db <learn.db>] [--emoji <emoji.user.toml>]\n                   [--page 0|1|2|3]\n  heinrich-settings --selftest[|-ui]"
+                        "用法：\n  heinrich-settings [--words <文件>] [--data <五笔目录>]\n                   [--config <config.toml>] [--db <learn.db>] [--emoji <emoji.user.toml>]\n                   [--page 0|1|2|3] [--picker]\n  heinrich-settings --selftest[|-ui]"
                     );
                     std::process::exit(0);
                 }
@@ -124,6 +129,7 @@ fn main() -> std::process::ExitCode {
     match ui::App::new(args.data, args.words, args.config, args.db, args.emoji) {
         Ok(mut app) => {
             app.set_initial_page(args.page);
+            app.set_open_picker(args.picker);
             match ui::run(Box::new(app)) {
                 Ok(_) => std::process::ExitCode::SUCCESS,
                 Err(e) => {

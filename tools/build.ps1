@@ -11,7 +11,7 @@
       heinrich_win.dll    —— TSF 前端（必须与 setup 同目录）
       heinrich-server.exe —— 常驻引擎宿主（必须与 DLL 同目录：DLL 靠「同目录」找它）
       heinrich-cand-preview.exe —— 候选窗预览器（验收工具，发版时不需要随包）
-      heinrich-settings.exe —— 设置窗口（词组 / 通用 / 学习数据）
+      heinrich-settings.exe —— 设置窗口（通用 / 词组 / emoji / 学习数据）
 
     注意 DLL 的文件名是下划线：Cargo 对 cdylib 会把 crate 名里的连字符换成下划线。
 

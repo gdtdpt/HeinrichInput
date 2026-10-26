@@ -1107,7 +1107,8 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 | 文件 | 职责 |
 |---|---|
 | `main.rs` | 参数（`--words` / `--data` / `--config` / `--db` / `--emoji` / `--page` / `--selftest`）、DPI 声明、`--selftest` 七项断言 |
-| `emoji_page.rs` | emoji 页数据层（M4d / D85）：两层映射合并视图、`Key`（按词/按码）、改绑 / 停用 / 恢复内置、整份重写用户层（临时文件 + 改名）、`emoji.enabled` 开关（开 = 删行）；不依赖 Win32，`--selftest` 直跑 |
+| `emoji_page.rs` | emoji 页数据层（M4d / D85）：两层映射合并视图、`Key`（按词/按码）、改绑 / 停用 / 恢复内置、整份重写用户层（临时文件 + 改名）、`emoji.enabled` 开关（开 = 删行）、`choices_for_picker()`；不依赖 Win32，`--selftest` 直跑 |
+| `emoji_picker.rs` | emoji 分类网格选择器（M4d 返工 / D86）：`cat_of` + `Catalog` + `Geometry` 是**纯函数**（8 条单测，不开窗口就能验命中），窗口层用 D2D DC 渲染目标画彩色字形、私有模态循环。见 §4.24 |
 | `lex.rs` | 找 `data/wubi86`（exe 同级 → 上三级 → cwd）、装载 `Scheme` + `PinyinLexicon` |
 | `model.rs` | **不依赖 Win32**：`Model`（文件 + 词条）、`Row`（原文 + 推导列）、`*_cell()` 的 `*` 约定 |
 | `ui.rs` | 窗口类、Tab、ListView、编辑面板、按钮动作、`layout()` |
@@ -1487,6 +1488,29 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 - **验收必须真点。** 静态截单页永远看不出残留。用 `WM_LBUTTONDOWN`（或 DPI 感知的真鼠标点击）
   连切几次再截；判据是「切回第一页的截图与初始截图逐字节相同」。
 
+**列表选中态（v1.62 / D86）**：三个坑叠在一起，缺一条就是「点了看不见」。
+
+- `LVM_SETTEXTBKCOLOR` 会把每行**文字背板**钉成一个颜色（当初为了配卡片底加的），系统选中高亮
+  整片被它盖掉 —— 删掉。文字颜色同理，别用 `LVM_SETTEXTCOLOR`。
+- `LVS_EX_FULLROWSELECT` 缺了**只有第一列能点**；用户点第二列，消息到了、选中项却没变。
+- `LVS_SHOWSELALWAYS` 是**普通**样式（`GWL_STYLE`），**不在** `SetExtendedListViewStyle` 的扩展位里
+  —— 用 `GetWindowLongPtrW/SetWindowLongPtrW` 补。缺它时焦点一进搜索框，选中行就淡到几乎看不见，
+  这是「我都不知道点选了什么」的主因。
+
+三条修完，开着视觉主题时选中仍可能看不出来（`clrText*` 被主题直接忽略）。两条路：`SetWindowTheme(h, "", "")`
+关主题让 `clrTextBk` 生效 —— 列头与滚动条会退回 Win95 凸起灰块（截图可见，明显倒退）；或者
+`NM_CUSTOMDRAW` 返回 `CDRF_SKIPDEFAULT` 自己画整行。选后者，但要记住：
+
+- 通知码是 `NM_FIRST - 12` = **`0xFFFFFFF4`**；写成 `LVN_FIRST - 12`（`0xFFFFFF90`）差 88，
+  一条通知都收不到（表现为「代码在跑、画面没变」，极难查）。
+- `CDDS_PREPAINT` 返回 `CDRF_NOTIFYITEMDRAW`，之后才是逐行的 `CDDS_ITEMPREPAINT`。
+- 判断「这行选中没选中」**别读 `CDIS_SELECTED`**（0x0001）：这个阶段实测所有行都带这一位，
+  照它涂会把整片行都染成选中色。改用 `LVM_GETNEXTITEM(-1, LVNI_SELECTED)` 问列表要。
+- 返回 `CDRF_SKIPDEFAULT` 之后，列宽 / 对齐 / 省略全归自己：`LVM_GETCOLUMNWIDTH` 取宽、
+  `LVM_GETITEMTEXTW` 取文字（缓冲按**字符**算，别按字节）、`SelectObject(WM_GETFONT)` 之后逐格
+  `DrawTextW`。列头是系统画的，所以列的 `LVCFMT` 得统一改成左对齐，否则自绘行与列头错开半个身位。
+
+
 **comctl32 v6 清单**：`apps/windows/settings/app.manifest` + `build.rs`，用链接器的
 `/MANIFEST:EMBED` + `/MANIFESTINPUT:<绝对路径>` + `/MANIFESTUAC:NO`，**不引 `embed-resource` /
 `winres`**（那类 crate 要再拉一个 `rc.exe`，而本项目要求 `cargo build` 之外零工具）。
@@ -1640,8 +1664,55 @@ cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/e
   在信息行提示，`emoji check` 打一行提醒（不算错）。
   ⇒ 用户报「`你好` 有 emoji、单个 `好` 没有」时先讲清这条默认规则，再问他要不要绑。
 
-## 5. 数据管线
+### 4.24 emoji 选择器：分类网格弹窗（M4d 返工 / D86，v1.62）
 
+一句话：改绑时不再「在一千多条的下拉里翻」，而是弹一个**照系统 emoji 面板做的网格**——
+10 个分类页签 + 11×7 格 + 点一枚即回填。
+
+**为什么是弹窗，不是下拉**：
+
+- 功能性：原生 ComboBox 创建时想追加 `WS_VSCROLL`（**0x0020**），而 ComboBox 样式表里这一位是
+  `CBS_OWNERDRAWVARIABLE` —— 控件被置成自绘模式，条目明明在、但没人画，下拉里一片空白
+  （用户原话「下拉框也不知道什么内容，没有显示」）。就算修好，也只是「有一千多行的下拉」。
+- 认知：用户认的是**位置记忆**（表情在第一页签左上角），不是名字；怎么排序都得翻。
+
+**分层**：`emoji_picker.rs` 切成两块，边界是「要不要窗口」。
+
+| 层 | 内容 | 怎么验 |
+|---|---|---|
+| 纯函数 | `cat_of(cp)`（码位 → 分类）、`Catalog::new`（跳空分类、按码位排序去重）、`Geometry::new(w, h, scale)` + `cell_rect` / `index_at` / `tab_at` / `max_scroll` / `hit_close` | 8 条单测，不开窗口；「点第 (2,1) 格拿到哪枚」这类问题不需要人点鼠标 |
+| 窗口 | 窗口类注册、D2D 画（圆角悬停块 / 页签下划线 / 滚动指示条）、滚轮与键盘、模态循环 | `--picker` 起窗 + 截图目视 |
+
+**分类靠码位区间，不读 CLDR 的 `group`**：group 在生成器那一步就丢了，而码位区间本身足够稳。
+**区间顺序即优先级**（先写的先命中），所以特例必须放前面——`0x1F63A..=0x1F63F`（猫脸）会被前面的
+`0x1F600..` 一口气吃掉，写反了 `unreachable_pattern` 会直接报出来；末尾永远留一个「其他」兜底，
+分类只增不减、不会因为漏一个区间就让某些 emoji 消失。
+
+**几何一律物理像素**：`Geometry::new(w, h, scale)` 里每个数字都过 `scale`。逻辑单位混进去，
+DPI 2.0 下格子会一大一小（本节这套数：`cell = 46`、`tab_y = 44`、`title_h = 88`、
+`footer_h = 30`、`inset = 14`、11 列 × 7 行）。
+
+**彩色只能走 D2D**：`ID2D1DCRenderTarget::BindDC` → `Clear` → 逐枚 `DrawTextW`，format 上开
+`D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`。GDI 与 GDI+ 画 `Segoe UI Emoji` 都是**单色轮廓**
+（候选窗在 D55 已踩过一次，同一个结论）。命名空间上 `D2D1_ROUNDED_RECT` 在 `Direct2D` 下，
+不在 `Direct2D::Common` 下。
+
+**模态靠私有消息泵**：`PeekMessageW` + `WaitMessage` 循环，关窗只置 `done` 标志、**绝不
+`PostQuitMessage`** —— 那会结束设置窗口自己的循环，等于连带把主窗关掉。同时
+`EnableWindow(parent, false)` 挡住背后的点击，返回前再打开。
+
+**打开时机要延后**：`--picker` 不是建完窗就弹，而是 `SetTimer` 250ms 后弹。窗口刚
+`CreateWindowExW` 时还没画过第一帧，此时算居中用到的窗口矩形是错的，会弹在左上角。
+
+**命中测试两个易错点**：`index_at` 要**先减 `scroll` 再除 `cell`**（滚动偏移是像素，直接除会把
+滚过的位置全算成第 0 行）；点到空白处返回 `None`，不要「就近吸附」到最后一格——那会让用户在
+留白处点一下就莫名改绑。
+
+**验收别在后台 shell 里起 GUI**：工具调用一结束进程就被回收，`tasklist` 里根本查不到。
+一个进程里做完「起 → 等窗口 → 截图 → 真鼠标点击 → 再截图 → kill」，或者用
+`win-ui-selfscreenshot` 那套（给程序加一个「直接开某个窗口」的开关 + `PrintWindow` 只截那一窗）。
+
+## 5. 数据管线
 
 ```
 data/raw/wubi86.dict.yaml     Rime 词典：`...` 之后是 词 \t 码 \t 权重
@@ -2006,6 +2077,26 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     不依赖擦除消息；另外主窗口必须带 `WS_CLIPCHILDREN`，否则铺底会连子控件的白底一起刷掉。
     这类问题**静态截一张图看不出来**（每页单独看都正常），必须「真消息点击 → 再截图」才算验过。
 
+60. **给控件追加样式前先查那张样式表 —— 同一位在不同控件里是别的东西。** 想给 ComboBox 加滚动条，
+    写了 `WS_VSCROLL`（**0x0020**），而 ComboBox 的样式表里这一位是 `CBS_OWNERDRAWVARIABLE`：
+    控件被静默置成自绘模式，条目明明已经在里面、却没人画，下拉展开后**一片空白**。
+    症状最像「数据没填进去」，查起来会先去怀疑数据源。规矩：`SetWindowLongPtrW(GWL_STYLE, ...)`
+    追加样式时，只加**目标控件类文档里列出的**那几位；形状类（宽高/位置）与滚动条交给布局解决。
+    排查手法：把 `GetWindowLongPtrW` 拿到的样式打成十六进制，对着常量表逐位核。
+
+61. **`NM_CUSTOMDRAW` 是 `NM_FIRST - 12` = `0xFFFFFFF4`。** 写成 `LVN_FIRST - 12`（`0xFFFFFF90`）
+    差 88，`WM_NOTIFY` 里一条都匹配不上——表现为「代码在跑、画面没变」，而且没有任何报错。
+    另外两件同源的事：① `CDIS_SELECTED`（0x0001）在 `CDDS_ITEMPREPAINT` 阶段实测**每行都带**，
+    照它涂会把整片行染成选中色，判「选中没选中」要问列表（`LVM_GETNEXTITEM(-1, LVNI_SELECTED)`）；
+    ② 自定义绘制接管行以后，列的 `LVCFMT` 必须与自绘文字的对齐方式一致（列头仍是系统画的），
+    否则同一列上下错开半个身位，看起来像「字体不对」。
+
+62. **彩色 emoji 只有 D2D 能画。** GDI 的 `DrawTextW` 与 GDI+ 都只出**单色轮廓**，`Segoe UI Emoji`
+    在它们眼里是一套普通字形。正确路径是 `ID2D1DCRenderTarget`（DC 渲染目标，不需要换 D2D 1.1）
+    + `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`。这个结论在本项目出现过两次（候选窗 D55、
+    emoji 选择器 D86），不要再从 GDI 试起。判据**用颜色计数**（同两行文字数不同颜色值，
+    105 vs 13），不要用眼睛看「像不像彩色」——灰度抗锯齿也能骗过眼睛。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -2051,7 +2142,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
-| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + 「从内置表选」下拉只列本机画得出的 + 总开关；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿） |
+| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图） |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
