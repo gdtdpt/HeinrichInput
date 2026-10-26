@@ -167,6 +167,24 @@ Invoke-Step 'emoji 用户层自测' {
             Write-Host "reset 之后用户层应为 0 条：`n$after" -ForegroundColor Red
             exit 1
         }
+
+        # 用户层是**可选覆盖层**，装完不会自动生成。文件不存在时 `reset` 要当 `init` 用：
+        # 建出带注释的样例，否则「想改绑」的人第一步就卡在「文件在哪、格式是什么」（D84）。
+        # 断言只看 ASCII（`[[emoji]]`）：样例是 UTF-8 无 BOM，5.1 的 Get-Content -Raw 会按
+        # ANSI 解码，拿中文去 match 会因乱码假失败。
+        $fresh = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-emoji-fresh-{0}.toml" -f $PID)
+        Remove-Item $fresh -ErrorAction SilentlyContinue
+        $init = & cargo run --release -q -p heinrich-cli -- emoji reset --file $fresh 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Host "reset 生成样例失败：`n$init" -ForegroundColor Red; exit 1 }
+        if (-not (Test-Path $fresh)) {
+            Write-Host "reset 在文件不存在时应当把样例建出来：`n$init" -ForegroundColor Red
+            exit 1
+        }
+        if (-not ((Get-Content $fresh -Raw) -match '\[\[emoji\]\]')) {
+            Write-Host "生成的样例里没有 [[emoji]] 段落：`n$init" -ForegroundColor Red
+            exit 1
+        }
+        Remove-Item $fresh -ErrorAction SilentlyContinue
     }
     finally {
         Remove-Item "$tmp*" -ErrorAction SilentlyContinue

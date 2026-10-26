@@ -1607,7 +1607,7 @@ fn insert_emoji(words, codes, limit, primary_words, lookup) -> (Vec<Entry>, usiz
 |---|---|
 | `emoji check [--file <用户层>]` | 内置层可读/规模/哈希/条目数/坏行 + 一行「本机字体：2018 / 2395 条可显示」+ 合并后「按词绑定是否都在词库」「按码绑定是否都在码表」「重复键」。**默认不读 `%APPDATA%`**（回归要机器无关），要查自己的绑定就显式 `--file` |
 | `emoji list [--file] [--limit n]` | 反过来：默认读用户层（这就是「我现在生效的是什么」）。`--limit 0` 看全部 |
-| `emoji reset [--file]` | 备份成 `emoji.user.toml.bak-<本地时间戳>`，再写回带注释样例的空文件（删掉的话用户下次还得自己摸格式） |
+| `emoji reset [--file]` | 备份成 `emoji.user.toml.bak-<本地时间戳>`，再写回带注释样例的空文件（删掉的话用户下次还得自己摸格式）。**文件不存在时先建父目录再写样例**，所以它同时是「生成一份用户层」的入口（D84）——用户层是可选覆盖层，装完不预生成 |
 
 **怎么验**：
 
@@ -1635,6 +1635,8 @@ cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/e
 - **插入 emoji 后折叠分界**：`primary_len` 是全局序号，插入会整体后移（见上）。
 - 单字 gate 在**两处**：解析期（`word` 少于 2 字丢条目）与查表期（`lookup` 再看一次词长）。
   只留一处的话，`enabled = false` 的删 key 路径会绕过解析期的检查。
+  ⇒ 「`你好` 有 emoji、单个 `好` 没有」是**设计行为**（`vb` 一行能挤好几条单字，每条再挂一枚
+  会把行宽撑成两倍），不是版本装错；用户报这个时先看 `emoji list | grep 好`。
 
 ## 5. 数据管线
 

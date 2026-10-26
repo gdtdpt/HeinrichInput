@@ -205,7 +205,7 @@ fn main() -> ExitCode {
         }
         "--help" | "-h" | "help" => {
             println!(
-                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n  heinrich-cli emoji check  [--data <目录>] [--file <用户层>]   校验 emoji 映射（哈希 / 词库命中 / 重复）\n  heinrich-cli emoji list   [--data <目录>] [--file <用户层>] [--limit <n>]  列出生效中的映射\n  heinrich-cli emoji reset  [--file <用户层>]                  备份并清空用户层\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给时自动用 <--data 的同级>/pinyin（存在时）。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。\n  emoji 用户层默认 %APPDATA%\\Heinrich\\emoji.user.toml：`list` / `reset` 默认就用它，`check` 默认不读（要查自己的绑定加 --file）。"
+                "用法：\n  heinrich-cli repl         [--data <目录>] [--pinyin <目录>]   交互打字（默认）\n  heinrich-cli look <码>    [--data <目录>] [--pinyin <目录>]   查一次候选（如 `look vbz`、`look hao'vb`）\n  heinrich-cli check        [--data <目录>]                     五笔方案完整性校验\n  heinrich-cli check-pinyin [--data <目录>]                     拼音词库校验\n  heinrich-cli roots <码>   [--data <目录>]                     逐位展开键位（如 `roots vbg`）\n  heinrich-cli roots check  [--data <目录>]                     字根表校验\n  heinrich-cli word add <词> [--pinyin <拼音>] [--code <码>] [--weight <权重>] [--file <词库>]\n  heinrich-cli word list                                    列出自定义词（* 表示自动推导）\n  heinrich-cli word rm <词>                                 删掉一个自定义词\n  heinrich-cli word import <文件>                            批量导入（与 words.tsv 同格式）\n  heinrich-cli emoji check  [--data <目录>] [--file <用户层>]   校验 emoji 映射（哈希 / 词库命中 / 重复）\n  heinrich-cli emoji list   [--data <目录>] [--file <用户层>] [--limit <n>]  列出生效中的映射\n  heinrich-cli emoji reset  [--file <用户层>]                  备份并清空用户层（不存在则生成样例）\n\n  --pinyin 给出拼音词库目录（如 data/pinyin）即启用混输判定；不给时自动用 <--data 的同级>/pinyin（存在时）。\n  自定义词默认写 %APPDATA%\\Heinrich\\words.tsv，改完下一次按键就生效。\n  emoji 用户层默认 %APPDATA%\\Heinrich\\emoji.user.toml：`list` / `reset` 默认就用它，`check` 默认不读（要查自己的绑定加 --file）。"
             );
             ExitCode::SUCCESS
         }
@@ -1303,13 +1303,26 @@ fn emoji_list(data: &Path, user_path: Option<&Path>, limit: usize) -> Result<boo
     Ok(true)
 }
 
-/// 备份并清空用户层。文件不存在就没什么可重置的（**不算错**）。
+/// 备份并清空用户层。文件不存在就只把它建出来（**不算错**）。
 ///
 /// 写回的是「带注释样例的空文件」而不是删掉文件：删了之后用户下次想改
 /// 还得自己摸格式，而空文件本身就是一份说明书。
+///
+/// 文件不存在时也写一份样例：用户层是**可选覆盖层**，装完不会自动生成，
+/// 没有这个出口的话「想改绑」的人第一步就卡在「文件在哪、格式是什么」。
+/// 于是 `reset` 顺带当 `init` 用（D84）。
 fn emoji_reset(path: &Path) -> Result<bool, String> {
     if !path.exists() {
-        println!("{} 不存在，没有需要重置的内容", path.display());
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("创建目录 {} 失败：{e}", dir.display()))?;
+        }
+        std::fs::write(path, EMOJI_USER_TEMPLATE)
+            .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+        println!("用户层原本不存在，已生成带注释的样例：");
+        println!("  {}", path.display());
+        println!("照着样例取消注释、改成自己想要的绑定，保存即生效（≤ 1 秒）");
+        println!("查现在生效的映射：heinrich-cli emoji list");
         return Ok(true);
     }
     let backup = path.with_extension(format!("toml.bak-{}", local_stamp()));
