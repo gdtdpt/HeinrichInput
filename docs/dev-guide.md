@@ -1950,6 +1950,33 @@ println!("cargo:rustc-link-arg-bins={}", res.display());   // 3. 当链接器输
 五档 32bpp）。注册表 `IconFile`（输入法列表）、exe 资源、`.iss` 的 `SetupIconFile`
 都指向它，改图只改一处。
 
+**嵌进 exe 不等于窗口有图标。** 这是两条互不相干的路：
+
+| 显示位置 | 从哪儿取 |
+|---|---|
+| 「设置 → 应用」、资源管理器、快捷方式 | `UninstallDisplayIcon` / 目标路径指向的 **exe 资源** |
+| 窗口标题栏左上角、任务栏按钮、Alt+Tab | **窗口图标**：窗口类的 `hIcon`，或 `WM_SETICON` |
+
+不设窗口图标时系统画默认方块，于是会出现「应用列表里是好的、标题栏还是方块」这种
+半对半错。`create_window` 建成后补两发（`ICON_SMALL` 给标题栏、`ICON_BIG` 给任务栏
+与 Alt+Tab，尺寸取 `GetSystemMetrics`——程序是 PerMonitorV2，高 DPI 下才对）：
+
+```rust
+let icon_res = PCWSTR(1 as *const u16);              // MAKEINTRESOURCEW(1)
+for (which, cx, cy) in [(ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
+                        (ICON_BIG, SM_CXICON, SM_CYICON)] {
+    if let Ok(icon) = LoadImageW(Some(hinstance), icon_res, IMAGE_ICON,
+                                 GetSystemMetrics(cx), GetSystemMetrics(cy),
+                                 LR_DEFAULTCOLOR | LR_SHARED) {
+        let _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(which as usize)),
+                             Some(LPARAM(icon.0 as isize)));
+    }
+}
+```
+
+`LR_SHARED` 让系统缓存句柄，不用 `DestroyIcon`；资源缺失（构建机没 rc.exe）时
+`LoadImageW` 返回错误，这里跳过即可，退回默认图标不影响功能。
+
 **装完没变？** Windows 会缓存图标：改完 exe 重装后，「设置 → 应用」可能还显示旧色块。
 重启 `explorer.exe` 或注销重进一次即可，不是没生效。
 
@@ -2401,7 +2428,7 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 
 70. **Inno 的 `.iss` / `.isl` 必须存成 UTF-8 with BOM。** 没有 BOM 时 Inno 6 按系统 ANSI（中文 Windows 上是 936）解码，向导里的中文全成乱码，而**编译不报任何错**——只有真跑一遍安装器才看得见。仓库里这两个文件都带 BOM，改它们时别让编辑器把 BOM 去掉（`Write` 类工具默认写无 BOM）。判据：`[System.IO.File]::ReadAllBytes($f)[0..2] -join ','` 等于 `239,187,191`。
 71. **卸载时删用户数据必须用原始用户身份，静默模式还得自己判参数。** ① 卸载器跑在提权进程里，`%APPDATA%` / `%LOCALAPPDATA%` 展开的是**提权账户**的 profile：标准用户输管理员凭据卸载时，删的是管理员的目录，登录用户的数据一份没动。用 Inno 的 `ExecAsOriginalUser` 让 `purge` 回到登录用户上下文。② `SuppressibleMsgBox` 在 `/VERYSILENT` 下**直接返回你给的默认值**（`IDNO`），所以「静默卸载问一句要不要删数据」等于永远不删——必须先判 `ParamStr` 里有没有 `/PURGE`，再决定弹不弹。③ 同理，静默卸载不带 `/NOCLOSEAPPLICATIONS` 时 Inno 会**主动关掉**占用文件的程序（微信、浏览器都算），批量部署脚本里这是事故。
-72. **exe 没有图标资源时，「设置 → 应用」显示默认色块，且不报任何错。** `UninstallDisplayIcon` 指向的 exe 若资源段里只有 `RT_MANIFEST`，Windows 就画一块占位方块；开始菜单快捷方式、任务栏、Alt+Tab 同时失效（`[Icons]` 不写 `IconFilename` 时回退到目标 exe 的图标）。**链接器不接受裸 `.ico`**——PE 的图标必须是 `RT_ICON` + `RT_GROUP_ICON`，只能由 `rc.exe` 编成 `.res` 再当链接器输入（`cargo:rustc-link-arg-bins`）。判据：解析资源目录第一层类型，`3,14,24` 才算齐，只有 `24` 就是没图标（`check.ps1` 的 `Get-PeResourceTypeId`）。另两个坑：① `rc.exe` 无 BOM 时按 ANSI 解码 `.rc`，里面写中文注释会乱码——`.rc` 保持纯 ASCII，说明写进 `build.rs`；② 相对路径以**进程 cwd** 为准，`build.rs` 要 `current_dir(crate_dir)`，否则 `../../../data/icon/x.ico` 找不到。改完重装还显示旧色块是 Windows 图标缓存，重启 explorer 即可。
+72. **exe 没有图标资源时，「设置 → 应用」显示默认色块，且不报任何错。** `UninstallDisplayIcon` 指向的 exe 若资源段里只有 `RT_MANIFEST`，Windows 就画一块占位方块；开始菜单快捷方式、任务栏、Alt+Tab 同时失效（`[Icons]` 不写 `IconFilename` 时回退到目标 exe 的图标）。**链接器不接受裸 `.ico`**——PE 的图标必须是 `RT_ICON` + `RT_GROUP_ICON`，只能由 `rc.exe` 编成 `.res` 再当链接器输入（`cargo:rustc-link-arg-bins`）。判据：解析资源目录第一层类型，`3,14,24` 才算齐，只有 `24` 就是没图标（`check.ps1` 的 `Get-PeResourceTypeId`）。另两个坑：① `rc.exe` 无 BOM 时按 ANSI 解码 `.rc`，里面写中文注释会乱码——`.rc` 保持纯 ASCII，说明写进 `build.rs`；② 相对路径以**进程 cwd** 为准，`build.rs` 要 `current_dir(crate_dir)`，否则 `../../../data/icon/x.ico` 找不到。**还有一层更容易漏**：exe 有资源 ≠ 窗口有图标——标题栏 / 任务栏 / Alt+Tab 取的是**窗口图标**（类 `hIcon` 或 `WM_SETICON`），与 `UninstallDisplayIcon` 读的 exe 资源是两条路，只嵌资源的表现就是「应用列表好了、标题栏还是方块」。改完重装还显示旧色块是 Windows 图标缓存，重启 explorer 即可。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
@@ -2449,7 +2476,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b-UI 设置窗口视觉重做 | ✅ **已真机验收（2026-10-27，D79 + D80 + D81）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已真机验收（2026-10-27，D83）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
 | M4d emoji 改绑页 + `config_version` | ✅ **已真机验收（2026-10-27，v1.61–v1.68；D85–D92）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属；v1.64 再补（D88/D89）：改绑输入校验前置（`check_input` 三种人话，红色错误写在面板行 1、绘制时现算）、列表 emoji 列改 D2D 彩色自绘（§4.25）；**v1.68 再补（D92）**：主窗口绘制改双缓冲、hover 只重绘页签条 / 段选块（§4.27）） |
-| M4e 安装包 / 卸载 + 全量回归 | ✅ **已实现（2026-10-27，D93，待真机验收）**（§4.28：`installer/heinrich.iss`（Inno 6，中文向导，x64，`CloseApplications`）+ `build.ps1 -Installer`；`heinrich-setup purge` 子命令；卸载默认保留用户数据、`/PURGE` 才清，且以 `runasoriginaluser` 执行；`tools/accept-m4e.ps1` 备份 → 装 → 卸 → `PURGE` 卸 → 恢复；`check.ps1` 加安装包编译步；Cargo 版本 `1.0.0`）。**v1.72 补 exe 图标资源（D94，§4.29）：`build.rs` 调 `rc.exe` 把 `resources.rc` 编进 exe，`check.ps1` 断言资源段含 `RT_GROUP_ICON`** |
+| M4e 安装包 / 卸载 + 全量回归 | ✅ **已实现（2026-10-27，D93，待真机验收）**（§4.28：`installer/heinrich.iss`（Inno 6，中文向导，x64，`CloseApplications`）+ `build.ps1 -Installer`；`heinrich-setup purge` 子命令；卸载默认保留用户数据、`/PURGE` 才清，且以 `runasoriginaluser` 执行；`tools/accept-m4e.ps1` 备份 → 装 → 卸 → `PURGE` 卸 → 恢复；`check.ps1` 加安装包编译步；Cargo 版本 `1.0.0`）。**v1.72 补 exe 图标资源（D94，§4.29）：`build.rs` 调 `rc.exe` 把 `resources.rc` 编进 exe，`check.ps1` 断言资源段含 `RT_GROUP_ICON`；v1.73 补窗口图标：`create_window` 发两档 `WM_SETICON`（标题栏 / 任务栏）** |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。

@@ -59,16 +59,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect,
     GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, KillTimer,
-    LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
+    LoadCursorW, LoadImageW, MessageBoxW, MoveWindow, PostQuitMessage, RealChildWindowFromPoint,
     RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW,
     ShowWindow, ShowWindowAsync, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, IDC_ARROW, IDYES,
-    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, SB_HORZ, SM_CXVSCROLL, SW_HIDE,
-    SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT,
-    WM_SIZE, WM_TIMER, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE,
+    CW_USEDEFAULT, GWLP_ID, GWLP_USERDATA, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, ICON_BIG, ICON_SMALL,
+    IDC_ARROW, IDYES, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, MB_ICONINFORMATION, MB_ICONWARNING,
+    MB_OK, MB_YESNO, MSG, SB_HORZ, SM_CXICON, SM_CXSMICON, SM_CXVSCROLL, SM_CYICON, SM_CYSMICON,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOW_STYLE, WM_CHAR,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
+    WM_SETFONT, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN,
+    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::lex::{find_data_dir, Lexicons};
@@ -4420,7 +4421,7 @@ fn create_window(app: &App) -> Result<HWND, String> {
         let dpi = app.dpi;
         let w = (900.0 * dpi) as i32;
         let h = (600.0 * dpi) as i32;
-        CreateWindowExW(
+        let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             PCWSTR(class.as_ptr()),
             w!("亨利五笔 · 设置"),
@@ -4437,7 +4438,43 @@ fn create_window(app: &App) -> Result<HWND, String> {
             Some(HINSTANCE(hinstance.0)),
             Some(app as *const App as *const core::ffi::c_void),
         )
-        .map_err(|e| format!("建窗失败：{e}"))
+        .map_err(|e| format!("建窗失败：{e}"))?;
+
+        // 窗口图标取 exe 里的 id=1 资源（`resources.rc`，build.rs 用 rc.exe 编进去）。
+        //
+        // **光嵌进 exe 不够**：Windows「设置 → 应用」读的是 `UninstallDisplayIcon`
+        // 指向的 exe 资源，而标题栏 / 任务栏 / Alt+Tab 读的是**窗口图标**——后者默认
+        // 来自窗口类的 `hIcon`，没设就是系统默认图标。两处来源不同，所以会出现
+        // 「应用列表里有图标、标题栏左上角还是个方块」这种半对半错。
+        //
+        // 分大小两档发 `WM_SETICON`：`ICON_SMALL` 给标题栏，`ICON_BIG` 给任务栏与
+        // Alt+Tab。尺寸取 `GetSystemMetrics`，程序是 PerMonitorV2，高 DPI 下才对得上。
+        //
+        // 资源缺失（构建机没有 rc.exe，build.rs 只警告不失败）时 `LoadImageW` 返回
+        // 错误，这里跳过，退回系统默认图标——不影响任何功能。
+        // `LR_SHARED`：句柄由系统缓存管理，不需要 `DestroyIcon`。
+        let icon_res = PCWSTR(1 as *const u16); // MAKEINTRESOURCEW(1)
+        for (which, cx, cy) in [
+            (ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
+            (ICON_BIG, SM_CXICON, SM_CYICON),
+        ] {
+            if let Ok(icon) = LoadImageW(
+                Some(HINSTANCE(hinstance.0)),
+                icon_res,
+                IMAGE_ICON,
+                GetSystemMetrics(cx),
+                GetSystemMetrics(cy),
+                LR_DEFAULTCOLOR | LR_SHARED,
+            ) {
+                let _ = SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(which as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                );
+            }
+        }
+        Ok(hwnd)
     }
 }
 
