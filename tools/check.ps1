@@ -42,6 +42,42 @@ function Invoke-Step([string]$Name, [scriptblock]$Action) {
     }
 }
 
+# 读 PE 的资源类型 ID（只解析到第一层：类型）。纯 stdlib，不引 .NET 的
+# System.Reflection.Metadata——那要 Add-Type，某些受限环境会拦。
+function Get-PeResourceTypeId([string]$Path) {
+    $b = [System.IO.File]::ReadAllBytes($Path)
+    $pe = [BitConverter]::ToInt32($b, 0x3C)
+    $opt = $pe + 24                                    # PE\0\0 + COFF(20)
+    $nsec = [BitConverter]::ToUInt16($b, $pe + 6)
+    $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
+    $magic = [BitConverter]::ToUInt16($b, $opt)
+    $dd = $opt + $(if ($magic -eq 0x20B) { 112 } else { 96 })
+    $resRva = [BitConverter]::ToUInt32($b, $dd + 16)    # DataDirectory[2]
+    if ($resRva -eq 0) { return @() }
+
+    $resOff = -1
+    for ($i = 0; $i -lt $nsec; $i++) {
+        $s = $opt + $optSize + $i * 40
+        $vs = [BitConverter]::ToUInt32($b, $s + 8)
+        $va = [BitConverter]::ToUInt32($b, $s + 12)
+        $rs = [BitConverter]::ToUInt32($b, $s + 16)
+        $rp = [BitConverter]::ToUInt32($b, $s + 20)
+        if ($resRva -ge $va -and $resRva -lt ($va + [Math]::Max($vs, $rs))) {
+            $resOff = $resRva - $va + $rp
+            break
+        }
+    }
+    if ($resOff -lt 0) { return @() }
+
+    $named = [BitConverter]::ToUInt16($b, $resOff + 12)
+    $ids = [BitConverter]::ToUInt16($b, $resOff + 14)
+    $out = @()
+    for ($i = 0; $i -lt ($named + $ids); $i++) {
+        $out += [BitConverter]::ToUInt32($b, $resOff + 16 + $i * 8)
+    }
+    return $out
+}
+
 Invoke-Step 'cargo fmt --check' { & cargo fmt --all -- --check }
 Invoke-Step 'cargo clippy' { & cargo clippy --all-targets -- -D warnings }
 Invoke-Step 'cargo test' { & cargo test --all }
@@ -200,6 +236,29 @@ Invoke-Step '设置窗口自测' { & cargo run --release -q -p heinrich-settings
 # 窗口层的自测：只查 z 序与命中测试。截图看着完美、鼠标点哪儿都没反应这类问题
 # （F44：Tab 盖住全部按钮）只有查命中才查得出来，肉眼和截图都漏。
 Invoke-Step '设置窗口 z 序/命中自测' { & cargo run --release -q -p heinrich-settings -- --selftest-ui --data $DataDir }
+
+# exe 自带的图标（v1.72 / D94）：安装包把注册表的 UninstallDisplayIcon 指到
+# heinrich-settings.exe，Windows「设置 → 应用」读的就是这个 exe 的 RT_GROUP_ICON。
+# 缺了它程序照跑、卸载照卸，只是应用列表里显示一块默认色块——典型的静默退化，
+# 肉眼要装完才看得见，所以让机器盯。build.rs 在缺 rc.exe 时只警告不失败
+# （内网机可能没装 SDK），这条就是那道兜底。
+Invoke-Step '可执行文件图标' {
+    $exe = Join-Path $root 'target\release\heinrich-settings.exe'
+    if (-not (Test-Path $exe)) {
+        Write-Host "没有 $exe，先跑 cargo build --release -p heinrich-settings" -ForegroundColor Red
+        exit 1
+    }
+    $types = Get-PeResourceTypeId $exe
+    $icons = @($types | Where-Object { $_ -eq 3 })
+    $groups = @($types | Where-Object { $_ -eq 14 })
+    Write-Output ("  资源类型 {0}；RT_ICON {1} 组 / RT_GROUP_ICON {2} 组" -f
+        (($types | Sort-Object) -join ','), $icons.Count, $groups.Count)
+    if ($groups.Count -eq 0) {
+        Write-Host '资源段里没有 RT_GROUP_ICON：构建机缺 rc.exe？设 RC 环境变量指向 Windows SDK 的 rc.exe' -ForegroundColor Red
+        exit 1
+    }
+    $global:LASTEXITCODE = 0
+}
 
 # 安装包脚本（M4e / D93）：ISCC 只在**构建机**上需要，没装就跳过——日常提交不该
 # 因为「这台机器没装 Inno」而失败；装了就必须保证脚本编得过：.iss 里的路径、
