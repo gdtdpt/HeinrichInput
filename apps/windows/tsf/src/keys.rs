@@ -355,12 +355,15 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     //
     // D97：判据不再看 Shift。旧代码 `!mods.shift` 时 Shift+z 从这里漏过去、一路
     // Pass 给宿主——组合态内按 Shift+z 同样会把大写 `Z` 插进组合串中间（与
-    // Shift+其他字母同一个洞）。现在空缓冲无拼音的临时英文照旧放行，其余一律进缓冲。
+    // Shift+其他字母同一个洞）。现在空缓冲无拼音的临时英文照旧放行，其余一律进缓冲；
+    // D98 起 Shift+z 进缓冲的是**大写 `Z`**——大写不参与匹配（见 `decide` 字母
+    // 分支的说明），单击 Shift 后与整串一起原样上屏。
     if vk == VK_Z {
+        let ch = if mods.shift { 'Z' } else { 'z' };
         return if empty && !input.pinyin {
             Action::Pass
         } else {
-            Action::Buffer('z')
+            Action::Buffer(ch)
         };
     }
 
@@ -371,12 +374,21 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
         // **缓冲非空时不再放行**（D97）：放行会让宿主把大写字母插进组合串中间，
         // TSF 终止组合串，`OnCompositionTerminated` 把编码当残留删掉——用户看到的
         // 是「候选窗出来后按 Shift 打字母，大写直接上屏、光标跳走」。中文态从
-        // 此没有任何键能绕过缓冲直接上屏；Shift+字母与不按 Shift 一样进缓冲
-        // （码全小写，Shift 不改变含义）。
+        // 此没有任何键能绕过缓冲直接上屏。
+        //
+        // D98 修订：进缓冲的是**大写原字符**，不是降成小写——用户要的是「`gA` 都
+        // 进缓冲但匹配不到候选，单击 Shift 后 `gA` 原样上屏」。v1.77 把它降成
+        // 小写，结果 `gA` 被当 `ga` 匹配出了候选，恰好违背了这个意图。大写不参与
+        // 匹配由 server 侧把守（`heinrich-core` 的 `query_with_limit` 入口对大写
+        // 一律空手而归），DLL 只负责把字符原样收进缓冲。
         if mods.shift && empty {
             return Action::Pass;
         }
-        return Action::Buffer(ch);
+        return Action::Buffer(if mods.shift {
+            ch.to_ascii_uppercase()
+        } else {
+            ch
+        });
     }
 
     // 单引号 = 显式拼音标记（§6.5 / D48）。只有装了拼音词库它才有意义：
@@ -608,10 +620,11 @@ mod tests {
             );
         }
         // Shift+z 空缓冲无拼音仍是临时英文（Pass）；装了拼音时与不按 Shift 同判据
-        // （进缓冲，v1.64）；组合态内一律进缓冲（D97——中文态不再有直接上屏的口子）
+        // （进缓冲）；组合态内一律进缓冲（D97——中文态不再有直接上屏的口子）。
+        // D98：按着 Shift 进缓冲的是大写 `Z`，不参与匹配、原样上屏。
         assert_eq!(decide(zh(0), Z, shift()), Action::Pass);
-        assert_eq!(decide(zh(0).with_pinyin(), Z, shift()), Action::Buffer('z'));
-        assert_eq!(decide(zh(2), Z, shift()), Action::Buffer('z'));
+        assert_eq!(decide(zh(0).with_pinyin(), Z, shift()), Action::Buffer('Z'));
+        assert_eq!(decide(zh(2), Z, shift()), Action::Buffer('Z'));
         assert_eq!(
             decide(Input::new(Mode::English).with_pinyin(), Z, m()),
             Action::Pass
@@ -719,13 +732,16 @@ mod tests {
         assert_eq!(decide(zh(2), SPACE, shift()), Action::Commit);
     }
 
-    /// D97 真机回归：候选窗出来后按 Shift 打字母，大写曾直接上屏、组合串被终止、
-    /// 光标跳走。现在缓冲非空时 Shift+字母一律进缓冲（按小写），中文态不再有
-    /// 绕过缓冲的口子。
+    /// D97/D98 真机回归：候选窗出来后按 Shift 打字母，大写曾直接上屏、组合串被
+    /// 终止、光标跳走。现在缓冲非空时 Shift+字母一律进缓冲，且**保留大写原字符**
+    /// （D98）——大写匹配不到任何候选，单击 Shift 后整串原样上屏。
+    /// v1.77 曾把它降成小写，`gA` 被当 `ga` 匹配出候选，不是用户要的行为。
     #[test]
     fn shift_letters_enter_buffer_mid_composition() {
-        assert_eq!(decide(zh(2), V, shift()), Action::Buffer('v'));
-        assert_eq!(decide(zh(2), 0x41, shift()), Action::Buffer('a'), "VK 'A'");
+        assert_eq!(decide(zh(2), V, shift()), Action::Buffer('V'));
+        assert_eq!(decide(zh(2), 0x41, shift()), Action::Buffer('A'), "VK 'A'");
+        // 不按 Shift 照旧小写
+        assert_eq!(decide(zh(2), V, m()), Action::Buffer('v'));
     }
 
     #[test]

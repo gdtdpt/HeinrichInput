@@ -285,6 +285,18 @@ pub fn query_with_limit<S: UsageStore + ?Sized>(
         return nothing;
     }
 
+    // ---- 大写 = 字面内容（D98）----
+    // 缓冲里出现大写字母只有一个来源：组合态内按住 Shift 打字（D97/D98）。它不是
+    // 编码的一部分，**匹配不到任何候选**：整串含大写就不查询，让组合串挂住，等
+    // 用户单击 Shift 原样上屏或退格。这个闸门放在最前面，多段 / 通配 / 单段三条
+    // 路一并挡住——拼音侧的二分本来就区分大小写，五笔侧若不挡会被 `Code::parse`
+    // 悄悄降成小写，打出「`gA` 匹配 `ga`」的假候选。
+    //
+    // 词库装载路径（自定义词、emoji 绑定）不走这里，用户在大写状态下写的码仍有容错。
+    if input.bytes().any(|b| b.is_ascii_uppercase()) {
+        return nothing;
+    }
+
     // ---- 多段（§6.5 / M3.5）----
     // 边界是用户用 `'` 写出来的，不需要猜，所以这里没有 DP。
     if let Some(segs) = split_segments(input) {
@@ -712,6 +724,29 @@ mod tests {
             "五笔不做前缀兜底（D45）：{:?}",
             words(&r.into_all())
         );
+    }
+
+    /// D98：缓冲里的大写是字面内容，不是编码——整串含大写就一条候选都不出。
+    ///
+    /// 真机回归的对照物是 `gA`：五笔侧 `Code::parse` 会把大写降成小写，不挡的话
+    /// `gA` 被当 `ga` 匹配出「一」的假候选。拼音侧的二分本来区分大小写，
+    /// 这道闸统一放在 `query_with_limit` 入口，多段 / 通配一并挡住。
+    #[test]
+    fn uppercase_in_input_matches_nothing() {
+        let s = scheme();
+        let lex = pinyin();
+        let store = MemoryStore::new();
+        let cfg = RankingConfig::default();
+        // `v` 本来有候选（一级简码「发」），带一个大写就全部消失
+        assert!(!query(&s, Some(&lex), "v", &store, 1_000, &cfg).is_empty());
+        for code in ["vA", "Vb", "VB", "vbG", "hao'A"] {
+            let r = query(&s, Some(&lex), code, &store, 1_000, &cfg);
+            assert!(
+                r.is_empty(),
+                "`{code}` 含大写，不该匹配到任何候选：{:?}",
+                words(&r.into_all())
+            );
+        }
     }
 
     #[test]
