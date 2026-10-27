@@ -17,10 +17,15 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Installer
+    顺带用 Inno Setup 打出 dist\HeinrichSetup-<版本>.exe（需要构建机装 ISCC）。
 #>
 [CmdletBinding()]
 param(
-    [string]$DistDir
+    [string]$DistDir,
+    [switch]$Installer
 )
 
 # 只对 PowerShell 自己的 cmdlet 用 Stop。原生程序写 stderr 时，Windows PowerShell 5.1
@@ -151,3 +156,71 @@ Get-ChildItem -Recurse $DistDir -File |
     ForEach-Object {
         Write-Host ("  {0,-24} {1,10:N0} 字节" -f $_.Name, $_.Length)
     }
+
+# ---------------------------------------------------------------------------
+# 安装包（M4e / D93）
+# ---------------------------------------------------------------------------
+# ISCC 只在**构建机**上需要：产物是单 exe 自解压，内网脱机分发不依赖任何运行时。
+# 没装就跳过——不加 -Installer 的日常构建完全不受影响。
+if (-not $Installer) {
+    exit 0
+}
+
+Write-Host ''
+Write-Host '== 安装包 ==' -ForegroundColor Green
+
+function Find-Iscc {
+    # 顺序：环境变量 → winget 的用户级安装 → 官方安装器的两个默认位置 → PATH。
+    # 不用 Join-Path 直接拼可能为空的 env（${env:ProgramFiles(x86)} 在 32 位系统上是空的，
+    # Join-Path 会抛「Path 为空」）。
+    $candidates = @()
+    if ($env:ISCC) { $candidates += $env:ISCC }
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe') }
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if ($base) { $candidates += (Join-Path $base 'Inno Setup 6\ISCC.exe') }
+    }
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    $cmd = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+$iscc = Find-Iscc
+if (-not $iscc) {
+    Write-Host '  找不到 ISCC.exe（Inno Setup 6 的编译器）' -ForegroundColor Red
+    Write-Host '  安装（任选一种）：' -ForegroundColor Yellow
+    Write-Host '    winget install --id JRSoftware.InnoSetup --source winget' -ForegroundColor DarkGray
+    Write-Host '    https://jrsoftware.org/isdl.php' -ForegroundColor DarkGray
+    Write-Host '  也可以用环境变量 ISCC 指向它，构建本身已经成功，只是没有安装包。' -ForegroundColor DarkGray
+    exit 1
+}
+
+# 版本号与 Cargo 同源：安装包、控制面板、heinrich-setup status 显示同一个数。
+$cargoToml = Get-Content (Join-Path $root 'Cargo.toml') -Raw
+$verMatch = [regex]::Match($cargoToml, '(?m)^version\s*=\s*"([^"]+)"')
+if (-not $verMatch.Success) {
+    Write-Host '  无法从 Cargo.toml 读出 workspace 版本号' -ForegroundColor Red
+    exit 1
+}
+$appVersion = $verMatch.Groups[1].Value
+Write-Host "  ISCC     : $iscc"
+Write-Host "  版本     : $appVersion"
+
+& $iscc "/DAppVersion=$appVersion" (Join-Path $root 'installer\heinrich.iss') |
+    ForEach-Object { Write-Host "  $_" }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host '  安装包编译失败' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+$setupName = "HeinrichSetup-$appVersion.exe"
+$setupPath = Join-Path $DistDir $setupName
+if (-not (Test-Path $setupPath)) {
+    Write-Host "  编译报告成功，但没找到 $setupPath" -ForegroundColor Red
+    exit 1
+}
+$size = (Get-Item $setupPath).Length
+Write-Host ("  安装包   : {0}（{1:N1} MB）" -f $setupPath, ($size / 1MB)) -ForegroundColor Green
+

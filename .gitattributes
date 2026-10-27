@@ -5,6 +5,11 @@
 # PowerShell 脚本：UTF-8 with BOM + CRLF（Windows PowerShell 5.1 的稳妥组合）
 *.ps1 text eol=crlf
 
+# Inno Setup 脚本与语言包：UTF-8 with BOM + CRLF。
+# BOM 一旦丢了，Inno 6 按系统 ANSI（936）解码，向导里的中文全乱，而且编译不报错。
+installer/*.iss text eol=crlf
+installer/*.isl text eol=crlf
+
 # 词库是生成物，必须与生成时逐字节一致
 data/wubi86/lexicon.tsv text eol=lf
 

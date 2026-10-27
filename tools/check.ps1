@@ -201,5 +201,43 @@ Invoke-Step '设置窗口自测' { & cargo run --release -q -p heinrich-settings
 # （F44：Tab 盖住全部按钮）只有查命中才查得出来，肉眼和截图都漏。
 Invoke-Step '设置窗口 z 序/命中自测' { & cargo run --release -q -p heinrich-settings -- --selftest-ui --data $DataDir }
 
+# 安装包脚本（M4e / D93）：ISCC 只在**构建机**上需要，没装就跳过——日常提交不该
+# 因为「这台机器没装 Inno」而失败；装了就必须保证脚本编得过：.iss 里的路径、
+# 语言包、[Code] 段全是编译期才暴露的错，装包那一刻才发现就太晚了。
+# 输出到临时目录，不覆盖 dist 里那份真产物。
+$isccPath = @(
+    $env:ISCC,
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+if ($isccPath) {
+    Invoke-Step '安装包脚本编译' {
+        $verMatch = [regex]::Match((Get-Content (Join-Path $root 'Cargo.toml') -Raw), '(?m)^version\s*=\s*"([^"]+)"')
+        if (-not $verMatch.Success) {
+            Write-Host '无法从 Cargo.toml 读出 workspace 版本号' -ForegroundColor Red
+            exit 1
+        }
+        $ver = $verMatch.Groups[1].Value
+        $tmpOut = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-iss-{0}" -f $PID)
+        New-Item -ItemType Directory -Force -Path $tmpOut | Out-Null
+        try {
+            & $isccPath "/DAppVersion=$ver" "/O$tmpOut" (Join-Path $root 'installer\heinrich.iss') |
+                ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not (Test-Path (Join-Path $tmpOut "HeinrichSetup-$ver.exe"))) {
+                Write-Host '编译报告成功，但没有产出安装包' -ForegroundColor Red
+                exit 1
+            }
+        }
+        finally {
+            Remove-Item $tmpOut -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+else {
+    Write-Host '== 安装包脚本编译' -ForegroundColor Cyan
+    Write-Host '  跳过：没有 ISCC.exe（winget install --id JRSoftware.InnoSetup --source winget）' -ForegroundColor Yellow
+}
+
 Write-Host ''
 Write-Host '全部通过。' -ForegroundColor Green

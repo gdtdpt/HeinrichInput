@@ -2,8 +2,9 @@
 //!
 //! ```text
 //! heinrich-setup install     注册（会请求管理员权限）
-//! heinrich-setup uninstall   反注册（会请求管理员权限）
+//! heinrich-setup uninstall   反注册（会请求管理员权限；不动用户数据）
 //! heinrich-setup status      检查当前注册状态（不需要管理员）
+//! heinrich-setup purge       删除用户词库 / 配置 / 学习库（不需要管理员）
 //! ```
 //!
 //! ## 为什么单独做一个注册器，而不是 regsvr32
@@ -24,7 +25,7 @@ mod shortcut;
 mod tsf;
 
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -56,6 +57,7 @@ fn main() {
         "uninstall" | "remove" => uninstall(),
         "status" | "check" => status(),
         "shortcut" | "lnk" => shortcut_only(),
+        "purge" | "reset-data" => purge(),
         "" | "help" | "h" => {
             usage();
             0
@@ -75,6 +77,7 @@ fn usage() {
     println!("  heinrich-setup uninstall   反注册（会请求管理员权限）");
     println!("  heinrich-setup status      检查注册状态（不需要管理员）");
     println!("  heinrich-setup shortcut    只建当前用户的开始菜单快捷方式（不需要管理员）");
+    println!("  heinrich-setup purge       删除用户词库 / 配置 / 学习库（不需要管理员，不可恢复）");
     println!(
         "\n注意：本程序必须与 {} 放在同一目录。",
         heinrich_tip_id::DLL_FILE_NAME
@@ -181,11 +184,24 @@ fn dll_path() -> Result<PathBuf, String> {
     Ok(dll)
 }
 
-fn log_dir() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
+/// `%APPDATA%\Heinrich`：自定义词组、配置、emoji 用户层。**用户资产**。
+fn roaming_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .unwrap_or_default();
-    base.join("Heinrich").join("logs")
+        .unwrap_or_default()
+        .join("Heinrich")
+}
+
+/// `%LOCALAPPDATA%\Heinrich`：学习库与日志。换机器不该带走的东西。
+fn local_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("Heinrich")
+}
+
+fn log_dir() -> PathBuf {
+    local_dir().join("logs")
 }
 
 /// `logs` 目录里最新的 `tsf-<yyyymmdd>.log`。
@@ -389,28 +405,26 @@ fn install() -> i32 {
 }
 
 fn print_next_steps() {
-    println!("接下来手工做三件事（M1.0 的验收）：");
+    println!("接下来：");
     println!();
-    println!("  1) 打开  设置 → 时间和语言 → 语言和区域 → 中文(简体，中国)");
     println!(
-        "     → 语言选项 → 添加键盘 → 选「{}」",
+        "  1) 按 Win + 空格（或点任务栏语言图标）切到「{}」。",
         heinrich_tip_id::DISPLAY_NAME
     );
-    println!("     （装完不会自动出现在任务栏，Windows 要求用户确认一次）");
-    println!();
+    println!("     列表里没有它 → 设置 → 时间和语言 → 语言和区域 → 中文(简体，中国)");
     println!(
-        "  2) 切到「{}」，在记事本里敲 vbgd 几个字母。",
+        "     → 语言选项 → 添加键盘 → 选「{}」。",
         heinrich_tip_id::DISPLAY_NAME
     );
-    println!("     ⚠ 这时**应当照常输出英文字母**——M1.0 还不接管按键，这是正确的中间态。");
     println!();
-    println!("  3) 看日志，确认每个按键都进来了：");
     println!(
-        "     {} （按天一个文件，如 tsf-20261023.log）",
-        log_dir().display()
+        "  2) 设置窗口：开始菜单里的「{}」，或系统键盘列表里的「选项」。",
+        heinrich_tip_id::DISPLAY_NAME
     );
+    println!("     日志：{}", log_dir().display());
     println!();
-    println!("卸载：heinrich-setup uninstall");
+    println!("  3) 反注册：heinrich-setup uninstall");
+    println!("     用户数据（词库 / 配置 / 学习库）默认**保留**，要一并删除：heinrich-setup purge");
 }
 
 // ---------------------------------------------------------------------------
@@ -434,33 +448,51 @@ fn uninstall() -> i32 {
         return 1;
     }
 
+    // [0] 先把 server 收掉。它常驻并映射着 `heinrich-server.exe`，不结束的话
+    // 卸载器删文件会得到「文件正在使用」，留下半份程序。与 `install` 第一步同一理由。
+    print!("[0/7] 结束 server … ");
+    let killed = proc::kill_server_in_this_session();
+    if killed.is_empty() {
+        println!("没有在跑的");
+    } else {
+        println!(
+            "已结束 {} 个（pid {}）",
+            killed.len(),
+            killed
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     // 顺序：先从输入法列表摘掉，再撤销语言档与类别，最后删 COM 键。
     // 反过来做会留下「列表里有个条目，点了报错」的中间状态。
-    print!("[1/6] 从输入法列表移除 … ");
+    print!("[1/7] 从输入法列表移除 … ");
     tsf::set_layout(false);
     println!("已提交");
     println!("      注意：如果中文下不再有任何输入法，Windows 可能把默认输入语言改成英文，");
     println!("      这是系统行为（chewing-tsf #553），需要手工切回。");
 
-    print!("[2/6] 撤销语言档 … ");
+    print!("[2/7] 撤销语言档 … ");
     match tsf::unregister_profile() {
         Ok(()) => println!("完成"),
         Err(e) => println!("跳过（{e}）"),
     }
 
-    print!("[3/6] 撤销能力类别 … ");
+    print!("[3/7] 撤销能力类别 … ");
     match tsf::unregister_categories() {
         Ok(()) => println!("完成"),
         Err(e) => println!("跳过（{e}）"),
     }
 
-    print!("[4/6] 删除 CTF\\TIP 键 … ");
+    print!("[4/7] 删除 CTF\\TIP 键 … ");
     match reg::delete_tree(HKEY_LOCAL_MACHINE, &heinrich_tip_id::ctf_tip_key()) {
         Ok(()) => println!("完成"),
         Err(e) => println!("失败（{e}）"),
     }
 
-    print!("[5/6] 删除 CLSID 键 … ");
+    print!("[5/7] 删除 CLSID 键 … ");
     let mut ok = true;
     for key in [
         heinrich_tip_id::clsid_key(),
@@ -479,10 +511,27 @@ fn uninstall() -> i32 {
 
     // [6] 快捷方式。放在最后：它不影响任何注册状态，删不掉也只是留下一个
     // 指向不存在文件的 .lnk（点开报错），不值得让整个卸载失败。
-    print!("[6/6] 删除开始菜单快捷方式 … ");
+    print!("[6/7] 删除开始菜单快捷方式 … ");
     match shortcut::remove_settings_shortcut() {
         Ok(()) => println!("完成"),
         Err(e) => println!("跳过（{e}）"),
+    }
+
+    // [7] 用户数据：**默认保留**。词库、绑定的 emoji、一个多月学出来的词频，
+    // 都是用户自己的东西；卸载不等于放弃它们，重装后还能接着用。
+    print!("[7/7] 用户数据 … ");
+    let kept: Vec<PathBuf> = [roaming_dir(), local_dir()]
+        .into_iter()
+        .filter(|d| d.is_dir())
+        .collect();
+    if kept.is_empty() {
+        println!("没有用户数据");
+    } else {
+        println!("保留");
+        for d in &kept {
+            println!("      {}", d.display());
+        }
+        println!("      要连同用户数据一起删除：heinrich-setup purge（不可恢复）");
     }
 
     println!("\n✓ 反注册结束。已经打开的程序里可能还留着一份已加载的 DLL，重启它们才会彻底卸载。");
@@ -490,6 +539,83 @@ fn uninstall() -> i32 {
         0
     } else {
         1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// purge
+// ---------------------------------------------------------------------------
+
+/// 删除两份用户数据目录，**不反注册**。
+///
+/// 与 `uninstall` 分开的理由：数据是用户的（自定义词组、绑的 emoji、一个多月
+/// 学出来的词频），「卸掉程序」和「扔掉数据」是两件事，合成一步就没有退路。
+/// 安装包的卸载器把它挂在一个**默认不勾**的选项上，并以原始用户身份运行
+/// （Inno 的 `runasoriginaluser`）——提权进程的 `%APPDATA%` 可能是管理员的 profile。
+fn purge() -> i32 {
+    println!("== 亨利五笔 · 删除用户数据 ==\n");
+
+    // learn.db 开着 WAL、logs 里当天的日志也在写：server 不松手就删不掉。
+    print!("结束 server … ");
+    let killed = proc::kill_server_in_this_session();
+    if killed.is_empty() {
+        println!("没有在跑的");
+    } else {
+        println!("已结束 {} 个", killed.len());
+    }
+
+    let mut ok = true;
+    let mut removed = 0usize;
+    for dir in [roaming_dir(), local_dir()] {
+        print!("删除 {} … ", dir.display());
+        if !dir.exists() {
+            println!("跳过（不存在）");
+            continue;
+        }
+        clear_readonly(&dir);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                println!("完成");
+                removed += 1;
+            }
+            Err(e) => {
+                println!("失败（{e}）");
+                ok = false;
+            }
+        }
+    }
+
+    println!();
+    if ok {
+        println!("✓ 已删除 {removed} 个目录，注册状态未动。");
+        println!("  要连注册一起清：heinrich-setup uninstall");
+        0
+    } else {
+        println!("✗ 有目录没删掉。先关掉设置窗口，再试一次。");
+        1
+    }
+}
+
+/// 递归去掉只读属性：`remove_dir_all` 碰上只读文件直接 AccessDenied，
+/// 而日志被备份软件或版本控制标成只读是常事。
+fn clear_readonly(path: &Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                clear_readonly(&entry.path());
+            }
+        }
+    }
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        // Windows 上 set_readonly(false) 只是清掉 FILE_ATTRIBUTE_READONLY，
+        // 没有 unix 那种「整组 mode 被换掉」的副作用。
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perms);
     }
 }
 

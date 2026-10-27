@@ -17,18 +17,45 @@ Windows 上的五笔 86 输入法。**候选顺序跟着你的手变**，**拼�
 
 ## 安装
 
-需要 Windows 10 x64。
+需要 Windows 10 x64（或更新）。
 
-1. 把整个程序目录放到一个固定位置（例如 `C:\Program Files\Heinrich`）。
+### 用安装包（推荐）
+
+1. 双击 `HeinrichSetup-1.0.0.exe`，默认装到 `C:\Program Files\HeinrichInput`。
+   安装器会放好文件、注册输入法、跑四项自检，并建好开始菜单里的「亨利五笔 设置」。
+2. **重启已经打开的记事本、浏览器、编辑器**：DLL 只会被新启动的进程加载。
+3. 在语言栏或 `Win+空格` 里切到「亨利五笔」。
+
+批量部署用静默安装：
+
+```powershell
+.\HeinrichSetup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+```
+
+卸载走「设置 → 应用 → 亨利五笔 → 卸载」。**卸载默认保留你的词库、emoji 绑定与学习库**
+（`%APPDATA%\Heinrich` 与 `%LOCALAPPDATA%\Heinrich`），重装后接着用——这些是你自己
+攒下来的东西，卸载程序是卸的。
+
+要连数据一起删，在卸载向导里勾上那个选项；静默卸载则显式加 `/PURGE`：
+
+```powershell
+& "C:\Program Files\HeinrichInput\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /PURGE
+```
+
+> 卸载时若有程序正加载着 `heinrich_win.dll`（微信、浏览器、编辑器都可能），
+> 那个 DLL 删不掉，Windows 会安排在重启后删除。想立刻清干净就先关掉它们再卸载。
+
+### 用绿色目录（开发态 / 不想装）
+
+1. 把整个程序目录放到一个固定位置（例如 `C:\Heinrich`）。
    `heinrich_win.dll` 与 `heinrich-server.exe` **必须同一个目录**——前者靠「同目录」找后者。
 2. 运行 `heinrich-setup.exe install`，在 UAC 窗口点「是」。
-3. **重启已经打开的记事本、浏览器、编辑器**：DLL 只会被新启动的进程加载。
-4. 在语言栏或 `Win+空格` 里切到「亨利五笔」。
-5. 装完开始菜单里会多一个「亨利五笔 设置」（按 Win 输入「亨利」就能搜到）。
+3. 同上第 2、3 步。
 
 ```
 heinrich-setup.exe status       # 查注册状态（不需要管理员）
-heinrich-setup.exe uninstall    # 卸载
+heinrich-setup.exe uninstall    # 反注册（不动用户数据）
+heinrich-setup.exe purge        # 删除词库 / 配置 / 学习库（不可恢复）
 heinrich-setup.exe shortcut     # 补开始菜单快捷方式（不需要管理员）
 ```
 

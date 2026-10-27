@@ -29,21 +29,21 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.83"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-heinrich-tip-id = { path = "crates/heinrich-tip-id", version = "0.1.0" }
-heinrich-log = { path = "crates/heinrich-log", version = "0.1.0" }
-heinrich-scheme = { path = "crates/heinrich-scheme", version = "0.1.0" }
-heinrich-font = { path = "crates/heinrich-font", version = "0.1.0" }
-heinrich-core = { path = "crates/heinrich-core", version = "0.1.0" }
-heinrich-proto = { path = "crates/heinrich-proto", version = "0.1.0" }
-heinrich-server = { path = "crates/heinrich-server", version = "0.1.0" }
-heinrich-ui = { path = "crates/heinrich-ui", version = "0.1.0" }
-heinrich-win-ui = { path = "apps/windows/ui", version = "0.1.0" }
+heinrich-tip-id = { path = "crates/heinrich-tip-id", version = "1.0.0" }
+heinrich-log = { path = "crates/heinrich-log", version = "1.0.0" }
+heinrich-scheme = { path = "crates/heinrich-scheme", version = "1.0.0" }
+heinrich-font = { path = "crates/heinrich-font", version = "1.0.0" }
+heinrich-core = { path = "crates/heinrich-core", version = "1.0.0" }
+heinrich-proto = { path = "crates/heinrich-proto", version = "1.0.0" }
+heinrich-server = { path = "crates/heinrich-server", version = "1.0.0" }
+heinrich-ui = { path = "crates/heinrich-ui", version = "1.0.0" }
+heinrich-win-ui = { path = "apps/windows/ui", version = "1.0.0" }
 
 [profile.release]
 lto = "thin"

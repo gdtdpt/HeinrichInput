@@ -1863,6 +1863,55 @@ D2D 初始化失败时回落 GDI 单色轮廓（列表功能不因 D2D 挂掉）
 **只有页签那一条**（`dirty.bottom < 客户区高`）。第一半防「白画」，第二半防
 「hover 底色留在屏幕上」，缺一条就退化成另一个 bug。
 
+### 4.28 安装包与卸载数据策略（M4e / D93，v1.71）
+
+产物 `dist\HeinrichSetup-<版本>.exe` 由 Inno Setup 6 编译（脚本 `installer/heinrich.iss`）。
+**不加 `-Installer` 时构建完全不碰它**——ISCC 只在构建机上需要，产物是单 exe，
+内网脱机分发不依赖任何运行时。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Installer
+```
+
+`build.ps1` 找 ISCC 的顺序：`$env:ISCC` → `%LOCALAPPDATA%\Programs\Inno Setup 6`
+（winget 装在这儿，不是 Program Files）→ `%ProgramFiles(x86)%` → `%ProgramFiles%` → PATH。
+找不到就明确报错并给出 `winget install --id JRSoftware.InnoSetup --source winget`。
+版本号从 `Cargo.toml` 的 `[workspace.package] version` 读出来传给 `/DAppVersion`，
+安装包、控制面板、`heinrich-setup status` 三处同号。
+
+**文件布局是硬约束**：安装包必须把 `data\wubi86` 与 `data\pinyin` 一起带走。server 与
+DLL 都靠「exe 同级的 `data\`」定位词库（`heinrich-server/src/main.rs`），少一份
+`lexicon.tsv` 的表现不是报错，而是**所有候选为空**——装完看起来一切正常、打不出字。
+
+**分工**：Inno 只负责放文件、建快捷方式、登记卸载项；注册那 7 步仍交给
+`heinrich-setup.exe install` / `uninstall`。那套代码已经真机验过两轮，重写只会多出一份
+要同步维护的实现（Weasel 也是这么分的：`WeaselSetup` 管注册，安装包管文件）。
+
+**卸载的数据策略是两级**：
+
+| 操作 | 结果 |
+|---|---|
+| 卸载（默认） | 反注册 + 删程序目录；`%APPDATA%\Heinrich` 与 `%LOCALAPPDATA%\Heinrich` **保留** |
+| 卸载 + 勾选 / `/PURGE` | 再跑一次 `heinrich-setup purge`，把两份目录删掉 |
+
+`purge` 自己处理三件事：先结束 server（`learn.db` 开着 WAL，被占用时删不掉）、
+递归清只读属性（`remove_dir_all` 碰上只读文件直接 AccessDenied）、再删两个目录。
+
+**`runasoriginaluser` 不是可选项。** 卸载器跑在提权进程里，`%APPDATA%` 展开的是
+**提权账户**的 profile。标准用户输管理员凭据卸载时，直接删会删到管理员的目录，而登录
+用户的数据一份没动——「卸载干净了」和「数据还在」两边都成立。Inno 的
+`ExecAsOriginalUser` 让 purge 回到启动卸载器的那个人。
+
+**被占用的 DLL 删不掉。** 微信 / WorkBuddy / 浏览器都映射着 `heinrich_win.dll`，
+Windows 不允许删除正在映射的镜像，Inno 会把它登记到重启后删除。静默验收必须传
+`/NOCLOSEAPPLICATIONS`——否则 Inno 在无法交互时会**直接关掉**占用程序（等于把用户的
+微信关掉）。代价是那个 DLL 留在原地，下次重启才消失。
+
+**验收**：`tools\accept-m4e.ps1`（需管理员）。它先把用户数据备份到 `%TEMP%` 再跑，因为
+`/PURGE` 那一步是真删；跑完恢复数据，并把注册恢复成 dist 的开发态——否则验收结束后
+输入法列表里就没有「亨利五笔」了。断言分四组：文件齐不齐、`status` 全绿、默认卸载后
+两份目录**还在**、`/PURGE` 卸载后**都没了**。
+
 ## 5. 数据管线
 
 ```
@@ -2309,6 +2358,9 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     > 同类症状：`--selftest-ui` 在 debug 全绿、在 `dist`（release）失败，先怀疑这条，
     > 而不是怀疑业务代码在两个 profile 下行为不同。
 
+70. **Inno 的 `.iss` / `.isl` 必须存成 UTF-8 with BOM。** 没有 BOM 时 Inno 6 按系统 ANSI（中文 Windows 上是 936）解码，向导里的中文全成乱码，而**编译不报任何错**——只有真跑一遍安装器才看得见。仓库里这两个文件都带 BOM，改它们时别让编辑器把 BOM 去掉（`Write` 类工具默认写无 BOM）。判据：`[System.IO.File]::ReadAllBytes($f)[0..2] -join ','` 等于 `239,187,191`。
+71. **卸载时删用户数据必须用原始用户身份，静默模式还得自己判参数。** ① 卸载器跑在提权进程里，`%APPDATA%` / `%LOCALAPPDATA%` 展开的是**提权账户**的 profile：标准用户输管理员凭据卸载时，删的是管理员的目录，登录用户的数据一份没动。用 Inno 的 `ExecAsOriginalUser` 让 `purge` 回到登录用户上下文。② `SuppressibleMsgBox` 在 `/VERYSILENT` 下**直接返回你给的默认值**（`IDNO`），所以「静默卸载问一句要不要删数据」等于永远不删——必须先判 `ParamStr` 里有没有 `/PURGE`，再决定弹不弹。③ 同理，静默卸载不带 `/NOCLOSEAPPLICATIONS` 时 Inno 会**主动关掉**占用文件的程序（微信、浏览器都算），批量部署脚本里这是事故。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -2355,7 +2407,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b-UI 设置窗口视觉重做 | ✅ **已真机验收（2026-10-27，D79 + D80 + D81）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已真机验收（2026-10-27，D83）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
 | M4d emoji 改绑页 + `config_version` | ✅ **已真机验收（2026-10-27，v1.61–v1.68；D85–D92）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属；v1.64 再补（D88/D89）：改绑输入校验前置（`check_input` 三种人话，红色错误写在面板行 1、绘制时现算）、列表 emoji 列改 D2D 彩色自绘（§4.25）；**v1.68 再补（D92）**：主窗口绘制改双缓冲、hover 只重绘页签条 / 段选块（§4.27）） |
-| M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
+| M4e 安装包 / 卸载 + 全量回归 | ✅ **已实现（2026-10-27，D93，待真机验收）**（§4.28：`installer/heinrich.iss`（Inno 6，中文向导，x64，`CloseApplications`）+ `build.ps1 -Installer`；`heinrich-setup purge` 子命令；卸载默认保留用户数据、`/PURGE` 才清，且以 `runasoriginaluser` 执行；`tools/accept-m4e.ps1` 备份 → 装 → 卸 → `PURGE` 卸 → 恢复；`check.ps1` 加安装包编译步；Cargo 版本 `1.0.0`） |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
 **动手前必读**：`docs/design/tsf-preflight.md`。里面写了注册要写哪些键、必须实现哪些接口、15 条已知坑，以及「不要在 M1.0 通过之前写组合串与 UI 代码」的理由。
