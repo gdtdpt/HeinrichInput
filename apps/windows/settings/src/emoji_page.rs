@@ -97,6 +97,47 @@ pub fn check_input(text: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+/// 「绑到」框：填一个词或一个五笔码，**自动判向**，返回对应的 key。
+///
+/// 为什么自动判而不是让用户选「按词 / 按码」：两个输入域几乎不可能重叠
+/// （词是汉字、码是 a–y 的字母），多一个开关就多一次「我该选哪个」的停顿。
+/// 判错了也有救——报错里给出两种写法的例子。
+pub fn parse_target(text: &str) -> Result<Key, String> {
+    let s = text.trim();
+    if s.is_empty() {
+        return Err("还没填「绑到」：写一个词（如 好、好评），或一个五笔码（如 vb）".into());
+    }
+    // 词与码里出现引号/反斜杠时直接拒绝：解析层的 TOML 子集不认转义
+    // （中文词、a–y 的码本来就不会有），写出去一个解析不回的文件才是事故。
+    if s.contains('"') || s.contains('\\') {
+        return Err("词或码里不能有引号和反斜杠".into());
+    }
+    if s.chars().all(is_han) {
+        let n = s.chars().count();
+        if n > 8 {
+            return Err(format!("「{s}」有 {n} 个字：一条绑定最多挂 8 个字的词"));
+        }
+        return Ok(Key::Word(s.to_string()));
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.chars().all(|c| ('a'..='y').contains(&c)) {
+        let n = lower.chars().count();
+        if n > 4 {
+            return Err(format!("五笔码最长 4 位（「{s}」有 {n} 位）"));
+        }
+        return Ok(Key::Code(lower));
+    }
+    Err(format!(
+        "「{s}」看不懂：填中文词（如 好、好评），或五笔码（如 vb，字母 a–y）"
+    ))
+}
+
+/// 汉字判据：基本区 + 扩展 A + 兼容表意字（够覆盖词库里的词）。
+fn is_han(c: char) -> bool {
+    matches!(c,
+        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}')
+}
+
 /// emoji 页模型：两份层 + 指向它们的路径。
 pub struct EmojiPage {
     /// 内置表路径（保留给错误信息与将来的「打开内置表」入口）
@@ -393,6 +434,22 @@ impl Key {
         }
     }
 
+    /// 直接写回「绑到」框的样子（词就是词，码就是码——不带前缀）。
+    pub fn label(&self) -> String {
+        match self {
+            Key::Word(w) => w.clone(),
+            Key::Code(c) => c.clone(),
+        }
+    }
+
+    /// 给人看的名字：码加一个「码 」前缀，免得和音节混。
+    pub fn display(&self) -> String {
+        match self {
+            Key::Word(w) => w.clone(),
+            Key::Code(c) => format!("码 {c}"),
+        }
+    }
+
     fn matches(&self, e: &EmojiEntry) -> bool {
         match self {
             Key::Word(w) => e.word.as_deref() == Some(w.as_str()),
@@ -444,6 +501,30 @@ mod tests {
         assert!(e.contains("是 2 个字符"), "{e}");
         assert_eq!(check_input(" 👍 ").unwrap(), "👍", "两端空白要吃掉");
         assert_eq!(check_input("❤️").unwrap(), "❤️", "变体选择符算一枚");
+    }
+
+    /// 「绑到」框的自动判向（v1.65）：汉字 → 词、a–y → 码，掺了别的一律报错。
+    ///
+    /// 这个函数决定了「能不能把 emoji 绑到单字上」——单字就是长度 1 的词，
+    /// 不需要任何特殊分支；当年绑不上是因为界面上没地方填词（列表按词列，
+    /// 没绑过的词不在列表里），不是数据层不收。
+    #[test]
+    fn parse_target_picks_word_or_code() {
+        assert_eq!(parse_target(" 好 ").unwrap(), Key::Word("好".into()));
+        assert_eq!(parse_target("好评").unwrap(), Key::Word("好评".into()));
+        assert_eq!(parse_target(" VB ").unwrap(), Key::Code("vb".into()));
+        assert_eq!(parse_target("vbkt").unwrap(), Key::Code("vbkt".into()));
+        // 空 / 混写 / 太长 / 引号，四种各有各的说法
+        assert!(parse_target(" ").unwrap_err().contains("还没填"));
+        assert!(parse_target("好a").unwrap_err().contains("看不懂"));
+        assert!(parse_target("abcdefgh").unwrap_err().contains("最长 4 位"));
+        assert!(parse_target("vbtkz").unwrap_err().contains("看不懂"));
+        assert!(parse_target("一二三四五六七八九")
+            .unwrap_err()
+            .contains("最多挂 8"));
+        assert!(parse_target("a\"b").unwrap_err().contains("引号"));
+        // z 不是码字母（只做通配），这里必须判成「看不懂」而不是一个查不到的码
+        assert!(parse_target("vz").unwrap_err().contains("看不懂"));
     }
 
     /// `rebind` 也必须走同一条校验：两个字符拼一起、ZWJ 序列都不收。

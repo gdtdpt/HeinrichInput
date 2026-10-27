@@ -114,6 +114,11 @@ const ID_BE_OPEN: usize = 414;
 const ID_NOTE_EMOJI: usize = 420;
 const ID_E_EMOJI_NEW: usize = 431;
 const ID_BE_BROWSE: usize = 432;
+/// 「绑到」输入框（v1.65）：填词或码，从这里出发绑任何词——包括没绑过 emoji 的
+/// 单字，它们在列表里根本不存在一行。
+const ID_E_EMOJI_TARGET: usize = 433;
+/// 「只看我绑的」过滤器（v1.65）。
+const ID_BE_ONLY: usize = 434;
 
 /// 页序号。**与页签顺序、`pages` 数组的下标三者必须一致**。
 /// `--picker` 用的定时器 id（只在这个开发者开关下出现）。
@@ -203,13 +208,15 @@ struct Geo {
     /// 学习页：搜索框外框、列表卡。
     learn_search_box: RECT,
     learn_card: RECT,
-    /// emoji 页：搜索框外框、列表卡、编辑面板卡、面板内新 emoji 框外框、
-    /// 「选中」信息行与新 emoji 标签。
+    /// emoji 页：搜索框外框、列表卡、编辑面板卡、面板内「绑到」与 emoji 两个
+    /// 输入框的外框、「选中」信息行与两个标签。
     emoji_search_box: RECT,
     emoji_card: RECT,
     emoji_panel_card: RECT,
+    emoji_target_box: RECT,
     emoji_new_box: RECT,
     emoji_sel_label: RECT,
+    emoji_target_label: RECT,
     emoji_new_label: RECT,
 }
 
@@ -249,12 +256,15 @@ pub struct App {
     // emoji 页
     emoji_list: HWND,
     e_emoji_search: HWND,
+    /// 「绑到」：词或码（v1.65）
+    e_emoji_target: HWND,
     e_emoji_new: HWND,
     b_emoji_browse: HWND,
     b_emoji_save: HWND,
     b_emoji_disable: HWND,
     b_emoji_restore: HWND,
     b_emoji_toggle: HWND,
+    b_emoji_only: HWND,
     b_emoji_open: HWND,
     n_emoji: HWND,
 
@@ -326,6 +336,11 @@ pub struct App {
     emoji_msg: Option<String>,
     /// 列表里画彩色 emoji 的 D2D 画笔（懒建：只有 emoji 页用得上）
     glyph: Option<crate::emoji_draw::ColorEmoji>,
+    /// 列表过滤器（v1.65）：只看用户层动过的行（已改绑 / 已停用 / 新增）。
+    ///
+    /// 内置表两千多条，用户自己绑的往往只有几条——混在一起按词排序，
+    /// 「我刚绑的那条在哪」就得靠搜索词回忆。开这个开关，列表只剩自己的改动。
+    emoji_only_user: bool,
 }
 
 impl App {
@@ -415,12 +430,14 @@ impl App {
             n_learn: HWND::default(),
             emoji_list: HWND::default(),
             e_emoji_search: HWND::default(),
+            e_emoji_target: HWND::default(),
             e_emoji_new: HWND::default(),
             b_emoji_browse: HWND::default(),
             b_emoji_save: HWND::default(),
             b_emoji_disable: HWND::default(),
             b_emoji_restore: HWND::default(),
             b_emoji_toggle: HWND::default(),
+            b_emoji_only: HWND::default(),
             b_emoji_open: HWND::default(),
             n_emoji: HWND::default(),
             pages: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
@@ -455,6 +472,7 @@ impl App {
             emoji_support,
             emoji_msg: None,
             glyph: None,
+            emoji_only_user: false,
         })
     }
 
@@ -798,17 +816,27 @@ impl App {
             self.font,
         )?;
         self.e_emoji_new = child(hwnd, w!("Edit"), "", edit_style, ID_E_EMOJI_NEW, self.font)?;
+        // 「绑到」框（v1.65）：Tab 序里排在 emoji 框前面——先想清楚绑给谁，
+        // 再挑 emoji，与面板上从左到右的读法一致。
+        self.e_emoji_target = child(
+            hwnd,
+            w!("Edit"),
+            "",
+            edit_style,
+            ID_E_EMOJI_TARGET,
+            self.font,
+        )?;
 
         // 挑 emoji 走自绘网格选择器（D86 返工）：原生 ComboBox 一千多项只能滚，
         // 还看不出分类；而之前的 0x0020（本想写 WS_VSCROLL）恰好撞上
         // CBS_OWNERDRAWVARIABLE，下拉框变成自绘模式、里面一片空白。
         self.b_emoji_browse = button(hwnd, "浏览 emoji…", ID_BE_BROWSE, self.font)?;
 
-        // 建子控件的顺序 = Tab 键顺序：改绑是主操作，第一个建
+        // 建子控件的顺序 = Tab 键顺序：保存绑定是主操作，第一个建
         self.b_emoji_save = child(
             hwnd,
             w!("Button"),
-            "改绑",
+            "保存绑定",
             WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
             ID_BE_SAVE,
             self.font,
@@ -816,6 +844,7 @@ impl App {
         self.b_emoji_disable = button(hwnd, "停用", ID_BE_DISABLE, self.font)?;
         self.b_emoji_restore = button(hwnd, "恢复内置", ID_BE_RESTORE, self.font)?;
         self.b_emoji_toggle = button(hwnd, "", ID_BE_TOGGLE, self.font)?;
+        self.b_emoji_only = button(hwnd, "只看我绑的", ID_BE_ONLY, self.font)?;
         self.b_emoji_open = button(hwnd, "打开文件位置", ID_BE_OPEN, self.font)?;
         self.n_emoji = child(
             hwnd,
@@ -829,6 +858,7 @@ impl App {
         self.pages[PAGE_EMOJI] = vec![
             self.emoji_list,
             self.e_emoji_search,
+            self.e_emoji_target,
             self.e_emoji_new,
             // 漏一个就是「它留在每一页上」：切页只对 `pages[n]` 里的控件做
             // `ShowWindow(SW_HIDE)`，没登记的就一直显示在最上层（真机看到
@@ -838,6 +868,7 @@ impl App {
             self.b_emoji_disable,
             self.b_emoji_restore,
             self.b_emoji_toggle,
+            self.b_emoji_only,
             self.b_emoji_open,
             self.n_emoji,
         ];
@@ -1384,7 +1415,9 @@ impl App {
         let panel = Self::rect(cx, panel_y, cw2, panel_h);
         self.geo.emoji_panel_card = panel;
 
-        // 面板行 1：「选中」信息（纯自绘文字）；行 2：标签 + 新 emoji 框 + 浏览按钮
+        // 面板行 1：「选中」信息（纯自绘文字）；行 2：**同一行**两个输入
+        // ——「绑到」框（词或码）+ emoji 框 + 浏览按钮。两个框并排是一行说完
+        // 一件事：把哪枚 emoji 绑到哪个词/字上（v1.65）。
         let info = Self::inset(panel, self.s(16));
         self.geo.emoji_sel_label = Self::rect(
             info.left,
@@ -1393,13 +1426,25 @@ impl App {
             row,
         );
         let input_y = panel.top + self.s(14) + row;
-        // 「新 emoji」是 2 个汉字 + 空格 + 5 个字母，按 3 个汉字的宽度算会截成
-        // 「新 e…」（真机截图），给足 64dp
-        let new_label_w = self.s(64);
-        self.geo.emoji_new_label = Self::rect(info.left, input_y, new_label_w, row);
-        let box_x = info.left + new_label_w + self.s(8);
-        self.geo.emoji_new_box = Self::rect(box_x, input_y, self.s(120), row);
-        let browse_x = self.geo.emoji_new_box.right + self.s(12);
+        let browse_w = self.btn_w_from("浏览 emoji…", 116);
+        let browse_x = info.right - browse_w;
+        let target_label_w = self.s(40);
+        self.geo.emoji_target_label = Self::rect(info.left, input_y, target_label_w, row);
+        let target_x = info.left + target_label_w + self.s(8);
+        let target_w = self.s(150);
+        self.geo.emoji_target_box = Self::rect(target_x, input_y, target_w, row);
+        // 「emoji」标签按 5 个字母宽度算（原来是「新 emoji」，改成单个词避免
+        // 两个标签各占一大截，把框挤没）
+        let new_label_w = self.s(52);
+        let new_label_x = target_x + target_w + self.s(16);
+        self.geo.emoji_new_label = Self::rect(new_label_x, input_y, new_label_w, row);
+        let new_x = new_label_x + new_label_w + self.s(8);
+        self.geo.emoji_new_box = Self::rect(
+            new_x,
+            input_y,
+            (browse_x - self.s(12) - new_x).max(self.s(80)),
+            row,
+        );
 
         unsafe {
             // 搜索框右侧是「总开关」（破坏性弱、但要一眼看到状态），靠右放，
@@ -1413,18 +1458,24 @@ impl App {
                 btn_h,
                 true,
             );
+            // 过滤器紧贴搜索框右边：搜「好」与「只看我绑的」是同一个动作的两半
+            // （缩小范围），摆在一起才顺手。
+            let only_w = self.btn_w_from("只看我绑的", 96);
+            let only_x = (self.geo.emoji_search_box.right + self.s(8))
+                .min(cx + cw2 - toggle_w - self.s(8) - only_w);
+            let _ = MoveWindow(self.b_emoji_only, only_x, search_y, only_w, btn_h, true);
             move_rect(self.emoji_list, Self::inset(card, self.s(8)), true);
+            self.center_in_box(self.e_emoji_target, self.geo.emoji_target_box);
             self.center_in_box(self.e_emoji_new, self.geo.emoji_new_box);
-            let browse_w = self.btn_w_from("浏览 emoji…", 116);
             let _ = MoveWindow(self.b_emoji_browse, browse_x, input_y, browse_w, row, true);
             let _ = MoveWindow(self.n_emoji, cx, note_y + self.s(2), cw2, note_h, true);
         }
 
-        // 按钮行：改绑（主）→ 停用 → 恢复内置；「打开文件位置」靠右
+        // 按钮行：保存绑定（主）→ 停用 → 恢复内置；「打开文件位置」靠右
         let gap = self.s(8);
         let mut bx = cx;
         for (h, text, min_w) in [
-            (self.b_emoji_save, "改绑", 72),
+            (self.b_emoji_save, "保存绑定", 88),
             (self.b_emoji_disable, "停用", 72),
             (self.b_emoji_restore, "恢复内置", 96),
         ] {
@@ -2043,12 +2094,18 @@ impl App {
 
 // -------------------------------------------------------- emoji 页（M4d / D85）
 impl App {
-    /// 重填列表：合并视图 + 搜索过滤。选中项按 key 找回（过滤后下标会变）。
+    /// 重填列表：合并视图 + 搜索过滤 + 「只看我绑的」。
+    ///
+    /// 两个过滤条件是**与**关系：先按开关砍掉内置未改动的行，再按搜索词筛。
+    /// 用户层动过的行（已改绑 / 已停用 / 新增）就是 `row.user`——它比拿
+    /// `state_cell()` 比字符串更直接，也不会漏掉将来新加的状态名。
     fn refresh_emoji(&mut self) {
         let needle = get_text(self.e_emoji_search).trim().to_lowercase();
+        let only_user = self.emoji_only_user;
         let all = self.emoji.rows();
         self.emoji_rows = all
             .into_iter()
+            .filter(|r| !only_user || r.user)
             .filter(|r| {
                 needle.is_empty()
                     || r.key_cell().to_lowercase().contains(&needle)
@@ -2104,12 +2161,20 @@ impl App {
         }
     }
 
-    /// 面板：「新 emoji」框回填当前值 + 信息行 + 按钮态。
+    /// 面板：「绑到」+ emoji 两个框都回填当前值 + 信息行 + 按钮态。
     fn fill_emoji_panel(&mut self, idx: Option<usize>) {
-        let emoji = idx
-            .and_then(|i| self.emoji_rows.get(i))
-            .map(|r| r.emoji.clone())
+        let row = idx.and_then(|i| self.emoji_rows.get(i));
+        let emoji = row.map(|r| r.emoji.clone()).unwrap_or_default();
+        // 「绑到」框跟着选中的行走：点一行 = 把它填好，改 emoji 后按「保存绑定」
+        // 就是老「改绑」那条路径；清空面板时框也清空，回到「自己写一个目标」。
+        let target = row
+            .map(|r| match (&r.word, &r.code) {
+                (Some(w), _) => w.clone(),
+                (None, Some(c)) => c.clone(),
+                (None, None) => String::new(),
+            })
             .unwrap_or_default();
+        set_text(self.e_emoji_target, &target);
         set_text(self.e_emoji_new, &emoji);
         // 换选一行 = 上一次的提示已经过期，不能让它挂在新行头上
         self.emoji_msg = None;
@@ -2120,13 +2185,13 @@ impl App {
         self.repaint();
     }
 
-    /// 「新 emoji」框内容变化（`EN_CHANGE`）：按钮态要跟着变，旧提示要作废。
+    /// 两个输入框内容变化（`EN_CHANGE`）：按钮态要跟着变，旧提示要作废。
     ///
     /// **输入本身合不合格不在这里算**，而是绘制时现算（[`Self::emoji_panel_alert`]）。
     /// 理由是踩过的坑：`EN_CHANGE` 到达时窗口文本还不一定是新的（`SetWindowText`
     /// 那条路径上读到过旧值），存下来的结论会一直挂着——自测里「填回合法 emoji
     /// 提示还在」就是这么来的。绘制时读、绘制时算，永远和框里看到的一致。
-    fn on_emoji_new_changed(&mut self) {
+    fn on_emoji_input_changed(&mut self) {
         self.update_emoji_buttons();
         self.emoji_msg = None;
         self.repaint();
@@ -2134,17 +2199,84 @@ impl App {
 
     /// 面板行 1 要不要报警、报什么（`None` = 正常，画选中信息）。
     ///
-    /// 两条来源，顺序固定：**输入不合格**优先（用户正在看框），其次是上次
-    /// 「改绑被拒」的原因（字形画不出之类）。
+    /// 三条来源，顺序固定：**emoji 不合格**优先（那是刚才那次保存最可能的失败
+    /// 原因），其次「绑到」看不懂，最后是上次保存被拒的原因（字形画不出 / 词库里
+    /// 没有这个词）。
     fn emoji_panel_alert(&self) -> Option<String> {
-        let text = get_text(self.e_emoji_new);
+        let emoji = get_text(self.e_emoji_new);
         // 空框不报错：用户可能正在从零敲一枚，先清空是正常动作
-        if !text.trim().is_empty() {
-            if let Err(e) = crate::emoji_page::check_input(&text) {
+        if !emoji.trim().is_empty() {
+            if let Err(e) = crate::emoji_page::check_input(&emoji) {
+                return Some(e);
+            }
+        }
+        let target = get_text(self.e_emoji_target);
+        if !target.trim().is_empty() {
+            if let Err(e) = crate::emoji_page::parse_target(&target) {
                 return Some(e);
             }
         }
         self.emoji_msg.clone()
+    }
+
+    /// 「只看我绑的」：列表只剩用户层动过的行（已改绑 / 已停用 / 新增）。
+    fn on_emoji_only(&mut self) {
+        self.emoji_only_user = !self.emoji_only_user;
+        self.sync_emoji_only_text();
+        // 过滤后选中的那一行可能已经不在了：按 key 找回，找不回来就清面板
+        let keep = self
+            .emoji_sel
+            .and_then(|i| self.emoji_rows.get(i))
+            .map(|r| r.key_cell());
+        self.refresh_emoji();
+        match keep.and_then(|k| self.emoji_rows.iter().position(|r| r.key_cell() == k)) {
+            Some(i) => {
+                self.emoji_sel = Some(i);
+                select_item(self.emoji_list, i);
+                self.fill_emoji_panel(Some(i));
+            }
+            None => {
+                self.emoji_sel = None;
+                self.clear_emoji_selection();
+                self.emoji_msg = None;
+                self.update_emoji_buttons();
+                self.repaint();
+            }
+        }
+        self.set_status(if self.emoji_only_user {
+            "只显示你自己绑过的行（已改绑 / 已停用 / 新增）"
+        } else {
+            "显示全部（内置 + 你的改动）"
+        });
+    }
+
+    /// 过滤器按钮的文字跟着状态走：亮着的时候要说「怎么回到全部」。
+    fn sync_emoji_only_text(&self) {
+        set_text(
+            self.b_emoji_only,
+            if self.emoji_only_user {
+                "看全部"
+            } else {
+                "只看我绑的"
+            },
+        );
+    }
+
+    /// 列表取消选中（过滤器把那一行藏起来时用）。
+    fn clear_emoji_selection(&self) {
+        let mut item = LVITEMW {
+            state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(0),
+            stateMask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0),
+            ..Default::default()
+        };
+        unsafe {
+            send(
+                self.emoji_list,
+                LVM_SETITEMSTATE,
+                WPARAM(usize::MAX),
+                LPARAM(&mut item as *mut _ as isize),
+            );
+        }
     }
 
     /// 列表行自绘：选中行由我们整行画（浅蓝底 + 深色字）。
@@ -2204,7 +2336,7 @@ impl App {
         let hdc = cd.nmcd.hdc;
         let rc = cd.nmcd.rc;
         let row = if is_emoji {
-            self.emoji_rows.get(cd.nmcd.dwItemSpec as usize)
+            self.emoji_rows.get(cd.nmcd.dwItemSpec)
         } else {
             None
         };
@@ -2334,7 +2466,11 @@ impl App {
                 }
                 s
             }
-            None => "在列表里点一条（可先搜索），改完 emoji 点「改绑」；总开关在右上角".to_string(),
+            None => {
+                "「绑到」里填词或字（如 好、好评）或码（如 vb）→ 选一枚 emoji → 点「保存绑定」；\
+                 也可以点列表里的一行"
+                    .to_string()
+            }
         }
     }
 
@@ -2346,6 +2482,10 @@ impl App {
         let total = self.emoji.builtin.entries.len();
         let user_n = self.emoji.user.entries.len();
         let mut s = format!("内置 {total} 条 · 用户层改动 {user_n} 条");
+        // 过滤开着时把「现在看到几行」说出来：否则用户会以为列表丢了东西
+        if self.emoji_only_user || !get_text(self.e_emoji_search).trim().is_empty() {
+            s.push_str(&format!(" · 当前显示 {} 行", self.emoji_rows.len()));
+        }
         match (&self.emoji.builtin_err, &self.emoji.user_err) {
             (Some(e), _) => s.push_str(&format!(" · 内置表：{e}")),
             (_, Some(e)) => s.push_str(&format!(" · {e}")),
@@ -2356,9 +2496,12 @@ impl App {
 
     fn update_emoji_buttons(&self) {
         let row = self.emoji_sel.and_then(|i| self.emoji_rows.get(i));
-        let dirty = !get_text(self.e_emoji_new).trim().is_empty();
-        // 「改绑」要有选中行且填了 emoji；值没变时也允许点（等于重写同值，无害）
-        enable_window(self.b_emoji_save, row.is_some() && dirty);
+        let has_target = !get_text(self.e_emoji_target).trim().is_empty();
+        let has_emoji = !get_text(self.e_emoji_new).trim().is_empty();
+        // 「保存绑定」只要两个框都有内容就能点：目标**不必**先出现在列表里
+        // （v1.65）——列表按词列，没绑过 emoji 的词和单字根本不在其中，
+        // 要求先选中等于把「给单字绑一枚」这件事整个堵死。
+        enable_window(self.b_emoji_save, has_target && has_emoji);
         // 「停用」只对内置有的条目有意义：用户新增的停用等于删，走「恢复内置」
         enable_window(
             self.b_emoji_disable,
@@ -2368,7 +2511,7 @@ impl App {
         enable_window(self.b_emoji_restore, row.is_some_and(|r| r.user));
     }
 
-    /// 「浏览 emoji…」→ 网格选择器，选中就填进「新 emoji」框（仍要点「改绑」才落盘）。
+    /// 「浏览 emoji…」→ 网格选择器，选中就填进 emoji 框（仍要点「保存绑定」才落盘）。
     fn on_emoji_browse(&mut self) {
         let choices = self.emoji.choices_for_picker();
         // 打开时停在这个已选 emoji 所属的分类上：改绑多半是「同一类里换一枚」
@@ -2384,47 +2527,76 @@ impl App {
         set_focus(self.e_emoji_new);
     }
 
+    /// 保存绑定（v1.65）：把「emoji」框里那一枚绑到「绑到」框写的词或码上。
+    ///
+    /// 顺序：目标看得懂 → 是一枚 emoji → 本机画得出 → 目标真的打得出来 → 落盘。
+    /// 每一步被拒都写面板行 1（红字）并把焦点送回**出错的那个框**——用户下一眼
+    /// 就该看到问题所在。
     fn on_emoji_save(&mut self) {
-        let Some(idx) = self.emoji_sel else {
-            return;
-        };
-        let Some(key) = self.emoji_key_of(idx) else {
-            return;
-        };
-        let label = self
-            .emoji_rows
-            .get(idx)
-            .map(|r| r.key_cell())
-            .unwrap_or_default();
+        let target_text = get_text(self.e_emoji_target);
         let emoji = get_text(self.e_emoji_new);
-        // 校验顺序是有讲究的：先问「这是不是一枚 emoji」，再问「本机画不画得出来」。
-        // 反过来的话，框里填了「好」会得到「本机字体画不出来（候选窗里会是方块）」——
-        // 那句提示答错了问题，用户读到的结论是「点了没反应」。
-        match crate::emoji_page::check_input(&emoji) {
+
+        let key = match crate::emoji_page::parse_target(&target_text) {
+            Ok(k) => k,
             Err(e) => {
-                self.emoji_msg = Some(e.clone());
-                self.set_status(&e);
-                self.repaint();
-                set_focus(self.e_emoji_new);
+                self.reject_emoji(&e, self.e_emoji_target);
                 return;
             }
-            // 本机字形门槛：画不出来的 emoji 不让存——存了就是候选窗里一排方块
-            Ok(one) if heinrich_font::probe_one(&one) == Some(false) => {
-                let m = format!("{one} 本机字体画不出来（候选窗里会是方块），换一枚吧");
-                self.emoji_msg = Some(m.clone());
-                self.set_status(&m);
-                self.repaint();
+        };
+        // 先问「这是不是一枚 emoji」，再问「本机画不画得出来」。反过来的话，
+        // 框里填了「好」会得到「本机字体画不出来」——那句提示答错了问题，
+        // 用户读到的结论是「点了没反应」。
+        let one = match crate::emoji_page::check_input(&emoji) {
+            Ok(one) => one,
+            Err(e) => {
+                self.reject_emoji(&e, self.e_emoji_new);
                 return;
             }
-            Ok(_) => {}
+        };
+        if heinrich_font::probe_one(&one) == Some(false) {
+            let m = format!("{one} 本机字体画不出来（候选窗里会是方块），换一枚吧");
+            self.reject_emoji(&m, self.e_emoji_new);
+            return;
         }
-        match self.emoji.rebind(&key, &emoji) {
+        // 目标得真的打得出来：词不在词库里 / 码在码表里查不到，绑上去就是一行
+        // 永远不会命中的死数据。没装词库（`--data` 缺失）时不拦，只在状态行说明。
+        match (&key, &self.lex) {
+            (crate::emoji_page::Key::Word(w), Some(lex)) if !lex.has_word(w) => {
+                let m = format!("「{w}」不在词库里，打不出来——绑了也不会出现在候选里。要给单个字挂就写那个字（如 好）");
+                self.reject_emoji(&m, self.e_emoji_target);
+                return;
+            }
+            (crate::emoji_page::Key::Code(c), Some(lex)) if !lex.has_code(c) => {
+                let m = format!("五笔码 {c} 在码表里查不到，换个码试试");
+                self.reject_emoji(&m, self.e_emoji_target);
+                return;
+            }
+            _ => {}
+        }
+
+        let label = key.display();
+        match self.emoji.rebind(&key, &one) {
             Ok(()) => {
-                self.refresh_emoji_keep_sel(&label);
-                self.set_status(&format!("「{label}」已改绑 {emoji} · 1 秒内生效"));
+                self.emoji_msg = None;
+                self.refresh_emoji_keep_sel(&key.label());
+                // 新绑的词会出现成一行（状态「新增」）；过滤开着时它一定在里面
+                let extra = if self.lex.is_none() {
+                    "（没装词库，目标是否打得出来没校验）"
+                } else {
+                    ""
+                };
+                self.set_status(&format!("已把 {one} 绑到「{label}」· 1 秒内生效{extra}"));
             }
-            Err(e) => self.set_status(&e),
+            Err(e) => self.reject_emoji(&e, self.e_emoji_target),
         }
+    }
+
+    /// 保存被拒：红字进面板行 1、底部状态行同一句，焦点回到该改的那个框。
+    fn reject_emoji(&mut self, msg: &str, focus: HWND) {
+        self.emoji_msg = Some(msg.to_string());
+        self.set_status(msg);
+        self.repaint();
+        set_focus(focus);
     }
 
     fn on_emoji_disable(&mut self) {
@@ -2674,6 +2846,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     app.refresh_learn();
                     app.refresh();
                     app.sync_emoji_toggle_text();
+                    app.sync_emoji_only_text();
                     app.refresh_emoji();
                     // 刻意**不**自动选中第一行：面板是给「新词」用的，一开窗就
                     // 躺着上次的词会让人以为已经选中了它，改完点保存就把那条词改了。
@@ -2787,11 +2960,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (EN_CHANGE, ID_E_WORD | ID_E_PINYIN | ID_E_CODE | ID_E_WEIGHT) => {
                         app.update_buttons()
                     }
-                    // emoji 页：搜索框实时过滤，新 emoji 框只管按钮态
+                    // emoji 页：搜索框实时过滤，两个输入框只管按钮态
                     (EN_CHANGE, ID_E_EMOJI_SEARCH) => app.refresh_emoji(),
-                    (EN_CHANGE, ID_E_EMOJI_NEW) => app.on_emoji_new_changed(),
+                    (EN_CHANGE, ID_E_EMOJI_NEW | ID_E_EMOJI_TARGET) => app.on_emoji_input_changed(),
                     // CBN_SELCHANGE = 1（与 EN_ 段相邻的通知码）
                     (0, ID_BE_BROWSE) => app.on_emoji_browse(),
+                    (0, ID_BE_ONLY) => app.on_emoji_only(),
                     (0, ID_B_CLEAR) => app.on_clear(),
                     (0, ID_B_SAVE) => app.on_save(),
                     (0, ID_B_DEL) => app.on_delete(),
@@ -3387,10 +3561,31 @@ impl App {
             self.fonts.caption,
             msg_color,
         );
-        // 面板行 2：标签 + 新 emoji 框描边（无边框 Edit 的框画在卡片上）
+        // 面板行 2：两个输入框的标签 + 描边（无边框 Edit 的框画在卡片上）
         draw_text_align(
             hdc,
-            "新 emoji",
+            "绑到",
+            self.geo.emoji_target_label,
+            self.fonts.caption,
+            self.colors.text2,
+            true,
+        );
+        let border = if self.focus_id == ID_E_EMOJI_TARGET {
+            self.colors.accent
+        } else {
+            self.colors.input_border
+        };
+        round_rect_w(
+            hdc,
+            self.geo.emoji_target_box,
+            self.colors.card,
+            border,
+            self.s(4),
+            self.s(1),
+        );
+        draw_text_align(
+            hdc,
+            "emoji",
             self.geo.emoji_new_label,
             self.fonts.caption,
             self.colors.text2,
@@ -4312,6 +4507,15 @@ fn check_general_flow(app: &App, cfg: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 自测用：像用户点空白处那样取消列表选中（面板回到「自己写目标」态）。
+fn clear_emoji_sel(app: &mut App) {
+    app.emoji_sel = None;
+    app.clear_emoji_selection();
+    drain_messages();
+    app.fill_emoji_panel(None);
+    drain_messages();
+}
+
 /// emoji 页（M4d / D85）：列表条数、单字条目在列、改绑真落盘、
 /// 「停用/恢复内置」按钮的可用性与选中态联动。
 ///
@@ -4355,9 +4559,44 @@ fn check_emoji_page(app: &mut App, emoji_path: &std::path::Path) -> Result<(), S
     set_text(app.e_emoji_search, "");
     drain_messages();
 
+    // 「只看我绑的」过滤器（v1.65）：夹具里用户层动过的是 你好（已改绑）与 好
+    // （新增），内置未改的只有 好评——开关一亮就该只剩 2 行。
+    if !is_enabled(app.b_emoji_only) {
+        return Err("「只看我绑的」应当一直可点".into());
+    }
+    click(app.b_emoji_only);
+    drain_messages();
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 2 {
+        return Err(format!(
+            "只看我绑的应当只剩 2 行（你好 / 好），实际 {count} 行"
+        ));
+    }
+    for i in 0..count {
+        if cell_text(app.emoji_list, i as usize, 3) == "内置" {
+            return Err(format!(
+                "只看我绑的里不该出现「内置」行，第 {i} 行是 {:?}",
+                cell_text(app.emoji_list, i as usize, 0)
+            ));
+        }
+    }
+    if !app.emoji_only_user || !get_text(app.b_emoji_only).contains("看全部") {
+        return Err(format!(
+            "过滤器打开后按钮文字应变成「看全部」，实际 {:?}",
+            get_text(app.b_emoji_only)
+        ));
+    }
+    click(app.b_emoji_only);
+    drain_messages();
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 3 || app.emoji_only_user {
+        return Err(format!("关掉过滤器后应回到 3 行，实际 {count} 行"));
+    }
+
     // 输入不是 emoji 时的反馈（v1.64）：提示要写在面板行 1（红字），不能只在
     // 窗口底部那行灰字——真机上用户看着输入框，那句提示他没看见，反馈成
     // 「点了改绑没有任何反应」。
+    set_text(app.e_emoji_target, "好评");
     set_text(app.e_emoji_new, "好");
     drain_messages();
     let msg = app.emoji_panel_alert().unwrap_or_default();
@@ -4371,26 +4610,45 @@ fn check_emoji_page(app: &mut App, emoji_path: &std::path::Path) -> Result<(), S
     drain_messages();
     let after = std::fs::read_to_string(emoji_path).unwrap_or_default();
     if before != after {
-        return Err("填了非 emoji 时「改绑」不该写盘".into());
+        return Err("填了非 emoji 时「保存绑定」不该写盘".into());
     }
     if app.emoji_panel_alert().is_none() {
-        return Err("点「改绑」被拒后提示不该消失（那正是用户说的「没反应」）".into());
+        return Err("点「保存绑定」被拒后提示不该消失（那正是用户说的「没反应」）".into());
     }
+    // 「绑到」看不懂时同样要拦在面板行 1，且不写盘（v1.65）
+    set_text(app.e_emoji_target, "好a");
+    set_text(app.e_emoji_new, "👍");
+    drain_messages();
+    if !app
+        .emoji_panel_alert()
+        .unwrap_or_default()
+        .contains("看不懂")
+    {
+        return Err("「绑到」填「好a」（汉字混字母）时应当提示看不懂".into());
+    }
+    click(app.b_emoji_save);
+    drain_messages();
+    if std::fs::read_to_string(emoji_path).unwrap_or_default() != before {
+        return Err("「绑到」看不懂时不该写盘".into());
+    }
+    set_text(app.e_emoji_target, "好评");
     set_text(app.e_emoji_new, "👍");
     drain_messages();
     if let Some(m) = app.emoji_panel_alert() {
         return Err(format!(
-            "填回一枚合法 emoji 后提示应当消失，实际还在：{m}（框里 {:?}）",
+            "两个框都填对之后提示应当消失，实际还在：{m}（绑到 {:?} / emoji {:?}）",
+            get_text(app.e_emoji_target),
             get_text(app.e_emoji_new)
         ));
     }
 
-    // 改绑：点中「好评」（内置条目）→ 面板回填 → 换 emoji → 改绑 → 文件里变新值
+    // 改绑：点中「好评」（内置条目）→ 两个框都回填 → 换 emoji → 保存 → 文件里变新值
     select_item(app.emoji_list, 2);
     drain_messages();
-    if get_text(app.e_emoji_new) != "👍" {
+    if get_text(app.e_emoji_new) != "👍" || get_text(app.e_emoji_target) != "好评" {
         return Err(format!(
-            "点中行后面板应回填当前 emoji，实际 {:?}",
+            "点中行后两个框都应回填（绑到 {:?} / emoji {:?}）",
+            get_text(app.e_emoji_target),
             get_text(app.e_emoji_new)
         ));
     }
@@ -4420,6 +4678,49 @@ fn check_emoji_page(app: &mut App, emoji_path: &std::path::Path) -> Result<(), S
     if !is_enabled(app.b_emoji_restore) {
         return Err("改绑后「恢复内置」应当可点（删掉用户层条目即回内置）".into());
     }
+
+    // 凭空新建绑定（v1.65）：**不点列表**，直接在「绑到」里写字，选一枚 emoji
+    // 保存。这条流程正是当年把 emoji 绑到单字上的唯一通道——列表按词列，
+    // 没绑过 emoji 的词不在里面，没有这条路就无处可点。
+    clear_emoji_sel(app);
+    set_text(app.e_emoji_target, "好运");
+    set_text(app.e_emoji_new, "🍀");
+    drain_messages();
+    if get_text(app.e_emoji_target) != "好运" || app.emoji_sel.is_some() {
+        return Err("准备新建绑定时不该还挂着旧的选中行".into());
+    }
+    click(app.b_emoji_save);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if !text.contains("word = \"好运\"") || !text.contains("🍀") {
+        return Err(format!("新建绑定后文件里应有「好运 → 🍀」：\n{text}"));
+    }
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 4 {
+        return Err(format!("新建绑定后列表应变成 4 行，实际 {count} 行"));
+    }
+    if app.emoji_sel.is_none() {
+        return Err("保存后应当自动选中刚建的那一行（方便接着改）".into());
+    }
+    if get_text(app.e_emoji_target) != "好运" {
+        return Err("保存后「绑到」框应停在刚保存的词上".into());
+    }
+    // 再存一次同一个词 = 覆盖，不会多出一行
+    set_text(app.e_emoji_new, "🥳");
+    drain_messages();
+    click(app.b_emoji_save);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if text.matches("word = \"好运\"").count() != 1 || !text.contains("🥳") {
+        return Err(format!("同词再保存应当是覆盖（只留一条 🥳）：\n{text}"));
+    }
+    let count = unsafe { send(app.emoji_list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)) }.0;
+    if count != 4 {
+        return Err(format!("覆盖保存不该新增行，实际 {count} 行"));
+    }
+    // 回到「好评」继续测停用/恢复
+    select_item(app.emoji_list, 2);
+    drain_messages();
 
     // 停用：文件里出现 enabled = false，再「恢复内置」把它删掉
     click(app.b_emoji_disable);
@@ -4626,12 +4927,14 @@ fn check_z_order(hwnd: HWND, page: usize) -> Result<(), String> {
         PAGE_EMOJI => &[
             ID_EMOJI_LIST,
             ID_E_EMOJI_SEARCH,
+            ID_E_EMOJI_TARGET,
             ID_E_EMOJI_NEW,
             ID_BE_BROWSE,
             ID_BE_SAVE,
             ID_BE_DISABLE,
             ID_BE_RESTORE,
             ID_BE_TOGGLE,
+            ID_BE_ONLY,
             ID_BE_OPEN,
         ],
         _ => &[ID_E_SEARCH, ID_B_SEARCH, ID_LEARN_LIST, ID_B_FORGET],

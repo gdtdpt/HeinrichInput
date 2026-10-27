@@ -34,6 +34,24 @@ impl Lexicons {
             });
         Ok(Self { scheme, pinyin })
     }
+
+    /// 这个词在候选里出现过吗（五笔词库 ∪ 拼音词库，与 CLI `emoji check` 同一判据）。
+    ///
+    /// emoji 页的「绑到」用它拦死条目：词不在词库里就永远不会有候选挂着它，
+    /// 写进用户层只是一行死数据。**单字照常通过**（「好」在词库里）——单字口子
+    /// 是 D85 明确放行的，这里拦的是「压根打不出来的词」。
+    pub fn has_word(&self, word: &str) -> bool {
+        self.scheme.entries.iter().any(|e| e.word == word)
+            || self.pinyin.as_ref().is_some_and(|l| l.has_word(word))
+    }
+
+    /// 这个五笔码在码表里查得到（长度与字母都已由 `parse_target` 校验过）。
+    pub fn has_code(&self, code: &str) -> bool {
+        match heinrich_scheme::Code::parse(code) {
+            Some(c) => !self.scheme.exact_indices(&c).is_empty(),
+            None => false,
+        }
+    }
 }
 
 /// 找 `data/wubi86`。

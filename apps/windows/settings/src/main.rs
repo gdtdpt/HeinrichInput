@@ -109,7 +109,7 @@ fn main() -> std::process::ExitCode {
         // 拿用户的真配置和真学习库来自测，出错就是改别人的数据。
         return match ui::selftest_ui(args.data) {
             Ok(()) => {
-                println!("设置窗口自测通过（四页 z 序/命中 + 通用页写盘与恢复默认 + 学习页列表/搜索 + 词组页面板 + emoji 页改绑/停用/恢复）");
+                println!("设置窗口自测通过（四页 z 序/命中 + 通用页写盘与恢复默认 + 学习页列表/搜索 + 词组页面板 + emoji 页绑定/停用/恢复/过滤）");
                 std::process::ExitCode::SUCCESS
             }
             Err(e) => {
