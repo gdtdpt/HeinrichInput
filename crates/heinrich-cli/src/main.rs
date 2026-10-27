@@ -447,7 +447,6 @@ fn command(
              :r              取消当前组合\n  \
              :dump <码>      精确查看某编码下的词条\n  \
              :explain        打印当前候选的打分构成\n  \
-             :pin <n>        把第 n 个候选设为固顶\n  \
              :suppress <n>   抑制第 n 个候选（永不出现）\n  \
              :clear-tier <n> 恢复第 n 个候选为学习档\n  \
              :stats          最常用的词\n  \
@@ -499,7 +498,7 @@ fn command(
                 }
             }
         }
-        "pin" | "suppress" | "clear-tier" => {
+        "suppress" | "clear-tier" => {
             let idx = arg
                 .and_then(|a| a.parse::<usize>().ok())
                 .filter(|n| *n >= 1);
@@ -512,7 +511,6 @@ fn command(
                 return Flow::Continue;
             };
             let tier = match head {
-                "pin" => Tier::Pinned,
                 "suppress" => Tier::Suppressed,
                 _ => Tier::Learning,
             };

@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn suppressed_is_filtered_and_pinned_leads() {
+    fn suppressed_is_filtered() {
         let mut eng = engine();
         let all: Vec<String> = eng
             .candidates("vbgd", 1_000)
@@ -245,11 +245,6 @@ mod tests {
             !after.iter().any(|c| c.word == victim),
             "被抑制的词不得出现"
         );
-
-        let target = after.last().unwrap().word.clone();
-        eng.set_tier(&target, Tier::Pinned);
-        let ranked = eng.candidates("vbgd", 1_000);
-        assert_eq!(ranked[0].word, target, "固顶词必须排首位");
     }
 
     /// D48 之后 `hao` 的判定变回五笔：它是合法五笔三级简码（虚、好），

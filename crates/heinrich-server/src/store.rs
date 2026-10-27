@@ -151,17 +151,18 @@ impl SqliteStore {
 
 /// `tier` 列 → 枚举。**显式映射**，不依赖枚举的声明顺序——哪天在 `Tier` 中间插一档，
 /// 落库的数字不能跟着漂。
+///
+/// 数字 1 历史上是 `Tier::Pinned`（D95 已删除该档），保留其含义不再复用；
+/// 反向映射里 1 兜底读作 `Learning`，历史数据（若有）无感迁移。
 fn tier_to_int(tier: Tier) -> i64 {
     match tier {
         Tier::Learning => 0,
-        Tier::Pinned => 1,
         Tier::Suppressed => 2,
     }
 }
 
 fn int_to_tier(v: i64) -> Tier {
     match v {
-        1 => Tier::Pinned,
         2 => Tier::Suppressed,
         _ => Tier::Learning,
     }

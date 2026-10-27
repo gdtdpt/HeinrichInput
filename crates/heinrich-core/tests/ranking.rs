@@ -167,15 +167,17 @@ fn decay_lets_old_usage_fade() {
 }
 
 #[test]
-fn pinned_leads_and_suppressed_disappears() {
+fn suppressed_disappears() {
     let s = scheme();
     let mut store = MemoryStore::new();
-    store.set_tier("蒿", Tier::Pinned);
     store.set_tier("号", Tier::Suppressed);
 
     let cands = lookup(&s, "vbgd", &store, NOW, &RankingConfig::default()).0;
-    assert_eq!(cands[0].word, "蒿", "固顶词无视权重与分数");
     assert!(!cands.iter().any(|c| c.word == "号"), "抑制词不得出现");
+    assert!(
+        cands.iter().any(|c| c.word == "蒿"),
+        "未处置的词仍按码表序出现"
+    );
 }
 
 #[test]

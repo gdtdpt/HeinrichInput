@@ -175,8 +175,8 @@ pub fn lookup<S: UsageStore + ?Sized>(
 
 /// 排序的输入：一条候选的身份与静态权重。
 ///
-/// 抽出来是为了让**五笔词库与拼音词库共用同一套排序**——学习分、
-/// 抑制与固顶都是按「词」而不是按「哪个词典查出来的」生效的。用户在拼音下
+/// 抽出来是为了让**五笔词库与拼音词库共用同一套排序**——学习分与抑制都是按
+/// 「词」而不是按「哪个词典查出来的」生效的。用户在拼音下
 /// 多打了几次某个字，切回五笔时它同样更靠前，这才是符合直觉的行为。
 pub struct RankInput<'a> {
     pub word: &'a str,
@@ -189,7 +189,7 @@ pub struct RankInput<'a> {
     pub kind_label: &'static str,
 }
 
-/// 对给定的词条下标集合排序（固顶 → 学习区，按综合分降序）。
+/// 对给定的词条下标集合排序（排除抑制，按综合分降序）。
 pub fn rank_indices<S: UsageStore + ?Sized>(
     scheme: &Scheme,
     indices: &[u32],
@@ -223,7 +223,9 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
     cfg: &RankingConfig,
 ) -> Vec<Candidate> {
     let cfg = cfg.sanitized();
-    let mut pinned: Vec<Candidate> = Vec::new();
+    // D95：`Tier::Pinned` 已随「手动置顶」功能 descope 一并退役——五笔重码不足以
+    // 撑起这个功能，且从未有用户入口。现在只剩 Learning / Suppressed 两档，
+    // 非 Suppressed 的候选全部进入同一条学习队列。
     let mut learn: Vec<Candidate> = Vec::new();
 
     for item in inputs {
@@ -250,14 +252,8 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
             days_since,
             tier,
         };
-        match tier {
-            Tier::Pinned => pinned.push(cand),
-            _ => learn.push(cand),
-        }
+        learn.push(cand);
     }
-
-    // 固顶：静态权重降序（稳定）
-    pinned.sort_by(|a, b| b.w_norm.total_cmp(&a.w_norm));
 
     // 学习区：综合分降序。同分按静态权重、再按词与码定序，保证顺序可预测
     // ——`sort_by` 本身稳定，但显式写全次序，换个词库也不会漂。
@@ -273,8 +269,7 @@ pub fn rank_inputs<S: UsageStore + ?Sized>(
             .then_with(|| a.code.cmp(&b.code))
     });
 
-    pinned.extend(learn);
-    pinned
+    learn
 }
 
 /// 便于调用方展示：`CodeKind` → 中文标签。

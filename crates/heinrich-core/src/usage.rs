@@ -6,10 +6,12 @@
 use std::collections::HashMap;
 
 /// 用户对某个词的处置档位（§5.3）。
+///
+/// 历史上曾有 `Pinned`（手动置顶），随该功能 descope 于 D95 删除——五笔重码
+/// 不足以撑起置顶，且从未有过用户入口。learn.db 的整数映射保持不变：
+/// `int_to_tier(1)` 兜底读作 `Learning`，历史数据（若有）无感迁移。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Tier {
-    /// 固顶：永远排在候选首位，不参与浮动
-    Pinned,
     /// 学习（默认）：参与打分浮动
     #[default]
     Learning,

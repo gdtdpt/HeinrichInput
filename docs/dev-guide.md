@@ -497,7 +497,7 @@ Chrome 都是 DPI 感知的，v1 不为老宿主做补偿。
 
 | 表 | 列 | 说明 |
 |---|---|---|
-| `usage` | `key`（词）、`n`、`last_used_at`、`tier` | `tier`：0 学习 / 1 固顶 / 2 抑制，**显式映射**，不依赖枚举顺序 |
+| `usage` | `key`（词）、`n`、`last_used_at`、`tier` | `tier`：0 学习 / 2 抑制（1 历史上是固顶，D95 已退役，读到按学习算），**显式映射**，不依赖枚举顺序 |
 | `user_words` | `code`、`word`、`weight`、`created_at` | 自造词，M5 才写，先把 schema 定下来 |
 | `meta` | `k`、`v` | `schema` 版本；比程序新就**拒绝启动学习库**（降级成内存），不硬写 |
 
@@ -1402,9 +1402,9 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 `sanitized` 静默夹掉的数，用户只会看到「改了没生效」。
 
 **学习页的「清除」是 `UPDATE usage SET n = 0, last_used_at = 0`，不是删行**：`usage` 同一
-行里还存着 `tier`（0 学习 / 1 置顶 / 2 抑制），整行删掉会顺手把用户固顶的词降级——那是
-另一个语义。清零后 server 下次查询就直接读到（它每次查询读库、不缓存），DLL 侧还有最坏
-3 秒的候选缓存（D67），所以位次最多 3 秒回落。
+行里还存着 `tier`（0 学习 / 2 抑制；1 历史上是固顶，D95 已退役），整行删掉会顺手把用户
+抑制过的词放回来——那是另一个语义。清零后 server 下次查询就直接读到（它每次查询读库、
+不缓存），DLL 侧还有最坏 3 秒的候选缓存（D67），所以位次最多 3 秒回落。
 
 **学习分复用 `heinrich-core::learning_score`**，g / H 从 `config.toml` 现场读——界面上显示
 的分数与 server 排的序是同一个公式，改完 g 再回这页，分数立刻变。

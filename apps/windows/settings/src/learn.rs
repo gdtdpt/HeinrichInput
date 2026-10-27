@@ -8,10 +8,11 @@
 //!
 //! ## 为什么「清除」是 UPDATE 清零，不是 DELETE 整行
 //!
-//! `usage` 这一行里除了次数和时间，还存着**档位**（`tier`：学习 / 置顶 / 抑制）。
-//! 整行删掉等于顺手把用户「置顶」过的词降回普通词——那是另一个语义，混在一起
-//! 会让人删一次学习分就把自己固定的词弄丢。所以只把 `n` 与 `last_used_at` 清零，
-//! 档位原样留着。
+//! `usage` 这一行里除了次数和时间，还存着**档位**（`tier`：学习 / 抑制；
+//! 历史值 1 是「置顶」，D95 已随功能退役，读到按学习算）。
+//! 整行删掉等于顺手把用户的档位处置降回普通词——那是另一个语义，混在一起
+//! 会让人删一次学习分就把自己抑制过的词放回来。所以只把 `n` 与 `last_used_at` 清零，
+//! 档位原样留着（包括已退役的历史值，未知值不动是迁移的底线）。
 //!
 //! 清零后立刻生效：server 每次查询都直接读库（`usage()` 是一条 SQL），不缓存；
 //! DLL 侧还有最坏 3 秒的候选缓存，所以位次回落最多等 3 秒。
@@ -33,7 +34,7 @@ pub struct Row {
     pub n: u32,
     /// 上次上屏的 unix 秒。
     pub last_used: i64,
-    /// 0 = 学习，1 = 置顶，2 = 抑制。
+    /// 0 = 学习，2 = 抑制（1 历史上是「置顶」，D95 已随功能退役，读到按学习算）。
     pub tier: i64,
     /// 当前参数下算出来的学习分（越大越往前提）。
     pub score: f64,
@@ -42,7 +43,6 @@ pub struct Row {
 impl Row {
     pub fn tier_label(&self) -> &'static str {
         match self.tier {
-            1 => "置顶",
             2 => "抑制",
             _ => "",
         }
@@ -210,11 +210,13 @@ mod tests {
             r.rows[0].score,
             learning_score(5, 0.0, &RankingConfig::default())
         );
-        let pinned = r.rows.iter().find(|x| x.word == "的").unwrap();
-        assert_eq!(pinned.tier_label(), "置顶");
-        assert!(pinned.score > 0.0);
-        let once = r.rows.iter().find(|x| x.word == "嗯").unwrap();
-        assert_eq!(once.score, 0.0, "只上屏一次就是 0 分（D58）");
+        // 1 是退役的历史档位（D95），显示上与学习档一样不打标签
+        let legacy = r.rows.iter().find(|x| x.word == "的").unwrap();
+        assert_eq!(legacy.tier_label(), "");
+        assert!(legacy.score > 0.0);
+        let suppressed = r.rows.iter().find(|x| x.word == "嗯").unwrap();
+        assert_eq!(suppressed.tier_label(), "抑制");
+        assert_eq!(suppressed.score, 0.0, "只上屏一次就是 0 分（D58）");
     }
 
     #[test]
@@ -232,7 +234,7 @@ mod tests {
         assert_eq!(r.rows[0].word, "好吃");
     }
 
-    /// 清零必须留住 `tier`：把置顶词删成普通词是不可接受的副作用。
+    /// 清零必须留住 `tier`：历史档位值（哪怕已退役）原样保留，未知值不动是迁移的底线。
     #[test]
     fn 清除只清学习分不动档位() {
         let db = tmp("clear");
