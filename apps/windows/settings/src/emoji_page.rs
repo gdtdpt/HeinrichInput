@@ -777,7 +777,9 @@ emoji = \"👌\"
         // 启用回来还是那一枚
         page.set_disabled(&Key::Word("好".into()), false).unwrap();
         assert_eq!(
-            EmojiPage::load(bp.clone(), up.clone()).map().lookup("好", ""),
+            EmojiPage::load(bp.clone(), up.clone())
+                .map()
+                .lookup("好", ""),
             Some("👍")
         );
         // 真正撤掉绑定 = restore（界面上叫「删除绑定」）

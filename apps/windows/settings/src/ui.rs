@@ -34,10 +34,11 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect,
-    ScreenToClient, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, HBRUSH, HDC, HFONT,
-    HGDIOBJ, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
+    GetTextExtentPoint32W, GetUpdateRect, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect,
+    ScreenToClient, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, ValidateRect, HBRUSH, HDC,
+    HFONT, HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW};
@@ -923,6 +924,9 @@ impl App {
     fn show_page(&mut self, page: usize) {
         let page = page.min(PAGE_COUNT - 1);
         self.page = page;
+        // 段选控件只在通用页存在：切走之后那个 hover 状态就没有意义了，
+        // 留着会让下一次鼠标移动在别的页上白算一次「hover 变了」
+        self.seg_hot = -1;
         for (i, list) in self.pages.iter().enumerate() {
             for &h in list {
                 unsafe {
@@ -1982,6 +1986,49 @@ impl App {
         }
     }
 
+    /// 只失效页签栏那一条（hover 换高亮时用）。
+    ///
+    /// 页签是画出来的，没有子控件；hover 只影响这一条上的文字颜色和底块，
+    /// 底下的页面内容一个字都不会变。整窗重绘能让它在几百微秒里「先灰一下」，
+    /// 鼠标在页签上滑来滑去就一直在灰——真机反馈的「整个界面在闪」有一半是它。
+    fn repaint_tab_bar(&self) {
+        if self.hwnd.0.is_null() {
+            return;
+        }
+        let mut rc = RECT::default();
+        unsafe {
+            let _ = GetClientRect(self.hwnd, &mut rc);
+            // 多给 4dp：分隔线画在 tab_h 上，正好压在边界
+            let strip = RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: self.s(44) + self.s(4),
+            };
+            let _ = InvalidateRect(Some(self.hwnd), Some(&strip), false);
+        }
+    }
+
+    /// 只失效段选控件那一块（含外扩 6dp 给描边与阴影）。
+    fn repaint_seg(&self) {
+        if self.hwnd.0.is_null() {
+            return;
+        }
+        let pad = self.s(6);
+        let r = RECT {
+            left: self.geo.seg.left - pad,
+            top: self.geo.seg.top - pad,
+            right: self.geo.seg.right + pad,
+            bottom: self.geo.seg.bottom + pad,
+        };
+        if r.right <= r.left || r.bottom <= r.top {
+            return;
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), Some(&r), false);
+        }
+    }
+
     // -------------------------------------------------------- 学习数据页
 
     /// 学习分用当前生效的 g / H 现场算，所以先按配置合成一份 `RankingConfig`。
@@ -2970,9 +3017,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_MOUSELEAVE => {
             if let Some(app) = unsafe { app_of(hwnd) } {
+                // 只有「真的有东西亮着」才需要重画。
+                //
+                // 这条通知**不只在鼠标离开窗口时来**：指针落进任何一个子控件
+                // （Edit / 按钮）也会给父窗口发一次 WM_MOUSELEAVE——子控件的
+                // 客户区不算父窗口的 hover 范围。于是「鼠标划过编辑面板」这个
+                // 动作会连续发好几次：每进出一次输入框就整窗重绘一遍，屏幕上
+                // 看到的就是闪。tab_hot / seg_hot 本来就是 -1 时，这里没有任何
+                // 东西变过，重画纯属浪费。
+                let was_tab = app.tab_hot != -1;
+                let was_seg = app.seg_hot != -1;
                 app.tab_hot = -1;
                 app.seg_hot = -1;
-                app.repaint();
+                if was_tab {
+                    app.repaint_tab_bar();
+                }
+                if was_seg {
+                    app.repaint_seg();
+                }
             }
             LRESULT(0)
         }
@@ -3143,16 +3205,26 @@ impl App {
 
     fn on_mouse_move(&mut self, pt: POINT) {
         let tab = self.tab_at(pt).map(|i| i as i32).unwrap_or(-1);
-        let seg = if pt_in(pt, self.geo.seg) {
+        // 段选控件只在通用页存在。`geo.seg` 在别的页上仍然是通用页那次的
+        // 矩形（布局函数没清零），所以**必须**带页判断：否则在 emoji 页
+        // 划过那块空白也会让 seg_hot 变化、白白重绘一次（实测整窗上下扫，
+        // 编辑面板那一列 3 轮下来多出 7 次重绘）。
+        let seg = if self.page == PAGE_GENERAL && pt_in(pt, self.geo.seg) {
             let seg_w = (self.geo.seg.right - self.geo.seg.left) / 3;
             ((pt.x - self.geo.seg.left) / seg_w.max(1)).clamp(0, 2)
         } else {
             -1
         };
-        if tab != self.tab_hot || seg != self.seg_hot {
-            self.tab_hot = tab;
-            self.seg_hot = seg;
-            self.repaint();
+        let tab_changed = tab != self.tab_hot;
+        let seg_changed = seg != self.seg_hot;
+        self.tab_hot = tab;
+        self.seg_hot = seg;
+        // 只失效真变了的那一小块：hover 换高亮跟整页内容无关，整窗重绘纯属浪费
+        if tab_changed {
+            self.repaint_tab_bar();
+        }
+        if seg_changed {
+            self.repaint_seg();
         }
         // hover 离开通知只订阅一次；WM_MOUSELEAVE 后再订阅即可持续生效
         unsafe {
@@ -3232,24 +3304,52 @@ impl App {
     /// 「tab 只添了下划线、内容没换」和「切几次内容糊在一起」。
     ///
     /// 窗口小（900×600），一次全铺在 GDI 下是微秒级，不值得做脏矩形。
+    ///
+    /// **双缓冲**（D92）：所有内容先画进等尺寸的内存 DC，最后一次 `BitBlt` 推上屏。
+    /// 直接往窗口 DC 上画时，每一帧的中间态都真的出现在屏幕上——先铺底（整窗变
+    /// 成底色灰）、再一块块画卡片、再画文字。重绘本来就不多（改状态、切页、焦点
+    /// 变化），但那几次的「先灰一下」肉眼可见，用户会描述成「闪」。
+    /// 内存 DC 没有裁剪区，画完按窗口 DC 的更新区（`WS_CLIPCHILDREN` 已经排除
+    /// 子控件）整块贴回去，一帧只露一次。
     fn paint(&self) {
         let mut ps = PAINTSTRUCT::default();
         let hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
         if hdc.is_invalid() {
             return;
         }
+        let mut rc = RECT::default();
         unsafe {
-            let mut rc = RECT::default();
             let _ = GetClientRect(self.hwnd, &mut rc);
-            // 有 WS_CLIPCHILDREN，子控件占的地方会被裁掉，不会把 Edit 白底刷成本底色
-            let _ = FillRect(hdc, &rc, self.brush_bg);
         }
-        self.draw_tab_bar(hdc);
+        let (w, h) = ((rc.right - rc.left).max(1), (rc.bottom - rc.top).max(1));
+        // 建不出来就退回直画：宁可闪，也不能白屏
+        let mem = unsafe { CreateCompatibleDC(Some(hdc)) };
+        let bmp = unsafe { CreateCompatibleBitmap(hdc, w, h) };
+        let use_mem = !mem.is_invalid() && !bmp.is_invalid();
+        let old = if use_mem {
+            unsafe { SelectObject(mem, bmp.into()) }
+        } else {
+            HGDIOBJ::default()
+        };
+        let target = if use_mem { mem } else { hdc };
+        unsafe {
+            // 有 WS_CLIPCHILDREN，子控件占的地方会被裁掉，不会把 Edit 白底刷成本底色
+            let _ = FillRect(target, &rc, self.brush_bg);
+        }
+        self.draw_tab_bar(target);
         match self.page {
-            PAGE_GENERAL => self.draw_general(hdc),
-            PAGE_WORDS => self.draw_words(hdc),
-            PAGE_EMOJI => self.draw_emoji(hdc),
-            _ => self.draw_learn(hdc),
+            PAGE_GENERAL => self.draw_general(target),
+            PAGE_WORDS => self.draw_words(target),
+            PAGE_EMOJI => self.draw_emoji(target),
+            _ => self.draw_learn(target),
+        }
+        if use_mem {
+            unsafe {
+                let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+                let _ = SelectObject(mem, old);
+                let _ = DeleteObject(bmp.into());
+                let _ = DeleteDC(mem);
+            }
         }
         unsafe {
             let _ = EndPaint(self.hwnd, &ps);
@@ -4475,7 +4575,8 @@ pub fn selftest_ui(_data: Option<PathBuf>) -> Result<(), String> {
 
         switch_page(&mut app, PAGE_GENERAL);
         check_z_order(hwnd, PAGE_GENERAL)?;
-        check_page_scope(&app, PAGE_GENERAL)
+        check_page_scope(&app, PAGE_GENERAL)?;
+        check_hover_repaint(hwnd)
     })();
 
     unsafe {
@@ -4490,6 +4591,80 @@ pub fn selftest_ui(_data: Option<PathBuf>) -> Result<(), String> {
 fn switch_page(app: &mut App, page: usize) {
     app.switch_to(page);
     drain_messages();
+}
+
+/// 鼠标划过编辑面板**不该重绘**（D92，v1.68）。
+///
+/// 判据直接看窗口的脏区（`GetUpdateRect`）：没有 hot 状态时，`WM_MOUSELEAVE`
+/// 不该在窗口上留下任何待画区域。这比截图比对可靠——闪的是一两帧的中间态，
+/// 截图恰好拍到「画完了」的那一帧就什么都看不出来。
+///
+/// 另一半也要测：页签确实亮着时离开，必须把高亮撤掉，否则 hover 底色会留在
+/// 屏幕上（这才是这条通知存在的意义）。
+///
+/// **不接 `&mut App`**：`SendMessage` 会重入窗口过程，那里会通过窗口用户数据再
+/// 取一次同一个 `App`。调用方握着 `&mut App` 的同时发生这种重入是别名违规，
+/// release 下编译器会把「判断用的读取」提前到调用之前——自测因此在 debug 通过、
+/// release 报 `tab=-1 seg=-1` 却判失败（值打印出来是清的，判断用的不是）。
+/// 只传句柄、状态一律经窗口用户数据读写，就没有跨 FFI 存活的引用了。
+fn check_hover_repaint(hwnd: HWND) -> Result<(), String> {
+    let state = || unsafe { app_of(hwnd).map(|a| (a.tab_hot, a.seg_hot)) }.unwrap_or((-1, -1));
+    let set = |tab: i32, seg: i32| unsafe {
+        if let Some(a) = app_of(hwnd) {
+            a.tab_hot = tab;
+            a.seg_hot = seg;
+        }
+    };
+    let leave = || unsafe {
+        let _ = SendMessageW(hwnd, WM_MOUSELEAVE, Some(WPARAM(0)), Some(LPARAM(0)));
+    };
+    unsafe {
+        let _ = ValidateRect(Some(hwnd), None);
+    };
+    set(-1, -1);
+    leave();
+    if has_update_region(hwnd) {
+        return Err(
+            "鼠标移进输入框（父窗口收到 WM_MOUSELEAVE）时不该重绘整窗——那正是「划过面板会闪」的来源"
+                .into(),
+        );
+    }
+    // 页签 hover 着离开：既要清状态，也要重画一次把高亮抹掉
+    set(0, -1);
+    leave();
+    let (tab, seg) = state();
+    if tab != -1 || seg != -1 {
+        return Err(format!(
+            "离开窗口后页签/段选的 hover 状态没清掉（tab={tab} seg={seg}）"
+        ));
+    }
+    if !has_update_region(hwnd) {
+        return Err("页签正 hover 着离开时应当重绘一次，把 hover 底色撤掉".into());
+    }
+    // 重绘范围必须**只有页签那一条**：整窗重绘是这轮要消灭的东西
+    let mut dirty = RECT::default();
+    if unsafe { GetUpdateRect(hwnd, Some(&mut dirty), false) }.as_bool() {
+        let mut client = RECT::default();
+        unsafe {
+            let _ = GetClientRect(hwnd, &mut client);
+        }
+        // 「只有页签那一条」= 从顶边开始、且没铺到客户区底部
+        if dirty.top > 0 || dirty.bottom >= client.bottom {
+            return Err(format!(
+                "页签 hover 的重绘范围应当只有页签条（实际脏区 {}..{}，客户区高 {}）",
+                dirty.top, dirty.bottom, client.bottom
+            ));
+        }
+    }
+    unsafe {
+        let _ = ValidateRect(Some(hwnd), None);
+    };
+    Ok(())
+}
+
+/// 窗口有没有待画的脏区（`GetUpdateRect` 返回非空即真）。
+fn has_update_region(hwnd: HWND) -> bool {
+    unsafe { GetUpdateRect(hwnd, None, false).as_bool() }
 }
 
 /// 通用页：合法/非法输入的门、写盘后注释还在、恢复默认真的删行。

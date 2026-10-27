@@ -1826,6 +1826,43 @@ D2D 初始化失败时回落 GDI 单色轮廓（列表功能不因 D2D 挂掉）
 👍 点保存 → 列表出现「好 / 按词·单字 / 👍 / 新增」，且临时文件里出现
 `word = "好"` + `emoji = "👍"`。用临时文件是为了不动 `%APPDATA%` 里的真用户层。
 
+### 4.27 鼠标划过不该引发重绘：双缓冲 + 收窄失效范围（D92，v1.68）
+
+用户两次反馈「鼠标滑过这里 UI 会闪」「整个界面上下滑还是闪」。两次都不是渲染错，
+是**重绘发生了**：每一帧先整窗铺底、再逐块画卡片和文字，中间态真的上屏。
+
+**修法分三层，缺一层都还剩可见的闪：**
+
+1. **别在没变化时重绘。** `WM_MOUSELEAVE` 原先无条件 `repaint()`。这条通知
+   **指针落进任何子控件都会发给父窗口**（子控件客户区不算父窗口的 hover 范围），
+   所以在编辑面板上划一下会连发好几次。现在只有 `tab_hot` / `seg_hot` 真变过才画。
+2. **重绘范围收窄。** hover 只影响页签条 / 段选块本身：`repaint_tab_bar()`
+   （`InvalidateRect` 到 `s(44)+s(4)` 高的横条）与 `repaint_seg()`（外扩 6dp）。
+   整窗重绘留给真正改内容的场合（切页、焦点、写盘后刷新）。
+3. **必然重绘的场合上双缓冲。** `paint` 里 `CreateCompatibleDC` + 等尺寸
+   `CreateCompatibleBitmap`，所有绘制打到内存 DC，最后一次性 `BitBlt` 回窗口 DC。
+   目的 DC 来自 `BeginPaint`，本身已按更新区裁剪（`WS_CLIPCHILDREN` 又把子控件排除），
+   所以「只重画页签条」和「不碰 Edit / ListView」两件事同时成立。
+   建不出内存对象时退回直画——宁可闪，不能白屏。
+
+**量法（比截图可靠）**：`paint` 与 `WM_MOUSEMOVE` / `WM_MOUSELEAVE` 各打一行 trace
+（临时 `HEINRICH_TRACE_PAINT` 环境变量控制），脚本用 `SetCursorPos` **按 4px 小步**
+在目标之间来回穿，数三者的行数。实测同一段路（「绑到」→「emoji」→「浏览 emoji…」，
+往返 4 轮）：`MOVE 41 / LEAVE 17`，修复前 **16 次整窗重绘**、修复后 **0 次**；
+整窗垂直扫三列（每列 3 轮）修复后只剩「真正划过页签」的那几次，且都只重画页签条。
+
+**注意「跳着走」的探针会自欺**：`SetCursorPos` 直接跳到子控件上不产生
+「从父窗口走进子控件」的过渡，`WM_MOUSELEAVE` 一条都不来（我第一次量到 0/0 就是这么
+被骗的）。要模拟真实划动，必须在两点之间插值成小步。
+
+**`seg_hot` 要带页判断**：`geo.seg` 是通用页那次布局留下的矩形，别的页上不清零。
+不加 `self.page == PAGE_GENERAL`，在 emoji 页划过那块空白也会「hover 变化」→ 白重绘。
+
+**自测**：`check_hover_repaint(hwnd)` 直接看脏区——无 hot 状态时发
+`WM_MOUSELEAVE` 必须**不留任何待画区域**；页签亮着时离开必须重绘、且脏区
+**只有页签那一条**（`dirty.bottom < 客户区高`）。第一半防「白画」，第二半防
+「hover 底色留在屏幕上」，缺一条就退化成另一个 bug。
+
 ## 5. 数据管线
 
 ```
@@ -2253,6 +2290,25 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
     > 所以这类交互只能靠进程内的 `--selftest-ui` 发**真 `WM_NOTIFY`** 来验，别在外面用
     > `SendMessage` 模拟点击。
 
+68. **`WM_MOUSELEAVE` 会在「进入子控件」时发给父窗口，不只是离开窗口。** 子控件的客户区
+    不算父窗口的 hover 范围，所以指针每落进一个 Edit / 按钮，父窗口就收到一次 leave；
+    出来时再收到 `WM_MOUSEMOVE` 重新订阅。原来那里无条件 `repaint()`，于是在编辑面板上
+    划一下 = 面板里每进出一次输入框就整窗重绘一次，屏幕上就是「闪」。修法见 §4.27：
+    **只在 hot 状态真变过时重绘**，并且只失效那一小块。
+    > 量这件事有个陷阱：用 `SetCursorPos` 直接**跳**到子控件上，不产生「从父窗口走进子控件」
+    > 的过渡，`WM_MOUSELEAVE` 一条都不来（我第一次量到 0/0，差点以为结论错了）。
+    > 必须在两点之间按 4px 插值成小步，才能复现真实的划动。
+
+69. **自测里跨 `SendMessage` 持 `&mut App` 是别名违规，release 会给出「值是对的、判断是错的」。**
+    窗口过程会用窗口用户数据（`GWLP_USERDATA`）再取一次同一个 `App`，于是调用方握着的
+    `&mut App` 和重入取到的那份同时存在。debug 下侥幸无事，release 下编译器按 `noalias`
+    把「判断用的读取」提前到 `SendMessage` 之前——`check_hover_repaint` 因此打印出
+    `tab=-1 seg=-1` 却仍然判失败（打印是新读的、判断用的是旧读的），排查时极容易被误导向
+    「状态没清掉」。写自测时**把断言函数改成只收 `HWND`**，状态一律经 `app_of(hwnd)` 读写，
+    别让引用跨过 FFI 调用。
+    > 同类症状：`--selftest-ui` 在 debug 全绿、在 `dist`（release）失败，先怀疑这条，
+    > 而不是怀疑业务代码在两个 profile 下行为不同。
+
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
   w : ln(1+权重)/ln(1+最大权重)，n ≤ 1 时 total = w ⇒ 首屏 = 码表序
@@ -2298,7 +2354,7 @@ total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)
 | M4b 通用设置页 + 学习数据页 | ✅ **已实现（2026-10-23，D78，待真机验收）**（§4.21：`hint.mode` + `learning_gain` / `half_life_days`，`edit_config_file` 定向改写；`learn.db` 只读列表 + 搜索 + 清单词学习分；`--page 0\|1\|2` 供截图） |
 | M4b-UI 设置窗口视觉重做 | ✅ **已实现（2026-10-23/26，D79 + D80 + D81，待真机验收）**（§4.22：`theme.rs` token 表 + 系统强调色；文字页签 / 卡片 / 三档按钮 / 三段选择器全部自绘，Edit 与 ListView 保持原生；`app.manifest` + `build.rs` 请求 comctl32 v6；文字摆位改为「实测字宽 + 自算左端点」，页签下划线即文字宽、输入框文字真垂直居中、列表列按内容对齐） |
 | M4c emoji 引擎 | ✅ **已实现（2026-10-26，D83，待真机验收）**（§4.23：探针证明 D2D 1.0 + `ENABLE_COLOR_FONT` 即出彩色；`heinrich-gen --kind emoji` 从 CLDR 生成 2395 条 + 正文哈希；`heinrich-scheme::emoji` 两层映射（按词 > 按码、`enabled=false` 删 key）；`insert_emoji` 在 `Host::query` 之后插独立候选（算进 `limit`、折叠分界顺移）；协议 v8 `Entry.kind`；`heinrich-font` 按本机字形丢条目（2395 → 2018）；布局只留 `is_emoji` 标记；CLI `emoji check/list/reset`；`cand-preview --emoji` 12 项） |
-| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属；v1.64 再补（D88/D89）：改绑输入校验前置（`check_input` 三种人话，红色错误写在面板行 1、绘制时现算）、列表 emoji 列改 D2D 彩色自绘（§4.25）） |
+| M4d emoji 改绑页 + `config_version` | ✅ **已实现（2026-10-26，D85 / D86，v1.62 返工，待真机验收）**（设置窗口第四页「emoji」：合并视图列表 + 实时搜索 + 编辑面板改绑/停用/恢复内置 + **分类网格选择器弹窗**（v1.62 取代原 ComboBox，见 §4.24）+ 总开关；列表**选中整行自绘**（v1.62，`FULLROWSELECT` + `SHOWSELALWAYS` + `NM_CUSTOMDRAW`）；写侧整份重写用户层；单字口子——scheme 两处词长 gate 撤掉，用户层显式单字照办；`heinrich-font::probe_one` 现场判字形；`config_version` 兼容复核（未来版本只警告不拒绝、三份用户文件互不干扰）；`--selftest-ui` 四页全绿、`--picker` 可单独弹选择器验图；v1.63 补：选择器字号随 DPI 缩放（D87）、`check_page_scope` 钉住页内控件归属；v1.64 再补（D88/D89）：改绑输入校验前置（`check_input` 三种人话，红色错误写在面板行 1、绘制时现算）、列表 emoji 列改 D2D 彩色自绘（§4.25）；**v1.68 再补（D92）**：主窗口绘制改双缓冲、hover 只重绘页签条 / 段选块（§4.27）） |
 | M4e 安装包 / 卸载 + 全量回归 | ⬜ 未开始 |
 | M5 | ⏸ **整体后移（D66，v1.37）**：其他平台 Shell / 98 数据 / 主题 / 拆解研究 / 外链查询 |
 
