@@ -241,6 +241,9 @@ pub fn punct_text(vk: u16, shift: bool) -> Option<char> {
         (0x31, true) => Some('！'),
         (0x39, true) => Some('（'),
         (0x30, true) => Some('）'),
+        // Shift + 6 → 单个省略号（U+2026）。主流输入法这里给的是「……」两个，
+        // 用户（D96）明确要半个：要长省略号自己按两次，反过来则拆不开。
+        (0x36, true) => Some('…'),
         // 单引号（0xDE）**不在这张表里**：混输下它是显式拼音标记（D48），
         // 由 `decide` 单独接管。`-` / `=`（0xBD / 0xBB）同理——有候选时是翻页键。
         // 其余 OEM 键（`[` `]` `\` `` ` ``）在空缓冲下放行：多数字体下用户要的是
@@ -748,6 +751,13 @@ mod tests {
         assert_eq!(decide(zh(0), 0x31, s), Action::Punct('！'));
         assert_eq!(decide(zh(0), 0x39, s), Action::Punct('（'));
         assert_eq!(decide(zh(0), 0x30, s), Action::Punct('）'));
+        // D96：单个省略号，不是主流输入法的「……」两个
+        assert_eq!(decide(zh(0), 0x36, s), Action::Punct('…'));
+        assert_eq!(
+            decide(zh(2), 0x36, s),
+            Action::Punct('…'),
+            "组合态内同样吃掉"
+        );
     }
 
     /// 表里没有的键在**空缓冲**时一律放行——写代码、写路径要的是半角原文。
