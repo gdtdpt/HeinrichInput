@@ -1427,24 +1427,27 @@ impl App {
         );
         let input_y = panel.top + self.s(14) + row;
         let browse_w = self.btn_w_from("浏览 emoji…", 116);
-        let browse_x = info.right - browse_w;
         let target_label_w = self.s(40);
         self.geo.emoji_target_label = Self::rect(info.left, input_y, target_label_w, row);
         let target_x = info.left + target_label_w + self.s(8);
-        let target_w = self.s(150);
+        // 「绑到」按最长的合法目标给宽：8 个汉字的词（`parse_target` 的上限），
+        // 4 位码绰绰有余，再宽就是空白。
+        let target_w = self.s(180);
         self.geo.emoji_target_box = Self::rect(target_x, input_y, target_w, row);
         // 「emoji」标签按 5 个字母宽度算（原来是「新 emoji」，改成单个词避免
         // 两个标签各占一大截，把框挤没）
         let new_label_w = self.s(52);
-        let new_label_x = target_x + target_w + self.s(16);
+        let new_label_x = target_x + target_w + self.s(20);
         self.geo.emoji_new_label = Self::rect(new_label_x, input_y, new_label_w, row);
         let new_x = new_label_x + new_label_w + self.s(8);
-        self.geo.emoji_new_box = Self::rect(
-            new_x,
-            input_y,
-            (browse_x - self.s(12) - new_x).max(self.s(80)),
-            row,
-        );
+        // emoji 框按**内容**给宽（v1.66）：框里永远只有一枚字形，早先让它吃掉
+        // 「浏览 emoji…」左边的全部剩余宽度（真机截图里约 520px），一行里挂个
+        // 空箱子，看着像还没填。现在固定 96dp——够画一枚彩色 emoji 加左右内边距，
+        // 「浏览 emoji…」紧随其后，右侧留白归卡片，不再塞给输入框。
+        let new_w = self.s(96);
+        self.geo.emoji_new_box = Self::rect(new_x, input_y, new_w, row);
+        let browse_x =
+            (self.geo.emoji_new_box.right + self.s(12)).min(info.right - browse_w);
 
         unsafe {
             // 搜索框右侧是「总开关」（破坏性弱、但要一眼看到状态），靠右放，
