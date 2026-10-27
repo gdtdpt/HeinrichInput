@@ -352,7 +352,11 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     // 而拼音里 `zhe` / `zhang` / `zuo` / `zai` 全以它开头。放行的后果是 `z` 被宿主
     // 当普通字符上屏、拼音里少一个字母——用户看到的是「拼音匹配错了字」。
     // 没装拼音时保持 D42：进缓冲只会挂一个永远查不到东西的组合串。
-    if vk == VK_Z && !mods.shift {
+    //
+    // D97：判据不再看 Shift。旧代码 `!mods.shift` 时 Shift+z 从这里漏过去、一路
+    // Pass 给宿主——组合态内按 Shift+z 同样会把大写 `Z` 插进组合串中间（与
+    // Shift+其他字母同一个洞）。现在空缓冲无拼音的临时英文照旧放行，其余一律进缓冲。
+    if vk == VK_Z {
         return if empty && !input.pinyin {
             Action::Pass
         } else {
@@ -361,9 +365,15 @@ pub fn decide(input: Input, vk: u16, mods: Mods) -> Action {
     }
 
     if let Some(ch) = wubi_letter(vk) {
-        // 按住 Shift 打字母 → 放行，宿主会输出大写字母。
-        // 这等于一个「临时英文」逃生口，比切模式快，也不占额外按键。
-        if mods.shift {
+        // 空缓冲 + Shift：临时英文逃生口（用户拍板保留，D97）——没有组合串可保护，
+        // 直接出大写比「先进缓冲再说」更贴近按键意图。
+        //
+        // **缓冲非空时不再放行**（D97）：放行会让宿主把大写字母插进组合串中间，
+        // TSF 终止组合串，`OnCompositionTerminated` 把编码当残留删掉——用户看到的
+        // 是「候选窗出来后按 Shift 打字母，大写直接上屏、光标跳走」。中文态从
+        // 此没有任何键能绕过缓冲直接上屏；Shift+字母与不按 Shift 一样进缓冲
+        // （码全小写，Shift 不改变含义）。
+        if mods.shift && empty {
             return Action::Pass;
         }
         return Action::Buffer(ch);
@@ -597,8 +607,11 @@ mod tests {
                 "组合态内（pinyin={has_pinyin}）"
             );
         }
-        // 这两条例外与拼音无关：Shift+z 是临时英文，英文模式一个键都不吃
-        assert_eq!(decide(zh(0).with_pinyin(), Z, shift()), Action::Pass);
+        // Shift+z 空缓冲无拼音仍是临时英文（Pass）；装了拼音时与不按 Shift 同判据
+        // （进缓冲，v1.64）；组合态内一律进缓冲（D97——中文态不再有直接上屏的口子）
+        assert_eq!(decide(zh(0), Z, shift()), Action::Pass);
+        assert_eq!(decide(zh(0).with_pinyin(), Z, shift()), Action::Buffer('z'));
+        assert_eq!(decide(zh(2), Z, shift()), Action::Buffer('z'));
         assert_eq!(
             decide(Input::new(Mode::English).with_pinyin(), Z, m()),
             Action::Pass
@@ -698,12 +711,21 @@ mod tests {
         }
     }
 
-    /// Shift+字母 = 临时英文，放行让宿主输出大写。
+    /// Shift+字母 = 临时英文——**只限空缓冲**（D97 用户拍板保留）。
     #[test]
     fn shift_letters_pass_through() {
         assert_eq!(decide(zh(0), V, shift()), Action::Pass);
         // 但 Shift 不影响空格提交。
         assert_eq!(decide(zh(2), SPACE, shift()), Action::Commit);
+    }
+
+    /// D97 真机回归：候选窗出来后按 Shift 打字母，大写曾直接上屏、组合串被终止、
+    /// 光标跳走。现在缓冲非空时 Shift+字母一律进缓冲（按小写），中文态不再有
+    /// 绕过缓冲的口子。
+    #[test]
+    fn shift_letters_enter_buffer_mid_composition() {
+        assert_eq!(decide(zh(2), V, shift()), Action::Buffer('v'));
+        assert_eq!(decide(zh(2), 0x41, shift()), Action::Buffer('a'), "VK 'A'");
     }
 
     #[test]
