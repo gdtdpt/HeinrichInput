@@ -47,7 +47,7 @@ use windows::Win32::UI::Controls::{
     LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETEITEM, LVM_ENSUREVISIBLE,
     LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
     LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW,
-    LVNI_SELECTED, LVN_ITEMCHANGED, NMLVCUSTOMDRAW,
+    LVNI_SELECTED, LVN_ITEMCHANGED, NMITEMACTIVATE, NMLVCUSTOMDRAW, NM_CLICK,
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -1446,8 +1446,7 @@ impl App {
         // 「浏览 emoji…」紧随其后，右侧留白归卡片，不再塞给输入框。
         let new_w = self.s(96);
         self.geo.emoji_new_box = Self::rect(new_x, input_y, new_w, row);
-        let browse_x =
-            (self.geo.emoji_new_box.right + self.s(12)).min(info.right - browse_w);
+        let browse_x = (self.geo.emoji_new_box.right + self.s(12)).min(info.right - browse_w);
 
         unsafe {
             // 搜索框右侧是「总开关」（破坏性弱、但要一眼看到状态），靠右放，
@@ -2188,6 +2187,21 @@ impl App {
         self.repaint();
     }
 
+    /// 点中列表里的一行（`NM_CLICK`）：**再点已选中的那行 = 还原面板**。
+    ///
+    /// 换行由 `LVN_ITEMCHANGED` 负责；这里只管「选中的还是它」那种点击——用户
+    /// 清空了「绑到」或改了 emoji、想回到这一行的原值，最自然的手势就是再点它一次。
+    /// 空占位（`iItem == -1`，点在列表空白处）不动面板，免得手一抖丢了正在写的值。
+    fn on_emoji_row_click(&mut self, i_item: i32) {
+        if i_item < 0 {
+            return;
+        }
+        let idx = i_item as usize;
+        if self.emoji_sel == Some(idx) {
+            self.fill_emoji_panel(Some(idx));
+        }
+    }
+
     /// 两个输入框内容变化（`EN_CHANGE`）：按钮态要跟着变，旧提示要作废。
     ///
     /// **输入本身合不合格不在这里算**，而是绘制时现算（[`Self::emoji_panel_alert`]）。
@@ -2467,6 +2481,10 @@ impl App {
                 if r.bind_cell().contains("单字") {
                     s.push_str(" · 单字绑定会让该字所在的候选行变宽");
                 }
+                // 纯用户新增的行：把「怎么撤掉它」说出来，按钮就在下面一排
+                if r.is_user_only() {
+                    s.push_str(" · 撤掉它点「删除绑定」");
+                }
                 s
             }
             None => {
@@ -2497,21 +2515,32 @@ impl App {
         set_text(self.n_emoji, &s);
     }
 
-    fn update_emoji_buttons(&self) {
-        let row = self.emoji_sel.and_then(|i| self.emoji_rows.get(i));
+    fn update_emoji_buttons(&mut self) {
+        let row = self.emoji_sel.and_then(|i| self.emoji_rows.get(i)).cloned();
         let has_target = !get_text(self.e_emoji_target).trim().is_empty();
         let has_emoji = !get_text(self.e_emoji_new).trim().is_empty();
         // 「保存绑定」只要两个框都有内容就能点：目标**不必**先出现在列表里
         // （v1.65）——列表按词列，没绑过 emoji 的词和单字根本不在其中，
         // 要求先选中等于把「给单字绑一枚」这件事整个堵死。
         enable_window(self.b_emoji_save, has_target && has_emoji);
-        // 「停用」只对内置有的条目有意义：用户新增的停用等于删，走「恢复内置」
-        enable_window(
-            self.b_emoji_disable,
-            row.is_some_and(|r| r.enabled && r.builtin_emoji.is_some()),
-        );
-        // 「恢复内置」= 删用户层条目；没动过的内置条目没什么可恢复
-        enable_window(self.b_emoji_restore, row.is_some_and(|r| r.user));
+        // 停用 / 启用同一个按钮（v1.67）：老版本只有「停用」，关掉之后按钮变灰，
+        // 用户新增的绑定就再也点不回来（只能删了重建）。文字跟着行状态换。
+        let disabled = row.as_ref().is_some_and(|r| !r.enabled);
+        set_button_text(self.b_emoji_disable, if disabled { "启用" } else { "停用" });
+        enable_window(self.b_emoji_disable, row.is_some());
+        // 第三个按钮一职两用，名字跟着行类型走：
+        //   内置有的行 → 「恢复内置」（删用户层条目 = 回到内置值）
+        //   纯用户新增的行 → 「删除绑定」（删了就是解绑，行消失）
+        // 对新增行还写「恢复内置」等于让人去猜「撤掉这枚 emoji 该点哪个」。
+        let user_only = row.as_ref().is_some_and(|r| r.is_user_only());
+        let label = if user_only {
+            "删除绑定"
+        } else {
+            "恢复内置"
+        };
+        set_button_text(self.b_emoji_restore, label);
+        // 「删除绑定」只对用户层动过的行有意义；没动过的内置条目没什么可删
+        enable_window(self.b_emoji_restore, row.as_ref().is_some_and(|r| r.user));
     }
 
     /// 「浏览 emoji…」→ 网格选择器，选中就填进 emoji 框（仍要点「保存绑定」才落盘）。
@@ -2602,24 +2631,28 @@ impl App {
         set_focus(focus);
     }
 
-    fn on_emoji_disable(&mut self) {
+    /// 停用 / 启用（同一个按钮）：写一条带 `enabled` 的用户层条目。
+    ///
+    /// 老版本只做「停用」，且对用户新增的条目直接禁用按钮；现在两个方向都能走，
+    /// 用户新增的绑定关掉后还能点「启用」回来，不必重新绑一次。
+    fn on_emoji_toggle_row(&mut self) {
         let Some(idx) = self.emoji_sel else {
             return;
         };
         let Some(key) = self.emoji_key_of(idx) else {
             return;
         };
-        let label = self
-            .emoji_rows
-            .get(idx)
-            .map(|r| r.key_cell())
-            .unwrap_or_default();
-        match self.emoji.set_disabled(&key, true) {
+        let row = self.emoji_rows.get(idx).cloned();
+        let label = row.as_ref().map(|r| r.key_cell()).unwrap_or_default();
+        let turning_off = row.as_ref().is_some_and(|r| r.enabled);
+        match self.emoji.set_disabled(&key, turning_off) {
             Ok(()) => {
                 self.refresh_emoji_keep_sel(&label);
-                self.set_status(&format!(
-                    "「{label}」已停用，后面不再出现 emoji 候选 · 1 秒内生效"
-                ));
+                self.set_status(&if turning_off {
+                    format!("「{label}」已停用，后面不再出现 emoji 候选 · 1 秒内生效")
+                } else {
+                    format!("「{label}」已启用，emoji 候选回来了 · 1 秒内生效")
+                });
             }
             Err(e) => self.set_status(&e),
         }
@@ -2632,17 +2665,19 @@ impl App {
         let Some(key) = self.emoji_key_of(idx) else {
             return;
         };
-        let label = self
-            .emoji_rows
-            .get(idx)
-            .map(|r| r.key_cell())
-            .unwrap_or_default();
+        let row = self.emoji_rows.get(idx).cloned();
+        let label = row.as_ref().map(|r| r.key_cell()).unwrap_or_default();
+        let user_only = row.as_ref().is_some_and(|r| r.is_user_only());
         match self.emoji.restore(&key) {
             Ok(()) => {
                 self.refresh_emoji_keep_sel(&label);
-                self.set_status(&format!(
-                    "「{label}」已恢复内置（或删掉新增绑定）· 1 秒内生效"
-                ));
+                // 同一个动作两种说法：内置有的 = 回到内置值；纯新增 = 解绑
+                let msg = if user_only {
+                    format!("「{label}」的绑定已删除，这个字/词不再出现 emoji 候选 · 1 秒内生效")
+                } else {
+                    format!("「{label}」已恢复内置 · 1 秒内生效")
+                };
+                self.set_status(&msg);
             }
             Err(e) => self.set_status(&e),
         }
@@ -2981,7 +3016,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     (0, ID_B_SEARCH) => app.on_search(),
                     (0, ID_B_FORGET) => app.on_forget(),
                     (0, ID_BE_SAVE) => app.on_emoji_save(),
-                    (0, ID_BE_DISABLE) => app.on_emoji_disable(),
+                    (0, ID_BE_DISABLE) => app.on_emoji_toggle_row(),
                     (0, ID_BE_RESTORE) => app.on_emoji_restore(),
                     (0, ID_BE_TOGGLE) => app.on_emoji_toggle(),
                     (0, ID_BE_OPEN) => app.on_emoji_open(),
@@ -3019,6 +3054,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             app.fill_emoji_panel(Some(idx));
                         }
                     }
+                } else if hdr.code == NM_CLICK && hdr.hwndFrom == app.emoji_list {
+                    // 再点**已经选中**的那一行：把面板还原成该行的值（v1.67）。
+                    // `LVN_ITEMCHANGED` 只在选中项真的换了才来，清空「绑到」之后
+                    // 点原来那行不会有任何消息，面板就一直空着——真机上反馈为
+                    // 「删除输入后重新点列表项也不恢复」。
+                    let nm = unsafe { &*(lparam.0 as *const NMITEMACTIVATE) };
+                    app.on_emoji_row_click(nm.iItem);
                 }
             }
             LRESULT(0)
@@ -4071,6 +4113,21 @@ fn set_text(hwnd: HWND, s: &str) {
     }
 }
 
+/// 按钮标题（自绘按钮从窗口文本取字，见 `draw_button`）。
+///
+/// 文字变了才写：调用点每次刷新都跑（选中行变化、输入变化），无谓的
+/// `WM_SETTEXT` 会让自绘按钮连着重画。写之前还要在窗口文本没变时**别**重绘——
+/// `SetWindowTextW` 对 owner-draw 按钮不保证触发 `WM_DRAWITEM`。
+fn set_button_text(hwnd: HWND, s: &str) {
+    if get_text(hwnd) == s {
+        return;
+    }
+    set_text(hwnd, s);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+}
+
 fn get_text(hwnd: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(hwnd) };
     if len <= 0 {
@@ -4721,6 +4778,98 @@ fn check_emoji_page(app: &mut App, emoji_path: &std::path::Path) -> Result<(), S
     if count != 4 {
         return Err(format!("覆盖保存不该新增行，实际 {count} 行"));
     }
+    // —— 纯用户新增的行：停用 / 启用 / 删除绑定（v1.67）——
+    // 真机反馈：给单字绑了一枚想取消，选中那行「停用」是灰的，也没有别的地方可点；
+    // 而且清空「绑到」再点同一行，面板不会还原（选中项没变 → 没有 ITEMCHANGED）。
+    let idx = app.emoji_sel.expect("刚才保存后应当选中「好运」这一行");
+    if !app.emoji_rows[idx].is_user_only() {
+        return Err("「好运」是用户新增的绑定，is_user_only 应当为真".into());
+    }
+    if !is_enabled(app.b_emoji_disable) {
+        return Err("用户新增的行「停用」不该是灰的（那正是没法取消绑定的原因）".into());
+    }
+    if get_text(app.b_emoji_restore) != "删除绑定" {
+        return Err(format!(
+            "纯用户新增的行，第三个按钮应叫「删除绑定」，实际 {:?}",
+            get_text(app.b_emoji_restore)
+        ));
+    }
+    // 清空两个框，再点同一行 → 面板还原成该行的值。
+    // 发**真的 `WM_NOTIFY(NM_CLICK)`**（不是直接调处理函数）：接线本身
+    // （按 `hdr.hwndFrom` 认列表、从 `NMITEMACTIVATE` 取 `iItem`）也一并钉住。
+    set_text(app.e_emoji_target, "");
+    set_text(app.e_emoji_new, "");
+    drain_messages();
+    {
+        let mut nm = NMITEMACTIVATE::default();
+        nm.hdr.hwndFrom = app.emoji_list;
+        nm.hdr.idFrom = ID_EMOJI_LIST;
+        nm.hdr.code = NM_CLICK;
+        nm.iItem = idx as i32;
+        unsafe {
+            let _ = SendMessageW(
+                app.hwnd,
+                WM_NOTIFY,
+                Some(WPARAM(ID_EMOJI_LIST)),
+                Some(LPARAM(&nm as *const NMITEMACTIVATE as isize)),
+            );
+        }
+    }
+    drain_messages();
+    if get_text(app.e_emoji_target) != "好运" || get_text(app.e_emoji_new) != "🥳" {
+        return Err(format!(
+            "再点同一行应把面板还原成该行的值（实际 绑到 {:?} / emoji {:?}）",
+            get_text(app.e_emoji_target),
+            get_text(app.e_emoji_new)
+        ));
+    }
+
+    // 停用：用户新增的条目也留得住——文件里 enabled = false 且 emoji 还在
+    click(app.b_emoji_disable);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if !text.contains("word = \"好运\"")
+        || !text.contains("🥳")
+        || !text.contains("enabled = false")
+    {
+        return Err(format!(
+            "用户新增的绑定停用后应是「条目还在 + enabled = false」：\n{text}"
+        ));
+    }
+    if app.emoji_rows[app.emoji_sel.unwrap()].state_cell() != "已停用" {
+        return Err("停用后那一行的状态列应当是「已停用」".into());
+    }
+    if get_text(app.b_emoji_disable) != "启用" {
+        return Err(format!(
+            "停用之后同一个按钮应当变成「启用」，实际 {:?}",
+            get_text(app.b_emoji_disable)
+        ));
+    }
+    // 启用：回来还是同一枚，状态回「新增」
+    click(app.b_emoji_disable);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if text.contains("enabled = false") {
+        return Err(format!("启用后文件里不该再有 enabled = false：\n{text}"));
+    }
+    if app.emoji_rows[app.emoji_sel.unwrap()].state_cell() != "新增" {
+        return Err("启用后那一行的状态列应当回到「新增」".into());
+    }
+
+    // 删除绑定：条目整条消失，行也没了（内置没有这条，删了就是解绑）
+    click(app.b_emoji_restore);
+    drain_messages();
+    let text = std::fs::read_to_string(emoji_path).map_err(|e| format!("回读用户层失败：{e}"))?;
+    if text.contains("好运") {
+        return Err(format!("删除绑定后用户层里不该再有「好运」：\n{text}"));
+    }
+    if app.emoji_rows.iter().any(|r| r.key_cell() == "好运") {
+        return Err("删除绑定后列表里不该还有「好运」这一行".into());
+    }
+    if app.emoji_sel.is_some() {
+        return Err("删掉选中行之后面板应当清空（不然按钮还指着一条不存在的绑定）".into());
+    }
+
     // 回到「好评」继续测停用/恢复
     select_item(app.emoji_list, 2);
     drain_messages();

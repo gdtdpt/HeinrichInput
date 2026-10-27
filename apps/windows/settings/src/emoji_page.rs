@@ -61,6 +61,14 @@ impl EmojiRow {
     }
 
     /// 「状态」列：内置 / 已改绑 / 已停用 / 新增。
+    /// 内置没有这条、纯用户新增的绑定（`builtin_emoji` 为空）。
+    ///
+    /// 这一类的「撤销」是**删掉绑定**，不是「恢复内置」——界面上那个按钮的名字
+    /// 要跟着换（v1.67）：给单字挂了一枚想撤掉，看到「恢复内置」根本想不到是它。
+    pub fn is_user_only(&self) -> bool {
+        self.user && self.builtin_emoji.is_none()
+    }
+
     pub fn state_cell(&self) -> &'static str {
         match (self.user, self.enabled) {
             (false, true) => "内置",
@@ -335,23 +343,27 @@ impl EmojiPage {
         self.save()
     }
 
-    /// 停用 / 恢复。对内置有的 key 写 `enabled = false`（吃掉内置值）；
-    /// 对用户新增的 key，「停用」就是删掉——没有内置值可回退。
+    /// 停用 / 恢复：一律写一条带 `enabled` 的用户层条目。
+    ///
+    /// v1.67 之前这里对「用户新增的 key」直接报错（当时的理由是「没有内置值可回退，
+    /// 停用等于删」），结果是给单字绑了一枚之后**按钮是灰的**——用户想先关掉它
+    /// 再观察候选，界面上没有任何入口。其实停用对用户新增的条目完全成立：条目留在
+    /// 用户层，只是 `enabled = false`，候选里不再挂 emoji；删不删是另一件事
+    /// （界面上的「删除绑定」）。
     pub fn set_disabled(&mut self, key: &Key, disabled: bool) -> Result<(), String> {
-        let has_builtin = self.builtin_entry(key).is_some();
-        if !has_builtin {
-            if disabled {
-                return Err("这条是用户新增的，停用等于删掉，请用「恢复内置」".to_string());
-            }
-            return self.restore(key);
-        }
+        // 恢复时用「当前这枚 emoji」：用户新增的条目取用户层，内置条目取内置值
         let emoji = match self.user_entry(key) {
             Some(u) => u.emoji.clone(),
-            None => self
-                .builtin_entry(key)
-                .map(|b| b.emoji.clone())
-                .unwrap_or_default(),
+            None => match self.builtin_entry(key) {
+                Some(b) => b.emoji.clone(),
+                None => return Err("这条还没有绑定，没有可停用的东西".to_string()),
+            },
         };
+        // 启用后与内置值一样时直接删条目：留着一条「和内置完全相同」的用户层记录，
+        // 状态列会显示「已改绑」，看着像改过却什么也没变。
+        if !disabled && self.builtin_entry(key).is_some_and(|b| b.emoji == emoji) {
+            return self.restore(key);
+        }
         self.remove_user_entries(key);
         self.user.entries.push(EmojiEntry {
             word: key.word().map(str::to_string),
@@ -363,7 +375,11 @@ impl EmojiPage {
         self.save()
     }
 
-    /// 恢复内置：删掉用户层里这个 key 的全部条目。内置没有的 key 等于删绑定。
+    /// 删掉用户层里这个 key 的全部条目。
+    ///
+    /// 两种语义同一个动作，看内置有没有这个 key：内置有 = 恢复内置值；
+    /// 内置没有（用户新增）= **解绑**，那一行直接从列表里消失。界面上按钮的
+    /// 名字由 [`EmojiRow::is_user_only`] 决定。
     pub fn restore(&mut self, key: &Key) -> Result<(), String> {
         self.remove_user_entries(key);
         self.save()
@@ -539,6 +555,89 @@ mod tests {
         assert!(page.rebind(&key, "👍").is_ok());
     }
 
+    /// 用户新增的条目也能停用（v1.67）。当年这里直接返回错误——「没有内置值可回退，
+    /// 停用等于删」——界面上「停用」是灰的，给单字挂了一枚想先关掉它就没路走。
+    #[test]
+    fn 用户新增的绑定也能停用与恢复() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("user-disable").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp.clone(), up.clone());
+        let key = Key::Word("好".into());
+        page.rebind(&key, "👍").unwrap();
+        let row = page
+            .rows()
+            .into_iter()
+            .find(|r| r.key_cell() == "好")
+            .expect("单字「好」应当在列表里");
+        assert!(row.is_user_only(), "内置没有「好」，这是纯用户新增");
+        assert_eq!(row.state_cell(), "新增");
+
+        page.set_disabled(&key, true).unwrap();
+        let text = std::fs::read_to_string(&up).unwrap();
+        assert!(text.contains("word = \"好\""), "{text}");
+        assert!(text.contains("👍"), "停用不能丢掉那枚 emoji：\n{text}");
+        assert!(text.contains("enabled = false"), "{text}");
+
+        let back = EmojiPage::load(bp.clone(), up.clone());
+        let row = back
+            .rows()
+            .into_iter()
+            .find(|r| r.key_cell() == "好")
+            .unwrap();
+        assert_eq!(row.state_cell(), "已停用");
+        assert_eq!(row.emoji, "👍", "停用时显示的是恢复后会用的那枚");
+        assert!(!row.enabled);
+
+        // 再打开：还是同一枚，状态回「新增」
+        page.set_disabled(&key, false).unwrap();
+        let back = EmojiPage::load(bp, up);
+        let row = back
+            .rows()
+            .into_iter()
+            .find(|r| r.key_cell() == "好")
+            .unwrap();
+        assert_eq!(row.state_cell(), "新增");
+        assert!(row.enabled);
+        assert_eq!(row.emoji, "👍");
+    }
+
+    /// 解绑：用户新增的条目删干净，行从列表消失（内置条目则回到内置值）。
+    #[test]
+    fn 解绑删掉用户新增的条目() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("unbind").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp.clone(), up.clone());
+        page.rebind(&Key::Word("好".into()), "👍").unwrap();
+        page.restore(&Key::Word("好".into())).unwrap();
+        assert!(
+            !page.rows().iter().any(|r| r.key_cell() == "好"),
+            "解绑后这一行应当消失"
+        );
+        // 内置条目走同一条路 = 回到内置值，行还在
+        page.rebind(&Key::Word("好评".into()), "🎉").unwrap();
+        page.restore(&Key::Word("好评".into())).unwrap();
+        let row = EmojiPage::load(bp, up)
+            .rows()
+            .into_iter()
+            .find(|r| r.key_cell() == "好评")
+            .unwrap();
+        assert_eq!(row.emoji, "👍");
+        assert_eq!(row.state_cell(), "内置");
+    }
+
+    /// 没有任何绑定的 key 停用要给出人话，而不是悄悄写一条空 emoji 的条目。
+    #[test]
+    fn 停用没有绑定的目标会报错() {
+        let bp = builtin_with(BUILTIN);
+        let up = temp_dir("disable-missing").join("emoji.user.toml");
+        let mut page = EmojiPage::load(bp, up.clone());
+        let e = page
+            .set_disabled(&Key::Word("没有这条".into()), true)
+            .unwrap_err();
+        assert!(e.contains("还没有绑定"), "{e}");
+        assert!(!up.exists() || !std::fs::read_to_string(&up).unwrap().contains("没有这条"));
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         // 计数器：测试并行跑，同名目录会被另一个线程 remove_dir_all 掉
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -663,11 +762,25 @@ emoji = \"👌\"
             Some("👍")
         );
 
-        // 新增条目的「停用」走不通（没有内置可回退），删掉才是正路
-        assert!(page
-            .set_disabled(&Key::Word("好".into()), true)
-            .unwrap_err()
-            .contains("新增"));
+        // 新增条目也能停用（v1.67 修正）：条目留在用户层、`enabled = false`，
+        // 候选里不再挂这枚——早先这里直接报错，界面上的「停用」因此是灰的。
+        page.set_disabled(&Key::Word("好".into()), true).unwrap();
+        let text = std::fs::read_to_string(&up).unwrap();
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(
+            EmojiPage::load(bp.clone(), up.clone())
+                .map()
+                .lookup("好", "")
+                .is_none(),
+            "停用后不该再命中"
+        );
+        // 启用回来还是那一枚
+        page.set_disabled(&Key::Word("好".into()), false).unwrap();
+        assert_eq!(
+            EmojiPage::load(bp.clone(), up.clone()).map().lookup("好", ""),
+            Some("👍")
+        );
+        // 真正撤掉绑定 = restore（界面上叫「删除绑定」）
         page.restore(&Key::Word("好".into())).unwrap();
         assert!(EmojiPage::load(bp, up.clone())
             .map()
