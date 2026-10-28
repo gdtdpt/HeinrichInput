@@ -21,7 +21,7 @@ Windows 上的五笔 86 输入法。**候选顺序跟着你的手变**，**拼�
 
 ### 用安装包（推荐）
 
-1. 双击 `HeinrichSetup-1.1.3.exe`，默认装到 `C:\Program Files\HeinrichInput`。
+1. 双击 `HeinrichSetup-1.1.4.exe`，默认装到 `C:\Program Files\HeinrichInput`。
    安装器会放好文件、注册输入法、跑四项自检，并建好开始菜单里的「亨利五笔 设置」。
 2. **不用先关掉正在运行的程序**：安装器会把被占用的文件改名腾位，装完照常可用。
    但已经开着的程序（微信、浏览器、编辑器）仍跑着旧代码，**重启它们**才会用上新版；
@@ -31,7 +31,7 @@ Windows 上的五笔 86 输入法。**候选顺序跟着你的手变**，**拼�
 批量部署用静默安装：
 
 ```powershell
-.\HeinrichSetup-1.1.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+.\HeinrichSetup-1.1.4.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 卸载走「设置 → 应用 → 亨利五笔 → 卸载」。**卸载默认保留你的词库、emoji 绑定与学习库**
@@ -68,7 +68,7 @@ heinrich-setup.exe shortcut     # 补开始菜单快捷方式（不需要管理�
 
 ### 怎么确认装的是哪一版
 
-打开「亨利五笔 设置」，**标题栏就带着版本号**（例如 `亨利五笔 · 设置 · v1.1.3`）；
+打开「亨利五笔 设置」，**标题栏就带着版本号**（例如 `亨利五笔 · 设置 · v1.1.4`）；
 命令行也能查：
 
 ```powershell

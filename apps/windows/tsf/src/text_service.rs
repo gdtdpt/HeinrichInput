@@ -256,16 +256,33 @@ impl Core {
         }
     }
 
-    /// 这个键会不会把光标带走（D105 的第一个重置信号）。
+    /// 这个键对光标位置意味着什么（D105 的重置信号）。
     ///
     /// 看得见的移动键按下之后，下一次测量**不再过闸门**——用户已经明确告诉我们
     /// 「光标挪了」，闸门再拿旧锚去校验只会误判。看不见的那些（中文模式下 Vim 式
     /// 字母移动压根进不了宿主，`j` 被我们吃进缓冲；程序自己 `setSelection`）
     /// 交给闸门的逃生口兜住，最坏落后三个键。
-    fn note_caret_move(&self, vk: u16) {
-        if keys::is_caret_move(vk, self.mods().ctrl) {
-            self.gate.borrow_mut().mark_free();
-            tsf_debug!("#{} 移动键 vk={vk:#04x}，下次测量无条件采纳", self.seq);
+    ///
+    /// 两类移动键的时效不同（见 [`keys::CaretMove`]）：`Happened` 留到被消费，
+    /// `Predicted` 遇到别的键就作废。后者是 1.1.3 真机事故的教训——Ctrl+A 置位
+    /// 之后没人清，中间按了 Ctrl+X（输入框被清空），那个早已过期的「放行」
+    /// 仍然生效，把剪贴前的旧坐标无条件采纳了。
+    fn note_key_for_gate(&self, vk: u16) {
+        let ctrl = self.mods().ctrl;
+        match keys::caret_move(vk, ctrl) {
+            Some(kind) => {
+                self.gate.borrow_mut().mark_free(kind);
+                tsf_debug!(
+                    "#{} 移动键 vk={vk:#04x}（{kind:?}），下次测量放行",
+                    self.seq
+                );
+            }
+            None => {
+                // Ctrl 自身的 keydown（0x11）不算「另一个组合」：它在 Ctrl+A 之前到达，
+                // 那时放行位还没置上；真置上之后又按 Ctrl+X，那一下才该作废。
+                let chord = ctrl && vk != 0x11;
+                self.gate.borrow_mut().note_other_key(chord);
+            }
         }
     }
 
@@ -557,7 +574,9 @@ impl Core {
                 // 没有这一条，闸门会把「焦点没变、光标横跳几百像素」全判成可疑，
                 // 窗口就停在上次的地方不动了。
                 if cursor_near(measured.rect, CLICK_NEAR) {
-                    self.gate.borrow_mut().mark_free();
+                    self.gate
+                        .borrow_mut()
+                        .mark_free(crate::keys::CaretMove::Happened);
                     tsf_debug!("#{} 鼠标就在量到的位置旁，闸门放行", self.seq);
                 }
                 let decision = self
@@ -1312,7 +1331,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         guarded("OnTestKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
             self.sync_shift(&pic, vk, true);
-            self.note_caret_move(vk);
+            self.note_key_for_gate(vk);
             let action = self.decide(vk);
             debug_key(seq, "test-down", vk, lparam, action);
             Ok(bool_of(action))
@@ -1334,7 +1353,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         guarded("OnKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
             self.sync_shift(&pic, vk, true);
-            self.note_caret_move(vk);
+            self.note_key_for_gate(vk);
             let action = self.decide(vk);
             debug_key(seq, "down", vk, lparam, action);
             if action == Action::Pass {

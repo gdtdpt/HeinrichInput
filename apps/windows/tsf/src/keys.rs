@@ -279,6 +279,22 @@ pub fn is_text_key(vk: u16) -> bool {
     )
 }
 
+/// 这个键会不会把插入符挪走，以及「挪」是已经发生还是即将发生。
+///
+/// 两类的时效不同，闸门（`gate`）据此决定放行能留多久：
+///
+/// | 类别 | 键 | 含义 | 时效 |
+/// |---|---|---|---|
+/// | [`CaretMove::Happened`] | ← → ↑ ↓ / Home / End / PgUp / PgDn / Ctrl+Z | 光标**已经**挪到新位置了 | 留到被下一次测量消费——之后紧接着打的那个字本来就在新位置 |
+/// | [`CaretMove::Predicted`] | Ctrl+A / Esc | 光标现在还没动，但**下一个键**会让它跳（整段替换 / 关掉遮罩） | 中间插进来别的键就作废（用户改主意了） |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretMove {
+    /// 光标已经挪了。
+    Happened,
+    /// 光标还没动，但下一个键会让它跳。
+    Predicted,
+}
+
 /// 这个键会不会把插入符挪走（D105 的「第一个重置信号」）。
 ///
 /// 候选窗位置的闸门（`gate`）用它决定「下一次测量要不要无条件采纳」：用户按了
@@ -286,28 +302,36 @@ pub fn is_text_key(vk: u16) -> bool {
 ///
 /// ## 为什么列的是这些
 ///
-/// | 键 | 为什么算 |
-/// |---|---|
-/// | ← → ↑ ↓ / Home / End / PgUp / PgDn | 直接移动插入符；带 Ctrl 时跨词/跨段，跳得更远 |
-/// | Esc | 关对话框、退全屏播放器都会让焦点或光标换地方 |
-/// | Ctrl+A | 全选之后一打字就是整段替换，插入符会跳到选区起点 |
-/// | Ctrl+Z | 撤销会把文字整段回滚，插入符跟着跳 |
+/// | 键 | 归类 | 为什么算 |
+/// |---|---|---|
+/// | ← → ↑ ↓ / Home / End / PgUp / PgDn | `Happened` | 按下即移动插入符；带 Ctrl 时跨词/跨段，跳得更远 |
+/// | Ctrl+Z | `Happened` | 撤销当场把文字回滚，插入符跟着跳 |
+/// | Ctrl+A | `Predicted` | 全选本身不移动插入符，是「一打字就整段替换」才跳到选区起点 |
+/// | Esc | `Predicted` | 关对话框、退全屏播放器才会让焦点换地方，按下那一刻还没动 |
 ///
 /// **字母键一律不算**（哪怕它们在 Vim 里是移动键）：中文模式下字母进的是我们的
 /// 编码缓冲，宿主一个都收不到，光标根本不会动。英文/直通模式下确实可能是移动，
 /// 但我们分不清「打字」与「移动」——这属于闸门逃生口要兜的那一类，不是这里。
-pub fn is_caret_move(vk: u16, ctrl: bool) -> bool {
+pub fn caret_move(vk: u16, ctrl: bool) -> Option<CaretMove> {
     // 0x21 VK_PRIOR、0x22 VK_NEXT、0x23 VK_END、0x24 VK_HOME、
     // 0x25 VK_LEFT、0x26 VK_UP、0x27 VK_RIGHT、0x28 VK_DOWN
     if (0x21..=0x28).contains(&vk) {
-        return true;
+        return Some(CaretMove::Happened);
     }
     // 0x1B VK_ESCAPE
     if vk == 0x1B {
-        return true;
+        return Some(CaretMove::Predicted);
     }
-    // 0x41 VK_A、0x5A VK_Z：只认带 Ctrl 的组合（Ctrl+A / Ctrl+Z）。
-    ctrl && matches!(vk, 0x41 | 0x5A)
+    if ctrl {
+        return match vk {
+            // 0x41 VK_A
+            0x41 => Some(CaretMove::Predicted),
+            // 0x5A VK_Z
+            0x5A => Some(CaretMove::Happened),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// 判定一个按键该不该被接管。

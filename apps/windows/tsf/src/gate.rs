@@ -1,4 +1,4 @@
-//! 候选窗位置的闸门（D105）。
+//! 候选窗位置的闸门（D105，判定顺序在 D106 重排）。
 //!
 //! ## 它要治的是什么
 //!
@@ -15,7 +15,7 @@
 //! | 规矩 | 做法 | 治什么 |
 //! |---|---|---|
 //! | 持久锚 | 只有通过闸门的值才写入 [`Gate::anchor`] | 错值进不来，因为锚一直是最后一处**已知正确**的位置 |
-//! | 可达性 | 新值必须从锚「一个词的字宽内」到达（同行 `|Δx| ≤` [`JUMP_X`]），或者是换行 / 换编辑区 | 738px 那种回放旧坐标 |
+//! | 可达性 | 新值必须从锚「一个词的字宽内」到达（同行往右 `≤` [`JUMP_X`]），或者是换行 / 换编辑区 / **往左跳** | 738px 那种回放旧坐标 |
 //! | 逃生口 | 连续 [`STREAK_MAX`] 次给出**同一个**被拒值 → 承认它是真的 | 用户真的用我们看不见的方式移动了光标（Vim 式键位、程序跳转） |
 //!
 //! ## 为什么拒绝时不换位置，而要「慢跟随」
@@ -30,12 +30,21 @@
 //!
 //! ## 为什么闸门必须能「放行」
 //!
-//! 键盘上的移动键（←→↑↓ / Home / End / PgUp / PgDn / Esc / Ctrl+A）我们看得见，
-//! 按下就把 [`Gate::mark_free`] 置位，下一次测量无条件采纳——那是用户明确告知
-//! 「我把光标挪了」。鼠标点同一框内的别处我们看不见，用 `GetCursorPos` 兜底
-//! （见 `Core::caret_is_clicked`）。两条加起来，剩下的盲区只有「程序自己移动光标」，
-//! 而那正是逃生口管的事。
+//! 键盘上的移动键（←→↑↓ / Home / End / PgUp / PgDn / Esc / Ctrl+A / Ctrl+Z）我们
+//! 看得见，按下就把放行位置位（[`Gate::mark_free`]），下一次测量无条件采纳——那是
+//! 用户明确告知「我把光标挪了」。鼠标点同一框内的别处我们看不见，用 `GetCursorPos`
+//! 兜底（见 `Core::note_key_for_gate` 的调用方）。两条加起来，剩下的盲区只有
+//! 「程序自己移动光标」，而那正是逃生口管的事。
+//!
+//! ## D106：放行不能压过直接对照
+//!
+//! 1.1.3 上线当天复现三次，每次都是「同一个按键做了两次测量，一对一个错，闸门选了
+//! 错的」——因为放行（按过某个键 / 鼠标在旁边 / 像换行）全是**推测**，却排在
+//! 「写前 vs 写后」这个**直接对照**前面。现在首键仲裁是判定第 ① 位；放行还按
+//! 「是不是真的挪了」分成 [`CaretMove::Happened`] 与 [`CaretMove::Predicted`] 两类，
+//! 后者的时效只有「到下一个键为止」。
 
+use crate::keys::CaretMove;
 use heinrich_ui::Rect;
 
 /// 同行横跳的容忍上限（逻辑像素）。
@@ -83,17 +92,38 @@ pub struct Gate {
     /// 连续拒绝次数与那个被拒的值。
     streak: u32,
     last_rejected: Option<Rect>,
-    /// 下一次测量无条件采纳：移动键刚按下，或鼠标就在量到的位置旁边。
-    free: bool,
+    /// 下一次测量无条件采纳的理由；`None` = 没有。
+    ///
+    /// 分两种，时效不同（见 [`CaretMove`]）：[`CaretMove::Happened`] 一直留到被
+    /// 一次测量消费掉——方向键之后马上打字是常态，那个字本来就该跟着新位置走；
+    /// [`CaretMove::Predicted`] 只要中间插进来别的键就作废——Ctrl+A 之后又按了
+    /// Ctrl+X，全选已经不成立了，那次「预测」随之过期（1.1.3 真机事故就是这么
+    /// 发生的：Ctrl+A 置位后没人清，Ctrl+X 之后那个旧坐标被无条件放行）。
+    free: Option<CaretMove>,
 }
 
 impl Gate {
-    /// 光标可能被用户挪走了（移动键 / 鼠标点击）——下一次测量不再过闸门。
+    /// 光标可能被用户挪走了——下一次测量不再过闸门。
     ///
     /// 只置位不立即改位置：位置永远由「一次真实测量」决定，
     /// 这条标志只是把判断权先交出去一次。
-    pub fn mark_free(&mut self) {
-        self.free = true;
+    pub fn mark_free(&mut self, kind: CaretMove) {
+        self.free = Some(kind);
+    }
+
+    /// 又按了一个不是移动键的键。
+    ///
+    /// `ctrl_chord` 表示这一下是 Ctrl 组合键（Ctrl+X / Ctrl+V 之类）。它才是
+    /// [`CaretMove::Predicted`] 的作废条件：Ctrl+A 的「预测」指向的是「下一个
+    /// 键入会整段替换」，而 Ctrl+X 把选区剪走之后，那次预测的落点已经不存在了。
+    ///
+    /// 普通字母键**不**作废：`Ctrl+A` → 直接打字是最常见的用法，那个字正好落在
+    /// 选区起点——放行权必须留到那一刻。1.1.3 真机事故（Ctrl+A → Ctrl+X → 打字，
+    /// 旧坐标被无条件采纳）正是 Ctrl+X 这一下没被算作「过期」。
+    pub fn note_other_key(&mut self, ctrl_chord: bool) {
+        if ctrl_chord && self.free == Some(CaretMove::Predicted) {
+            self.free = None;
+        }
     }
 
     /// 当前的锚，供日志与测试使用。
@@ -127,18 +157,22 @@ impl Gate {
     ///
     /// | 顺位 | 证据 | 结论 |
     /// |---|---|---|
-    /// | ① | 移动键 / 鼠标刚动过 | 采纳测量值 |
-    /// | ② | 视图矩形变了 | 采纳测量值（换了框，旧锚不再适用） |
-    /// | ③ | 写组合串前后两次测量差得远 | **采纳写前那个** |
+    /// | ① | 写组合串前后两次测量差得远 | **采纳写前那个**（前提：写前值在当前编辑区内） |
+    /// | ② | 移动键 / 鼠标刚动过 | 采纳测量值 |
+    /// | ③ | 视图矩形变了 | 采纳测量值（换了框，旧锚不再适用） |
     /// | ④ | 还没有锚 | 采纳测量值 |
-    /// | ⑤ | 纵向变了 | 采纳测量值（换行） |
+    /// | ⑤ | 纵向变了，且横向没往右乱跳 | 采纳测量值（换行） |
     /// | ⑥ | 同行且在一个词的字宽内 | 采纳测量值（正常跟随） |
     /// | ⑦ | 连续三次同一个被拒值 | 采纳测量值（逃生口） |
     /// | ⑧ | 其余 | 拒绝，位置留在「锚 + 推进量」 |
     ///
-    /// ② 排在 ③ 之前的讲究：换框时旧锚本来就作废，写前的值同样可能是上一个框
-    /// 的缓存；而同一个框内「写前对、写后错」正是 D105 的现场。两种情形靠
-    /// 「视图矩形有没有变」区分，这是唯一分得开它们的证据。
+    /// ① 排在最前是 1.1.3 真机事故的结论：那次写前量到 898（对）、写后量到 1214
+    /// （错），而「Ctrl+A 置过位」让闸门在更早一步就把 1214 无条件采纳了。两者是
+    /// **同一瞬间的两次测量**，证据强度高于任何一种「按过某个键」的推测——所以
+    /// 仲裁必须排在放行之前，否则永远轮不到它说话。
+    ///
+    /// ① 的例外（写前值不在当前编辑区内）留给「真正的换框」：刚点进新输入框时，
+    /// 写前那个值多半还是上一个框的缓存，此时该信写后的。
     fn judge(
         &mut self,
         measured: Rect,
@@ -146,24 +180,7 @@ impl Gate {
         prewarm: Option<Rect>,
         count_streak: bool,
     ) -> Decision {
-        // ① 用户明确告知挪了光标：无条件采纳，并从这里重建锚。
-        if self.free {
-            self.free = false;
-            return self.accept(measured, view, "移动键/鼠标后");
-        }
-
-        // ② 换了编辑区：换输入框、换窗口、窗口缩放。横向怎么跳都合理。
-        //
-        //    必须排在首键仲裁之前：换框时**旧锚已经作废**，而写前的那个值同样
-        //    可能来自上一个框（刚点进来，宿主还没换缓存）。这一条先放行，
-        //    就等于宣布「锚重新开始」，仲裁那一步自然不再有发言权。
-        if let Some(anchor) = self.anchor {
-            if view.is_some() && anchor.view.is_some() && view != anchor.view {
-                return self.accept(measured, view, "换了编辑区");
-            }
-        }
-
-        // ③ 首键仲裁：写组合串之前量的那个值是在宿主排版干净的时候拿的；
+        // ① 首键仲裁：写组合串之前量的那个值是在宿主排版干净的时候拿的；
         //    写完之后再量，宿主可能已经在搬旧缓存了。两者差到两行高以上，
         //    信前者——D105 那次 738px 的事件，正是靠这一条挡住的。
         //
@@ -173,11 +190,37 @@ impl Gate {
         if let Some(pre) = prewarm {
             let gap = PREWARM_GAP_EM * measured.h.max(1.0);
             if (pre.x - measured.x).abs() > gap || (pre.y - measured.y).abs() > gap {
-                tsf_debug!(
-                    "# 首键仲裁：写前 {pre:?} 写后 {measured:?}，采用写前（Δx {:.0}）",
-                    (pre.x - measured.x).abs()
-                );
-                return self.accept(pre, view, "首键仲裁");
+                let pre_inside = in_view(pre, view);
+                // 写前那个落在编辑区外、写后那个在区内：说明写前是上一个框的
+                // 残留，这次是真的换了框——不仲裁，交给后面几条。
+                if pre_inside || !in_view(measured, view) {
+                    tsf_debug!(
+                        "# 首键仲裁：写前 {pre:?} 写后 {measured:?}，采用写前（Δx {:.0}）",
+                        (pre.x - measured.x).abs()
+                    );
+                    return self.accept(pre, view, "首键仲裁");
+                }
+                tsf_debug!("# 首键仲裁：写前 {pre:?} 落在编辑区外，保持写后 {measured:?}");
+            }
+        }
+
+        // ② 用户明确告知挪了光标：无条件采纳，并从这里重建锚。
+        if let Some(kind) = self.free.take() {
+            return self.accept(
+                measured,
+                view,
+                if kind == CaretMove::Happened {
+                    "移动键后"
+                } else {
+                    "预测性放行"
+                },
+            );
+        }
+
+        // ③ 换了编辑区：换输入框、换窗口、窗口缩放。横向怎么跳都合理。
+        if let Some(anchor) = self.anchor {
+            if view.is_some() && anchor.view.is_some() && view != anchor.view {
+                return self.accept(measured, view, "换了编辑区");
             }
         }
 
@@ -186,15 +229,32 @@ impl Gate {
             return self.accept(measured, view, "首个锚点");
         };
 
-        // ⑤ 换了行：纵向一动，横向没有「可达」可言。
-        if (measured.y - anchor.rect.y).abs() > ROW_Y {
-            return self.accept(measured, view, "换了行");
-        }
-
-        // ⑥ 可达性：同行、且在一个词的字宽内。
-        if (measured.x - anchor.rect.x).abs() <= JUMP_X {
+        // ⑤ 换了行：纵向一动就是换行 / 换段，横向回到行首是常态。
+        //
+        //    但「换了行」不等于横向可以乱跳：真正的换行是把插入符送回行首
+        //    （或换行时刚好在右边一点），不会在**同一瞬间**往右跳 600px。
+        //    D105 的第三次事故就是纵向差 58px 被当成「换行」，横向 606px
+        //    全盘接受。
+        let why = if (measured.y - anchor.rect.y).abs() > ROW_Y {
+            if measured.x <= anchor.rect.x + JUMP_X {
+                return self.accept(measured, view, "换了行");
+            }
+            "拒绝：换行横跳太远"
+        } else if (measured.x - anchor.rect.x).abs() <= JUMP_X {
+            // ⑥ 可达性：同行、且在一个词的字宽内。
             return self.accept(measured, view, "正常跟随");
-        }
+        } else if measured.x < anchor.rect.x && in_view(measured, view) {
+            // ⑥b 往左跳：删掉一段、全选替换、点回行首都是这个形态——插入符从
+            //     行尾跑回行首，几百像素，而且极其常见。把它判成可疑，就等于
+            //     「删完一段再打字，候选窗冻在行尾不走」。
+            //
+            //     敢放的方向是有依据的：D105 的三次错值（1214 / 1504 / 1780）
+            //     **全部往右**，因为宿主回放的是「更早、更靠右」的那处位置。
+            //     往左错值只可能来自同一视图内的另一处，那有「换了编辑区」挡。
+            return self.accept(measured, view, "向左跳动");
+        } else {
+            "拒绝：同行横跳太远"
+        };
 
         // ⑦ 逃生口：连续几次给同一个值，那不像是抖出来的旧缓存，而是真的。
         //    `streak` 只在「被拒的值一模一样」时累加——D105 那次连续 5 个值
@@ -224,7 +284,7 @@ impl Gate {
                 measured.h,
             ),
             accepted: false,
-            why: "拒绝：同行横跳太远",
+            why,
         }
     }
 
@@ -250,12 +310,28 @@ impl Gate {
         self.advance = 0.0;
         self.streak = 0;
         self.last_rejected = None;
+        // 放行权的用途就是「让这一次测量通过」，通过了就该作废——否则它会在
+        // 后面的某一次测量里凭空生效。
+        self.free = None;
         Decision {
             rect,
             accepted: true,
             why,
         }
     }
+}
+
+/// 这个位置落在编辑区内吗？
+///
+/// 容差 8px：插入符矩形贴着行尾时右边缘会压线，不算越界。拿不到视图矩形时
+/// 一律返回 `true`——这一关是给首键仲裁用的旁证，不是新门槛，不能因为
+/// 宿主不给视图就把值判死。
+fn in_view(rect: Rect, view: Option<Rect>) -> bool {
+    const TOL: f32 = 8.0;
+    let Some(view) = view else { return true };
+    let x = rect.x.min(rect.right());
+    let y = rect.y.min(rect.bottom());
+    x >= view.x - TOL && x <= view.right() + TOL && y >= view.y - TOL && y <= view.bottom() + TOL
 }
 
 #[cfg(test)]
@@ -300,12 +376,48 @@ mod tests {
         assert_eq!(d.rect.x, 898.0, "拒绝时窗口留在锚上");
     }
 
+    /// 删掉一段 / 全选替换 / 点回行首：插入符从行尾跑回行首，往左几百像素。
+    /// 这是最常见的编辑动作之一，判成可疑就等于「删完一段再打字，窗口冻在行尾」。
     #[test]
-    fn 换行放行() {
+    fn 同行往左跳放行() {
+        let mut g = Gate::default();
+        g.decide(caret(1636.0), view(), None);
+        let d = g.decide(caret(898.0), view(), None);
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 898.0);
+    }
+
+    /// 往左放行的另一面：落点必须在编辑区内。跳到图外的值仍然拒——那更可能是
+    /// 另一个窗口的坐标。
+    #[test]
+    fn 往左跳到图外仍然拒() {
+        let mut g = Gate::default();
+        g.decide(caret(1636.0), view(), None);
+        let d = g.decide(Rect::new(100.0, 1546.0, 0.0, 24.0), view(), None);
+        assert!(!d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 1636.0);
+    }
+
+    /// 换行的标准形态：纵向变了，横向回到行首（往左），放行。
+    #[test]
+    fn 换行回行首放行() {
+        let mut g = Gate::default();
+        g.decide(caret(1500.0), view(), None);
+        // 换到下一行、回到行首（x 变小）
+        let d = g.decide(Rect::new(898.0, 1600.0, 0.0, 24.0), view(), None);
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 898.0);
+    }
+
+    /// 换行不等于横向可以乱跳：D105 第三次事故里纵向差 58px 被判成「换行」，
+    /// 横向 606px 全盘接受。真正的换行是把插入符送回行首，不会同一瞬间往右跳。
+    #[test]
+    fn 换行往右横跳六百像素被拒() {
         let mut g = Gate::default();
         g.decide(caret(898.0), view(), None);
-        let d = g.decide(Rect::new(1900.0, 1600.0, 0.0, 24.0), view(), None);
-        assert!(d.accepted, "{}", d.why);
+        let d = g.decide(Rect::new(1504.0, 1604.0, 0.0, 24.0), view(), None);
+        assert!(!d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 898.0, "拒绝时窗口留在锚上");
     }
 
     #[test]
@@ -321,11 +433,11 @@ mod tests {
     fn 移动键后无条件放行() {
         let mut g = Gate::default();
         g.decide(caret(898.0), view(), None);
-        g.mark_free();
+        g.mark_free(CaretMove::Happened);
         let d = g.decide(caret(1636.0), view(), None);
         assert!(d.accepted, "{}", d.why);
         // 只放行一次：紧接着的横跳又该被拦。
-        let d = g.decide(caret(898.0), view(), None);
+        let d = g.decide(caret(2300.0), view(), None);
         assert!(!d.accepted, "{}", d.why);
     }
 
@@ -357,6 +469,82 @@ mod tests {
         let d = g.decide(caret(902.0), view(), Some(caret(898.0)));
         assert!(d.accepted);
         assert_eq!(d.rect.x, 902.0, "差值在容差内，用写后的新鲜值");
+    }
+
+    /// 1.1.3 真机事故的回放（16:00:51）：Ctrl+A 置过放行位，紧接着 Ctrl+X 把输入框
+    /// 清空，再打第一个字。写前量到 898（清空后的行首，对），写后量到 1214（剪切
+    /// 之前的旧坐标，错）。放行位让它无条件采纳了 1214——仲裁排在放行之后，
+    /// 于是永远轮不到它说话。仲裁提前后必须挡住。
+    #[test]
+    fn 首键仲裁盖过移动键放行() {
+        let mut g = Gate::default();
+        g.decide(caret(898.0), view(), None);
+        g.mark_free(CaretMove::Happened); // 光标确实挪过（例如 Ctrl+Z 撤销）
+        let d = g.decide(caret(1214.0), view(), Some(caret(898.0)));
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 898.0, "要的是写前那个，不是被放行的旧坐标");
+        assert_eq!(g.anchor().unwrap().rect.x, 898.0);
+    }
+
+    /// 真正的换框：写前那个值落在编辑区外，说明是上一个框的残留。此时不仲裁，
+    /// 信写后的。这是用户明确要求的唯一例外。
+    #[test]
+    fn 写前值在编辑区外时不仲裁() {
+        let mut g = Gate::default();
+        // 编辑区没变（同一块 view），但写前值远在图外——上一个框的残留
+        let stray = Rect::new(100.0, 50.0, 0.0, 24.0);
+        let d = g.decide(caret(1200.0), view(), Some(stray));
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 1200.0, "写前在图外，保持写后");
+    }
+
+    /// `Predicted`（Ctrl+A / Esc）只是推测「下一个键会让光标跳」。中间插进来
+    /// **另一个 Ctrl 组合**（Ctrl+X）就作废——选区已经被剪走，那次推测的落点
+    /// 不存在了。这正是 1.1.3 事故的成因。
+    #[test]
+    fn 预测性的放行被另一个组合键作废() {
+        let mut g = Gate::default();
+        g.decide(caret(898.0), view(), None);
+        g.mark_free(CaretMove::Predicted); // Ctrl+A
+        g.note_other_key(true); // Ctrl+X
+        let d = g.decide(caret(1504.0), view(), None);
+        assert!(!d.accepted, "{}", d.why);
+    }
+
+    /// 但普通字母键不作废：`Ctrl+A` → 直接打字是最常见的用法，那个字正好落在
+    /// 选区起点，放行权必须留到那一刻。
+    #[test]
+    fn 预测的放行留给紧接着的那个字() {
+        let mut g = Gate::default();
+        g.decide(caret(1636.0), view(), None);
+        g.mark_free(CaretMove::Predicted); // Ctrl+A
+        g.note_other_key(false); // 打了一个字母
+        let d = g.decide(caret(898.0), view(), None);
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 898.0);
+    }
+
+    /// `Happened`（方向键 / Home）是真的挪了光标，后面按什么键都不影响。
+    #[test]
+    fn 已发生的移动不被字母键作废() {
+        let mut g = Gate::default();
+        g.decide(caret(898.0), view(), None);
+        g.mark_free(CaretMove::Happened); // Home
+        g.note_other_key(false); // 打了一个字母
+        let d = g.decide(caret(1504.0), view(), None);
+        assert!(d.accepted, "{}", d.why);
+        assert_eq!(d.rect.x, 1504.0, "Home 之后的光标位置要采纳");
+    }
+
+    /// 放行权用一次就没了：即使中间没人清，也不该在第二次测量上再生效。
+    #[test]
+    fn 放行权只生效一次() {
+        let mut g = Gate::default();
+        g.decide(caret(898.0), view(), None);
+        g.mark_free(CaretMove::Happened);
+        assert!(g.decide(caret(1504.0), view(), None).accepted);
+        let d = g.decide(caret(2400.0), view(), None);
+        assert!(!d.accepted, "{}", d.why);
     }
 
     /// 换框时旧锚作废，写前的值也可能来自上一个框——顺序上 ③ 必须压过 ④。
@@ -417,7 +605,7 @@ mod tests {
         g.decide(caret(898.0), view(), None);
         g.decide(caret(1636.0), view(), None);
         g.note_committed("感觉");
-        g.mark_free();
+        g.mark_free(CaretMove::Happened);
         // 放行一次：锚挪到 950，推进量清零。
         let d = g.decide(caret(950.0), view(), None);
         assert!(d.accepted);
