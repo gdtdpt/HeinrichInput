@@ -2110,7 +2110,7 @@ impl App {
         let word = row.word.clone();
         let detail = format!(
             "「{word}」上屏 {} 次，上次 {}。\n\n清零后它的位次会回到按码表排的位置，\
-             最多 3 秒生效。次数与时间找不回来；置顶/抑制档位会保留。",
+             最多 3 秒生效。次数与时间找不回来；抑制档位会保留。",
             row.n,
             row.ago(crate::learn::now_unix()),
         );
@@ -5135,13 +5135,21 @@ fn check_learn_page(app: &App) -> Result<(), String> {
     if count != 3 {
         return Err(format!("学习页应列出 3 条用过的词，实际 {count} 条"));
     }
-    // 分最高的在最前：n=7（置顶）> n=4 > n=1（0 分）
+    // 分最高的在最前：n=7 > n=4 > n=1（第一次上屏不计分，n=1 得 0 分）
     let first = cell_text(app.learn_list, 0, 0);
     if first != "的" {
         return Err(format!("首行应是次数最多的「的」，实际是 {first:?}"));
     }
-    if cell_text(app.learn_list, 0, 4) != "置顶" {
-        return Err("「的」的档位列应显示「置顶」".into());
+    // 档位列只给「抑制」出字；夹具里「的」的 tier=1 是退役的「置顶」历史值，
+    // D95 之后按学习算，不应再出现任何标签（读到 1 就映射成学习档）
+    if !cell_text(app.learn_list, 0, 4).is_empty() {
+        return Err(format!(
+            "tier=1 是退役的置顶历史值，档位列不该有字，实际 {:?}",
+            cell_text(app.learn_list, 0, 4)
+        ));
+    }
+    if cell_text(app.learn_list, 2, 4) != "抑制" {
+        return Err("末行「嗯」（tier=2）的档位列应显示「抑制」".into());
     }
     if is_enabled(app.b_forget) {
         return Err("没选中任何行时「清除」应当是灰的".into());
