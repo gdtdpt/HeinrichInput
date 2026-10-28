@@ -147,6 +147,10 @@ struct EmojiState {
     map: EmojiMap,
     /// 生效条目数（日志用）。
     count: usize,
+    /// 上次被字体挡掉的键数（日志用）。只在**数字变了**时打日志：启动走两步
+    /// （内置层一次、带上用户层再一次），同一批缺字形条目会被算两遍，不去重
+    /// 就是两行一模一样的「377 条缺字形」。
+    dropped: usize,
     /// 本机字体覆盖，**跨重载累积**（D99）：每次重载只补探新增码位，
     /// 而不是对两千多个码位再走一遍 `HasCharacter`（实测 110ms，卡查询）。
     support: EmojiSupport,
@@ -162,11 +166,13 @@ impl EmojiState {
             enabled: true,
             map: EmojiMap::default(),
             count: 0,
+            dropped: 0,
             support: EmojiSupport::default(),
         };
         let dropped = this.rebuild(&EmojiLayer::default());
         if dropped > 0 {
             srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过（候选里不会出现方块）");
+            this.dropped = dropped;
         }
         this
     }
@@ -196,8 +202,11 @@ impl EmojiState {
         }
         let dropped = self.rebuild(&user);
         let count = self.map.word_len() + self.map.code_len();
-        if dropped > 0 {
-            srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过");
+        if dropped != self.dropped {
+            if dropped > 0 {
+                srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过");
+            }
+            self.dropped = dropped;
         }
         if count != self.count {
             srv_info!(
