@@ -266,10 +266,14 @@ Invoke-Step '可执行文件图标' {
 # 因为「这台机器没装 Inno」而失败；装了就必须保证脚本编得过：.iss 里的路径、
 # 语言包、[Code] 段全是编译期才暴露的错，装包那一刻才发现就太晚了。
 # 输出到临时目录，不覆盖 dist 里那份真产物。
-$isccPath = @(
-    $env:ISCC,
-    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
-) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+$isccCandidates = @()
+if ($env:ISCC) { $isccCandidates += $env:ISCC }
+# Join-Path 的 -Path 传空串会直接抛 ParameterBindingValidationException，
+# 而 LOCALAPPDATA / ProgramFiles(x86) 在某些派生会话里是空的——逐个判空再拼。
+if ($env:LOCALAPPDATA) { $isccCandidates += (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe') }
+if ($env:ProgramFiles) { $isccCandidates += (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe') }
+if (${env:ProgramFiles(x86)}) { $isccCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe') }
+$isccPath = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if ($isccPath) {
     Invoke-Step '安装包脚本编译' {

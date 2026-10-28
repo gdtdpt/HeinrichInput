@@ -2036,6 +2036,12 @@ helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环
   `git add Cargo.toml Cargo.lock`，别只提交 `Cargo.toml`。
 - **重装才能确认版本**：DLL / server 都装在 `C:\Program Files\HeinrichInput`，覆盖安装
   后打开设置窗口，标题栏的 `v1.0.x` 就是实际在跑的那一版（比去应用列表翻更省事）。
+- 脚本里 `Join-Path $env:XXX '…'` 一律先判空：`LOCALAPPDATA`、`ProgramFiles(x86)`
+  在某些「由别的程序派生」的会话里是空串，`Join-Path` 收到空 `-Path` 会抛
+  `ParameterBindingValidationException`（不是返回空串），整轮校验当场中断。
+- `cargo` / `git` / `rc.exe` 都可能不在当前会话的 PATH 里：`release.ps1` 会按默认位置
+  补 PATH（`~\.cargo\bin`、`Program Files\Git\cmd` 等）；`rc.exe` 缺了只会跳过图标，
+  由 `check.ps1` 的「可执行文件图标」步兜底断言，装包前就能发现。
 
 ## 5. 数据管线
 
