@@ -43,12 +43,12 @@ mod log;
 
 mod cand;
 mod caret;
-mod fallback;
 mod ipc;
 mod keycap;
 mod keys;
 mod langbar;
 mod launch;
+mod notify;
 mod preedit;
 mod text_service;
 

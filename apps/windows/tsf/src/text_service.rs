@@ -67,6 +67,7 @@ use crate::ipc;
 use crate::keycap;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap};
 use crate::langbar;
+use crate::notify;
 use crate::preedit::{CompSlot, Goal, PreeditSession};
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
@@ -139,6 +140,10 @@ pub struct Core {
     cands: Rc<RefCell<cand::Cands>>,
     /// 码位键位图（§6.7）。懒建、按需弹，与候选窗同生共死。
     keycaps: RefCell<keycap::KeycapPanel>,
+    /// 重连通知窗口（D101）。`Activate` 建、`Deactivate` 销毁；后台 IPC 线程
+    /// 重连成功时往它 `PostMessageW`，窗口过程调 [`Core::on_reconnected`]。
+    /// `None` = 建窗失败（只记日志，退回「等下一个键重查」的老行为）。
+    notify: RefCell<Option<notify::NotifyWindow>>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -175,6 +180,7 @@ impl Core {
             active_ctx: RefCell::new(None),
             cands: Rc::new(RefCell::new(cand::Cands::new(seq))),
             keycaps: RefCell::new(keycap::KeycapPanel::new(seq)),
+            notify: RefCell::new(None),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -456,25 +462,41 @@ impl Core {
                 self.show_candidates(context, fallback_caret);
             }
             None => {
-                // D100：server 无应答（正在重连 / 挂了）——应急简码兜底，1–2 码
-                // 仍出字、弹候选窗。查不到（三码以上）才退回「保留上一帧」。
-                // 注意与 `Some(空)` 的区别：那是「真无此字」，出简码字反而是错的。
-                match crate::fallback::lookup(&code) {
-                    Some(word) => {
-                        tsf_info!("#{} {code} 无应答，应急简码 → {word}", self.seq);
-                        self.cands.borrow_mut().update(
-                            vec![word.to_string()],
-                            vec![String::new()],
-                            vec![0],
-                            vec![0],
-                            1,
-                        );
-                        self.show_candidates(context, fallback_caret);
-                    }
-                    None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),
-                }
+                // server 无应答（正在重连 / 挂了）——D18：键路径永不等待，
+                // 保留缓冲，等重连后的下一个键（或 D101 的重连补弹）接管。
+                tsf_debug!("#{} {code} 候选查询无应答，保留缓冲", self.seq);
             }
         }
+    }
+
+    /// D101：后台线程重连成功后的补弹入口。只在重连通知窗口的窗口过程里跑
+    /// （TSF UI 线程），所以可以像按键回调一样碰候选窗与编辑会话。
+    ///
+    /// 三个门槛，任何一个不过就安静返回——补弹是锦上添花，绝不能变成干扰：
+    ///
+    /// ① 缓冲非空：Activate 后的首次连接、或刚 Esc 完，都没什么可补弹的；
+    /// ② 当前没有候选窗：有的话再查再画就是 D55 禁止的「同一码候选序列中途替换」
+    ///    （fallback/上一帧显示的顺序必须保持稳定，用户正看着它选字）；
+    /// ③ 拿得到组合串所在的 context：量光标要它，拿不到就不猜位置——与
+    ///    `show_candidates` 的「宁可不显示也不乱盖」同一立场。
+    pub(crate) fn on_reconnected(&self) {
+        if self.buffer.borrow().is_empty() {
+            return;
+        }
+        if self.cands.borrow().page_len() > 0 {
+            tsf_debug!("#{} 重连补弹：已有候选窗，跳过（D55 不替换）", self.seq);
+            return;
+        }
+        let Some(context) = self.active_ctx.borrow().clone() else {
+            tsf_debug!("#{} 重连补弹：拿不到 context，放弃", self.seq);
+            return;
+        };
+        tsf_info!(
+            "#{} 重连补弹：缓冲 {:?} 无候选窗，重新查询",
+            self.seq,
+            self.buffer.borrow()
+        );
+        self.refresh_candidates(&context, None);
     }
 
     /// 让候选窗贴着光标显示。
@@ -706,21 +728,10 @@ impl Core {
                 code.to_string()
             }
             None => {
-                // D100：server 不可用时应急简码仍能上屏（1–2 码单字），其余
-                // 照旧原样上屏——「吃掉的键必须变成输出」（D27）不变，只是
-                // 能变成字的不必再变回字母。
-                match crate::fallback::lookup(code) {
-                    Some(word) => {
-                        tsf_info!("#{} 提交 {code} → {word}（应急简码）", self.seq);
-                        // 上报学习数据：与正常命中同一处理（server 回来后会补记）。
-                        ipc::record(code, word);
-                        word.to_string()
-                    }
-                    None => {
-                        tsf_info!("#{} server 不可用（{code}），原样上屏", self.seq);
-                        code.to_string()
-                    }
-                }
+                // server 不可用——「吃掉的键必须变成输出」（D27）不变：
+                // 宁可这一次降级成英文，绝不冻住宿主（D18）。
+                tsf_info!("#{} server 不可用（{code}），原样上屏", self.seq);
+                code.to_string()
             }
         }
     }
@@ -855,6 +866,18 @@ impl TextService_Impl {
         // 这两件事都发生在 `Activate`——切到某个输入框的瞬间，离真正落键还有
         // 几百毫秒，冷启动 server 与首次握手正好挤在这段空隙里完成。
         ipc::warm_up();
+
+        // D101：重连补弹的通知窗口。message-only、不显示不抢焦点；后台线程
+        // 重连成功时 PostMessage 过来，窗口过程调 `on_reconnected` 补查询。
+        // 建失败只记日志——没有它就退回老行为（重连后的下一个键才重查）。
+        match notify::NotifyWindow::new(&self.core) {
+            Ok(w) => {
+                ipc::set_notify_window(w.hwnd().0 as isize);
+                *self.notify.borrow_mut() = Some(w);
+            }
+            Err(e) => tsf_error!("#{} 重连通知窗口创建失败：{e}", self.seq),
+        }
+
         if let Some(chinese) = ipc::current_mode() {
             let next = if chinese {
                 Mode::Chinese
@@ -990,6 +1013,10 @@ impl TextService_Impl {
 
         // 反注册途中不该再往文档里写字，所以这里只丢状态、不撤组合串：
         // 宿主正在切走，TSF 会自己终止它，`OnCompositionTerminated` 会收到通知。
+        // 通知窗口先摘（后台线程从此不再往这里投递），再销毁。
+        if self.notify.borrow_mut().take().is_some() {
+            ipc::set_notify_window(0);
+        }
         self.clear_buffer();
         self.clear_popups();
         *self.comp.borrow_mut() = None;

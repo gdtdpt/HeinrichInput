@@ -2058,17 +2058,15 @@ data/raw/wubi86.dict.yaml     Rime 词典：`...` 之后是 词 \t 码 \t 权重
         ├─ 排序：码升序 → 权重降序 → 词升序（保证字节级可复现）
         ▼
 data/wubi86/lexicon.tsv       码 \t 词 \t 权重 \t 简码级别(0=全码)
-data/wubi86/fallback.tsv      码 \t 词（仅简码级别 1/2，每码一条，D100 应急简码）
 data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
         │  heinrich-scheme::Scheme::load（校验哈希与条目数）
         ▼
 内存索引：entries[] + sorted[]（按打包编码排序，前缀查询 = 一次二分）
 ```
 
-`fallback.tsv` 不进 server 的索引——它由 **TSF DLL `include_str!` 内嵌**
-（`apps/windows/tsf/src/fallback.rs`），在 `ipc::query` 无应答且码长 ≤ 2 时兜底
-（D100：server 挂了 / 新进程建连窗口内，1–2 码照常出字）。改应急表的范围 =
-改 `heinrich-gen` 的生成过滤条件后重跑 `tools/gen.ps1 -Kind wubi`。
+> D100 曾在此产出过一份 TSF 内嵌的 `fallback.tsv` 应急简码表，**已被 D101 整体
+> 回退**（未发布过）：应急能力改由「重连成功自动补弹候选窗」承担，见
+> `apps/windows/tsf/src/notify.rs` 与 `text_service.rs` 的 `on_reconnected`。
 
 **改动数据格式时同步改三处**：`heinrich-gen` 写出、`heinrich-scheme` 读入、`out/m0a-report.md` 的复现段落。
 

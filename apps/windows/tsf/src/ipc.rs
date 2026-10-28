@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT,
-    HANDLE, WAIT_OBJECT_0,
+    HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING,
@@ -46,6 +46,7 @@ use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, ResetEvent, WaitForSingleObject,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use heinrich_proto::{
     body_len, feature, source as proto_source, Entry, Frame, Mode, ProtoKeyRoots, MAX_ENTRIES,
@@ -148,6 +149,39 @@ static WORKER: Once = Once::new();
 static SPAWN_FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
 /// 因队列满被丢弃的记录条数（只用于日志，不需要精确）。
 static RECORDS_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// 重连通知窗口（D101）：message-only，归 TSF UI 线程所有。
+/// `None` = 没有活跃的输入会话注册过窗口，后台线程不必投递。
+static NOTIFY_HWND: Mutex<Option<isize>> = Mutex::new(None);
+
+/// 注册/注销重连通知窗口（D101）。`hwnd` 传 0 表示注销。
+///
+/// 谁都可以调，但只有 `Activate`（建）与 `Deactivate`（注销）该碰它；
+/// 句柄只是一个整数，后台线程拿它 `PostMessageW`，不解引用。
+pub fn set_notify_window(hwnd: isize) {
+    if let Ok(mut g) = NOTIFY_HWND.lock() {
+        *g = if hwnd == 0 { None } else { Some(hwnd) };
+    }
+}
+
+/// 重连成功 → 通知 UI 线程补弹候选窗（D101）。
+///
+/// 投递失败就失败：补弹是锦上添花，用户按下一个键本来就会重查；
+/// 这里绝不能为了「确保送达」去同步等 UI 线程——后台线程等 UI，
+/// 就把 D18 的方向反过来了。
+fn notify_reconnected() {
+    let Some(hwnd) = NOTIFY_HWND.lock().ok().and_then(|g| *g) else {
+        return;
+    };
+    unsafe {
+        // 消息排进宿主的消息队列，由宿主的消息泵派发回 TSF UI 线程。
+        let _ = PostMessageW(
+            Some(HWND(hwnd as *mut core::ffi::c_void)),
+            crate::notify::WM_APP_RECONNECTED,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
+}
 
 /// 启动后台连接线程。幂等，`Activate` 每次都可以调。
 ///
@@ -530,6 +564,9 @@ fn ensure_connected(last_spawn: &mut Option<Instant>) -> Duration {
                 }
             }
             SPAWN_FAILED_LOGGED.store(false, Ordering::Relaxed);
+            // D101：这次成功若是「从无到有」的重连，通知 UI 线程补弹候选窗。
+            // 首次连接也照发——那时缓冲基本为空，`on_reconnected` 会自己判空返回。
+            notify_reconnected();
             Duration::ZERO
         }
         Err(fail) => {
