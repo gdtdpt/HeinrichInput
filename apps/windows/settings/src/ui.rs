@@ -360,7 +360,13 @@ impl App {
             Model::load(path.clone()).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
         let (lex, lex_note) = match find_data_dir(data.clone()) {
             Some(dir) => match Lexicons::load(&dir) {
-                Ok(l) => (Some(l), None),
+                Ok(mut l) => {
+                    // D102：emoji 页的目标校验要认得自定义词库里的词——运行时
+                    // server 会把它们并进码表、真能出候选，这里不补就会把
+                    // 「先加词再绑 emoji」误判成「打不出来」。
+                    l.attach_user_words(&path);
+                    (Some(l), None)
+                }
                 Err(e) => (None, Some(e)),
             },
             None => (
@@ -1673,7 +1679,15 @@ impl App {
 
     fn save(&mut self) -> bool {
         match self.model.save() {
-            Ok(()) => true,
+            Ok(()) => {
+                // 落盘后立刻把自定义词库重新喂给 emoji 页的校验（D102）：
+                // 刚加的词应当**马上**能绑 emoji，不必关掉窗口再打开。
+                if let Some(lex) = self.lex.as_mut() {
+                    let path = self.model.path.clone();
+                    lex.attach_user_words(&path);
+                }
+                true
+            }
             Err(e) => {
                 message(
                     self.hwnd,
@@ -2639,15 +2653,17 @@ impl App {
             return;
         }
         // 目标得真的打得出来：词不在词库里 / 码在码表里查不到，绑上去就是一行
-        // 永远不会命中的死数据。没装词库（`--data` 缺失）时不拦，只在状态行说明。
+        // 永远不会命中的死数据。判据含**自定义词库**（D102）——那些词在运行时
+        // 同样会产生候选，所以先加词、再绑 emoji 是一条能走通的路，提示要指过去。
+        // 没装词库（`--data` 缺失）时不拦，只在状态行说明。
         match (&key, &self.lex) {
             (crate::emoji_page::Key::Word(w), Some(lex)) if !lex.has_word(w) => {
-                let m = format!("「{w}」不在词库里，打不出来——绑了也不会出现在候选里。要给单个字挂就写那个字（如 好）");
+                let m = format!("「{w}」不在词库里，绑了也不会出现在候选里——先到「词组」页加进自定义词库，保存后就能绑（要给单个字挂就写那个字，如 好）");
                 self.reject_emoji(&m, self.e_emoji_target);
                 return;
             }
             (crate::emoji_page::Key::Code(c), Some(lex)) if !lex.has_code(c) => {
-                let m = format!("五笔码 {c} 在码表里查不到，换个码试试");
+                let m = format!("五笔码 {c} 在码表里查不到（含自定义词库），换个码试试");
                 self.reject_emoji(&m, self.e_emoji_target);
                 return;
             }

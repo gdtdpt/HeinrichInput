@@ -210,6 +210,47 @@ fn selftest(data: Option<PathBuf>) -> Result<(), String> {
         None => println!("（没给 --data 或词库装不上，跳过推导断言）"),
     }
 
+    // 5b. D102：自定义词库里的词与码都要能通过 emoji 页的目标校验。
+    //
+    // 真机反馈：「小红书」已经加进词组页、打得出来，emoji 页却仍然拒绝绑定——
+    // 校验只装了内置词库，看不见 `words.tsv`。判据用一个内置词库里确实没有的词
+    // （`微信`，且它的码 `tmwy` 恰好撞上基表里的其它字，所以只对词下断言）。
+    let mut lex_ok = false;
+    if let Some(mut lex) = data
+        .as_ref()
+        .and_then(|d| lex::find_data_dir(Some(d.clone())))
+        .and_then(|d| lex::Lexicons::load(&d).ok())
+    {
+        assert!(
+            !lex.has_word("微信"),
+            "前提变了：微信已在内置词库里，这条断言就测不到 D102"
+        );
+        lex.attach_user_words(&path);
+        assert!(
+            lex.has_word("微信"),
+            "自定义词库里的词应通过 emoji 目标校验"
+        );
+
+        // 按码绑：拿一个内置码表里没有的码（`ixnn` = 小红书），只有读进用户层才认
+        let extra = dir.join("words-emoji.tsv");
+        std::fs::write(&extra, "小红书\txiaohongshu\tixnn\t129000\n")
+            .map_err(|e| format!("写 {} 失败：{e}", extra.display()))?;
+        let mut lex2 = lex::Lexicons::load(
+            &data
+                .as_ref()
+                .and_then(|d| lex::find_data_dir(Some(d.clone())))
+                .ok_or("--data 丢了")?,
+        )?;
+        assert!(!lex2.has_word("小红书"), "前提：小红书不该在内置词库里");
+        lex2.attach_user_words(&extra);
+        assert!(lex2.has_word("小红书"), "自定义词应通过词校验");
+        assert!(lex2.has_code("ixnn"), "自定义词的码也应能绑 emoji");
+        lex_ok = true;
+    }
+    if !lex_ok {
+        println!("（没给 --data 或词库装不上，跳过 emoji 目标校验断言）");
+    }
+
     // 6. 删除 + 恢复
     let (at, w) = m.remove("微信").ok_or("删除失败")?;
     assert_eq!(at, 1);

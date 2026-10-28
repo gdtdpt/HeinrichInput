@@ -1114,10 +1114,10 @@ IME 组合串全实现，约为原生三倍工作量。判据是「有没有宿�
 
 | 文件 | 职责 |
 |---|---|
-| `main.rs` | 参数（`--words` / `--data` / `--config` / `--db` / `--emoji` / `--page` / `--selftest`）、DPI 声明、`--selftest` 七项断言 |
+| `main.rs` | 参数（`--words` / `--data` / `--config` / `--db` / `--emoji` / `--page` / `--selftest`）、DPI 声明、`--selftest` 八项断言 |
 | `emoji_page.rs` | emoji 页数据层（M4d / D85）：两层映射合并视图、`Key`（按词/按码）、改绑 / 停用 / 恢复内置、整份重写用户层（临时文件 + 改名）、`emoji.enabled` 开关（开 = 删行）、`choices_for_picker()`；不依赖 Win32，`--selftest` 直跑 |
 | `emoji_picker.rs` | emoji 分类网格选择器（M4d 返工 / D86）：`cat_of` + `Catalog` + `Geometry` 是**纯函数**（8 条单测，不开窗口就能验命中），窗口层用 D2D DC 渲染目标画彩色字形、私有模态循环。见 §4.24 |
-| `lex.rs` | 找 `data/wubi86`（exe 同级 → 上三级 → cwd）、装载 `Scheme` + `PinyinLexicon` |
+| `lex.rs` | 找 `data/wubi86`（exe 同级 → 上三级 → cwd）、装载 `Scheme` + `PinyinLexicon`；另收一份 `words.tsv` 里的词与码（`attach_user_words`），**只供 emoji 页的目标校验**（D102）——不并进 `scheme`，否则词组页的推导列会自己命中自己 |
 | `model.rs` | **不依赖 Win32**：`Model`（文件 + 词条）、`Row`（原文 + 推导列）、`*_cell()` 的 `*` 约定 |
 | `ui.rs` | 窗口类、Tab、ListView、编辑面板、按钮动作、`layout()` |
 
@@ -1684,6 +1684,13 @@ cargo run --release -p heinrich-win-ui --example emoji_coverage -- data/wubi86/e
   代价（该字所在候选行变宽）由写条目的人承担：设置窗口在「绑定」列标 `按词·单字` 并
   在信息行提示，`emoji check` 打一行提醒（不算错）。
   ⇒ 用户报「`你好` 有 emoji、单个 `好` 没有」时先讲清这条默认规则，再问他要不要绑。
+- **设置页的目标校验要认自定义词库**（D102）：emoji 是「贴在候选后面的标签」，候选只来自词库，
+  所以设置页会拦「词打不出来 / 码查不到」的绑定。但 `Lexicons` 只装内置 `Scheme` + `PinyinLexicon`，
+  而运行时 server 是**合并了 `words.tsv`** 的——于是「先在词组页加词 → 再去绑 emoji」被误判成死数据，
+  用户只能手改 `emoji.user.toml` 绕过。修法：`Lexicons::attach_user_words(path)` 用与 server 相同的
+  `user::resolve` 收一份词与码的集合，`has_word` / `has_code` 各多认这一份；每次 `Model::save()`
+  成功后重新 attach，新加的词立刻可绑。**不要**把用户词并进 `scheme`：词组页的推导列要的是
+  「内置词库怎么看这个词」，掺进去会自己命中自己，码也分不清是推的还是写的。
 
 ### 4.24 emoji 选择器：分类网格弹窗（M4d 返工 / D86，v1.62）
 

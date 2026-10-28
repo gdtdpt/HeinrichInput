@@ -4,14 +4,27 @@
 //! 依赖词库的地方。装载是几百毫秒的一次性成本，可以接受；但装不上不能让窗口
 //! 打不开——降级成「只显示文件里写了什么」，比弹个错误框然后退出有用得多。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use heinrich_scheme::user;
 use heinrich_scheme::{PinyinLexicon, Scheme};
 
-/// 装载好的一对词库。
+/// 装载好的一对词库（内置）+ 自定义词库里的词与码。
 pub struct Lexicons {
     pub scheme: Scheme,
     pub pinyin: Option<PinyinLexicon>,
+    /// 自定义词库（`words.tsv`）里的词。**只给 emoji 页的目标校验用**，不并进
+    /// `scheme`：词组页的推导列要的是「内置词库怎么看这个词」，掺进用户词会让
+    /// 一条词自己命中自己，推出来的码也分不清是推的还是自己写的。
+    ///
+    /// 为什么必须补这一份（D102）：运行时 server 会把自定义词合并进码表，那些词
+    /// **真的会产生候选**，emoji 也就挂得上；而这里只装内置词库，于是
+    /// 「先加词 → 再绑 emoji」被误判成「打不出来」，用户只能去手改
+    /// `emoji.user.toml`。
+    user_words: HashSet<String>,
+    /// 同上，自定义词库解析出来的五笔码（按码绑的目标校验要用）。
+    user_codes: HashSet<String>,
 }
 
 impl Lexicons {
@@ -32,10 +45,35 @@ impl Lexicons {
                 }
                 Err(_) => None,
             });
-        Ok(Self { scheme, pinyin })
+        Ok(Self {
+            scheme,
+            pinyin,
+            user_words: HashSet::new(),
+            user_codes: HashSet::new(),
+        })
     }
 
-    /// 这个词在候选里出现过吗（五笔词库 ∪ 拼音词库，与 CLI `emoji check` 同一判据）。
+    /// 叠加自定义词库：只记「这些词打得出来、这些码查得到」，不改 `scheme`。
+    ///
+    /// 解析走 [`user::resolve`]，与 server 合并前用的是同一条路（手填 > 反查 >
+    /// 推导），所以这里认的词与运行时真能出候选的词是同一批。文件不存在 / 读不动
+    /// 就是「没有自定义词」的正常状态——不报错，校验退回只认内置词库。
+    pub fn attach_user_words(&mut self, path: &Path) {
+        self.user_words.clear();
+        self.user_codes.clear();
+        let Ok(file) = user::load(path) else {
+            return;
+        };
+        let (resolved, _) = user::resolve(&file.words, &self.scheme, self.pinyin.as_ref());
+        for r in resolved {
+            if let Some(code) = r.code {
+                self.user_codes.insert(code);
+            }
+            self.user_words.insert(r.word);
+        }
+    }
+
+    /// 这个词在候选里出现过吗（内置五笔 ∪ 内置拼音 ∪ 自定义词库）。
     ///
     /// emoji 页的「绑到」用它拦死条目：词不在词库里就永远不会有候选挂着它，
     /// 写进用户层只是一行死数据。**单字照常通过**（「好」在词库里）——单字口子
@@ -43,12 +81,14 @@ impl Lexicons {
     pub fn has_word(&self, word: &str) -> bool {
         self.scheme.entries.iter().any(|e| e.word == word)
             || self.pinyin.as_ref().is_some_and(|l| l.has_word(word))
+            || self.user_words.contains(word)
     }
 
     /// 这个五笔码在码表里查得到（长度与字母都已由 `parse_target` 校验过）。
+    /// 自定义词的码也算——它在运行时同样会产生候选。
     pub fn has_code(&self, code: &str) -> bool {
         match heinrich_scheme::Code::parse(code) {
-            Some(c) => !self.scheme.exact_indices(&c).is_empty(),
+            Some(c) => !self.scheme.exact_indices(&c).is_empty() || self.user_codes.contains(code),
             None => false,
         }
     }
