@@ -2009,7 +2009,7 @@ for (which, cx, cy) in [(ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
 Cargo.toml 的 version
   ├── 各 crate 的 CARGO_PKG_VERSION → 设置窗口标题「亨利五笔 · 设置 · v1.0.1」、
   │                                   heinrich-setup status 的版本行
-  ├── build.ps1 读出 → ISCC /DAppVersion → HeinrichSetup-1.0.1.exe、应用列表版本
+  ├── build.ps1 读出 → ISCC /DAppVersion → HeinrichSetup-1.1.1.exe、应用列表版本
   └── release.ps1 改的就是这一行（只改 [workspace.package] 段，不动依赖里的 version）
 ```
 
@@ -2019,8 +2019,8 @@ Cargo.toml 的 version
 **发版流程**（`tools/release.ps1`）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.0.1 → 1.0.2
-powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor   # 1.0.2 → 1.1.0
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.1.0 → 1.1.1
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor   # 1.1.1 → 1.2.0
 powershell -ExecutionPolicy Bypass -File tools\release.ps1               # 版本号已手改，只构建+打 tag
 ```
 
@@ -2056,7 +2056,7 @@ helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环
   补 PATH（`~\.cargo\bin`、`Program Files\Git\cmd` 等）；`rc.exe` 缺了只会跳过图标，
   由 `check.ps1` 的「可执行文件图标」步兜底断言，装包前就能发现。
 
-### 4.31 升级不再要求关掉宿主程序（D103，1.1.0）
+### 4.31 升级不再要求关掉宿主程序（D103，1.1.1）
 
 **症状**：升级安装包弹「以下程序正在使用这些文件」，列出 WorkBuddy / 微信 / 浏览器；
 关掉再装，往往又因为要看提示把它们重新打开，再次被判定占用——最后只能重启电脑。
