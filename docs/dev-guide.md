@@ -2007,7 +2007,7 @@ for (which, cx, cy) in [(ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
 
 ```
 Cargo.toml 的 version
-  ├── 各 crate 的 CARGO_PKG_VERSION → 设置窗口标题「亨利五笔 · 设置 · v1.0.1」、
+  ├── 各 crate 的 CARGO_PKG_VERSION → 设置窗口标题「亨利五笔 · 设置 · v1.1.1」、
   │                                   heinrich-setup status 的版本行
   ├── build.ps1 读出 → ISCC /DAppVersion → HeinrichSetup-1.1.1.exe、应用列表版本
   └── release.ps1 改的就是这一行（只改 [workspace.package] 段，不动依赖里的 version）
@@ -2029,11 +2029,25 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1               # 版�
 打 annotated tag `v<版本>`；`-SkipCheck` 跳过校验，`-NoTag` 只改版本号 + 构建、
 不提交、不打 tag（预演用）。三种调用形式与开关的完整说明见 PROJECT.md §10.2。
 
-**脚本到 tag 为止，不 push、不建 release。** 原因：本机 `credential.helper =
-helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环境里 `git push`
-直接报 `could not read Username for 'https://github.com': terminal prompts disabled`。
-所以末尾会打印三条要人手执行的命令：`git push origin main`、`git push origin v1.0.1`、
-网页建 release 的链接与附件路径（装了 `gh` 时多给一条 `gh release create`）。
+**脚本到 tag 为止，不 push、不建 release。** 原因有两层：
+
+- **实际限制**：本机 `credential.helper = helper-selector`（Git Credential Manager 的
+  GUI 选择器），在非交互环境里 `git push` 直接报
+  `could not read Username for 'https://github.com': terminal prompts disabled`；
+- **规则约束**（PROJECT.md §10.2）：发布是不可撤回的对外动作，**必须等用户明确说
+  「可以发布」**才执行。脚本只准备到「待发布」，末尾打印命令并明确标注「尚未发布」。
+
+末尾会打印：`git push origin main`、`git push origin v<版本>`、网页建 release 的链接与
+附件路径（装了 `gh` 时多给一条 `gh release create --notes-file`）。
+
+**版本号一经发布即永久占用**（§10.2）：判据是**远端有没有这个 tag**，不是本地。
+本地 tag 删了能重打，远端推上去就是既成事实——所以在已发布的版本号上「补一个文件再发
+一次」是禁止的，只能进位新版本。脚本为此在算出版本号后先 `git ls-remote --tags origin`：
+
+- 命中 `refs/tags/v<版本>` → 直接失败，提示 `-Bump` 进位；
+- **`ls-remote` 本身失败（离线 / 代理 / 凭证）→ 也直接失败**。早期版本是「拉取失败就
+  只用本地 tag 判断」，于是离线时会心安理得地复用已发布的号，这是本项目踩过的真实风险
+  ——`git ls-remote` 的「空输出 + 非零退出码」必须当「不知道」，不能当「没有」。
 
 **每个 release 必须有一份发布说明 `release-notes/v<版本>.md`**（写给用户看的变更摘要，
 与 §12 的工程视角变更记录并存，见 PROJECT.md §10.2）：脚本收尾的 `gh release create`

@@ -20,6 +20,13 @@
     `git push` 会报 "terminal prompts disabled"，这类动作必须由人亲手触发。
     末尾会把要执行的命令原样打印出来。
 
+    **发布是人的决定，不是脚本的结束动作**（PROJECT.md §10.2）：
+      ① 脚本只把仓库准备到「待发布」状态（提交 + 本地 tag + 产物 + 发布说明）；
+      ② 推送 tag 与建 release 必须由用户明确说「可以发布」之后才执行；
+      ③ 一个版本号一旦发布（远端 tag 存在），即永久占用 —— 不得重打 tag、
+         不得改内容后复用；要改就进位新版本。所以「读不到远端 tag」直接失败，
+         把「离线 + 复用旧号」这条危险路径堵死。
+
 .PARAMETER Bump
     进位哪一位：patch / minor / major。不传则沿用 Cargo.toml 里现有的版本号
     （用于「版本号已手工改好，只差构建和打 tag」的情形）。
@@ -126,13 +133,24 @@ if ($dirty) {
 }
 Write-Host "  分支     : $branch（干净）" -ForegroundColor Green
 
-# ---------------------------------------------------------------- 2) 拉 tag
-Step '同步远端 tag'
+# ---------------------------------------------------------------- 2) 读远端 tag
+Step '读取远端 tag'
 
 & git fetch --tags --quiet 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host '  拉取失败（离线？）——只用本地 tag 判断重名' -ForegroundColor Yellow
+    Write-Host '  fetch 失败（离线？）——改用 ls-remote 直接问远端' -ForegroundColor Yellow
 }
+
+# 判「这个版本号能不能用」的唯一依据是**远端**有没有这个 tag：本地 tag 可以删了重打，
+# 远端 tag 一旦推上去就是既成事实。ls-remote 失败时它输出空串、退出码非 0 ——
+# 若把空串当成「远端没有」，离线状态下就会心安理得地复用已发布的版本号，
+# 所以这里必须硬失败（§10.2：发布后版本号不可再用）。
+$remoteTagList = & git ls-remote --tags origin 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Fail '读不到远端 tag（网络 / 代理 / 凭证问题）——无法确认该版本号是否已被发布，不能发版'
+}
+$remoteRefs = @($remoteTagList | ForEach-Object { ($_ -split "`t")[-1] } | Where-Object { $_ })
+Write-Host "  远端 tag : $($remoteRefs.Count) 个 ref" -ForegroundColor Green
 
 # ---------------------------------------------------------------- 3) 算新版本
 Step '计算版本号'
@@ -179,9 +197,18 @@ else {
 
 $tag = "v$newVer"
 $localTag = & git tag -l $tag
-if ($localTag) { Fail "本地已有 tag $tag —— 换一个版本号（-Bump），或先 git tag -d $tag" }
-$remoteTag = & git ls-remote --tags origin "refs/tags/$tag" 2>$null
-if ($remoteTag) { Fail "远端已有 tag $tag —— 换一个版本号（-Bump）" }
+if ($localTag) {
+    Fail "本地已有 tag $tag —— 用过的版本号不复用，换一个（-Bump）。确实要重来请先 git tag -d $tag"
+}
+if ($remoteRefs -contains "refs/tags/$tag") {
+    Fail "远端已有 tag $tag —— 该版本号已对外发布过，不可再用；按 §10.1 进位到下一个版本号（-Bump）"
+}
+
+# 发布说明缺了不阻断构建，但要在花五分钟构建**之前**就提醒（§10.2 要求每个 release 配一份）。
+$notesPath = Join-Path $root "release-notes\$tag.md"
+if (-not (Test-Path $notesPath)) {
+    Write-Host "  ⚠ 还没有 release-notes\$tag.md —— 构建期间补上，别等发布时才发现" -ForegroundColor Yellow
+}
 
 # ---------------------------------------------------------------- 4) 改 Cargo.toml
 if ($newVer -ne $oldVer) {
@@ -242,13 +269,12 @@ $repoUrl = (& git remote get-url origin).Trim()
 $webUrl = $repoUrl -replace '\.git$', '' -replace '^git@github\.com:', 'https://github.com/'
 $relUrl = "$webUrl/releases/new?tag=$tag"
 $hasGh = [bool](Get-Command gh -ErrorAction SilentlyContinue)
-# 发布说明：每个 release 一份 release-notes\v<版本>.md（§10.2），gh 直接用 --notes-file 吃它。
-$notesPath = Join-Path $root "release-notes\$tag.md"
 $hasNotes = Test-Path $notesPath
 
 Write-Host ''
 Write-Host '----------------------------------------------------------------' -ForegroundColor Cyan
-Write-Host ' 仍需手工执行（push 与本机凭证选择器不兼容，必须由你来触发）' -ForegroundColor Cyan
+Write-Host " 状态：$tag 已准备完毕，但**尚未发布**（未推送、未建 release）" -ForegroundColor Cyan
+Write-Host ' 按 §10.2 的约定：等用户明确说「可以发布」之后，才执行下面两条命令。' -ForegroundColor Cyan
 Write-Host '----------------------------------------------------------------' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  # 1. 推送提交与 tag'

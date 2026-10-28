@@ -1069,7 +1069,7 @@ ranking.half_life_days = 45
 ### 10.1 版本号（MAJOR.MINOR.PATCH）
 
 唯一来源是 `Cargo.toml` 的 `[workspace.package] version`。所有 crate 用
-`version.workspace = true` 继承；安装包名（`HeinrichSetup-1.0.1.exe`）、控制面板里的
+`version.workspace = true` 继承；安装包名（`HeinrichSetup-1.1.1.exe`）、控制面板里的
 版本、`heinrich-setup status`、设置窗口标题全部从它派生，**任何地方不再手写版本号**。
 
 | 位数 | 触发条件 | 用户侧动作 | 例子 |
@@ -1087,7 +1087,7 @@ ranking.half_life_days = 45
 
 ```powershell
 # 常规：按 §10.1 的判据选一位进位（patch 最常用）
-powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.0.1 → 1.0.2
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.1.1 → 1.1.2
 powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor   # 1.1.1 → 1.2.0
 powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump major   # 1.1.1 → 2.0.0
 
@@ -1109,8 +1109,27 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1
 打印仍需**手工**执行的三条命令（push main / push tag / 网页建 release），有 `gh` 时额外
 给一条 `gh release create`。操作面与易错点见 dev-guide §4.30。
 
-**脚本不自动 push、不自动建 release**：本机 `credential.helper = helper-selector`
-是非交互的，这类动作必须由人亲手触发（见 dev-guide 发版一节）。
+**发布是人的决定，不是脚本的结束动作**（2026-10-28 约定，两条硬规矩）：
+
+1. **必须等用户明确说「可以发布」才发布。** 脚本只把仓库准备到「待发布」状态
+   （提交 + 本地 tag + 安装包 + 发布说明），收尾打印命令并标注「尚未发布」。
+   推送 tag 与建 release 这两步**永远由用户亲手执行**——除了本机
+   `credential.helper = helper-selector` 非交互的实际限制，更因为「发布」是不可撤回的
+   对外动作，不该由 agent 替人决定。
+2. **版本号一经发布即永久占用，不可复用。** 判据是**远端有没有这个 tag**（本地 tag
+   可以删了重打，远端推上去就是既成事实）。所以：不得重打已发布的 tag、不得在已发布的
+   版本号上追加内容后「再发一次」——要改就按 §10.1 进位新版本（哪怕只差一个文件）。
+   为此 `release.ps1` 算出版本号后**先读远端 tag 列表**；读不到（离线 / 代理 / 凭证
+   问题）直接失败，绝不把「读不到」当成「远端没有」。
+
+判定某版本是否已发布（发布前必查）：
+
+```
+git ls-remote --tags origin "refs/tags/v1.1.1"
+```
+
+有输出 = 已发布，这个号不能再动；空输出 = 可用——但要确认命令本身没报错，
+非零退出码意味着「不知道」，不是「没有」。
 
 **每个 release 配一份发布说明 `release-notes/v<版本>.md`**：内容是写给用户看的
 变更摘要（装了什么、修了什么、升级注意），与 §12 的工程视角变更记录并存、互不替代。
@@ -1121,7 +1140,7 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1
 
 | 编号 | 位置 | 什么时候变 |
 |---|---|---|
-| 产品版本（现 `1.0.1`） | `Cargo.toml` 的 `workspace.package.version` | 每次对外交付 |
+| 产品版本（现 `1.1.1`） | `Cargo.toml` 的 `workspace.package.version` | 每次对外交付 |
 | 协议版本（现 `v8`） | `crates/heinrich-proto` 的 `PROTO_VERSION` | 只在改帧格式时；是「旧 DLL 能否连新 server」的唯一判据 |
 | 变更记录首列 | §12 | 自 `1.0.1` 起跟产品版本走 |
 
