@@ -60,9 +60,10 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ,
     TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::cand;
-use crate::caret::CaretProbe;
+use crate::caret::{CaretProbe, Source};
 use crate::ipc;
 use crate::keycap;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap};
@@ -72,6 +73,18 @@ use crate::preedit::{CompSlot, Goal, PreeditSession};
 
 /// 实例序号，只用于日志区分「第几个宿主进程里的实例」。
 static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// 复量认为「还是同一个位置」的容差（逻辑像素）。取 4：贴着字写时宿主的
+/// 排版偶尔差一两个像素，那不算撒谎，不值得把窗口挪一下。
+const RECHECK_TOLERANCE: f32 = 4.0;
+
+/// 同一段编码里，横向跳这么远就当可疑（D104）。五笔一个词最多五码，
+/// 光标只会往右挪几个字宽；一跳两百像素必然是量错了地方。
+const SUSPECT_JUMP_X: f32 = 200.0;
+
+/// 「还在同一行」的纵向界限：跳变判据只在纵坐标几乎不变时成立——
+/// 换了行或者换了输入框本来就该横跳，那不是可疑，是正常。
+const SUSPECT_SAME_LINE_Y: f32 = 40.0;
 
 /// 一个宿主进程里的一份文本服务实例。
 ///
@@ -390,7 +403,7 @@ impl Core {
         // 只在 `buffer_len() == 0`（一段新编码的第一个键）做，多花的那一次会话
         // 摊到每个词上只有一次。
         let pre_caret = if self.buffer_len() == 0 {
-            self.caret_rect(context)
+            self.caret_rect(context).map(|(rect, _)| rect)
         } else {
             None
         };
@@ -504,11 +517,32 @@ impl Core {
     /// 光标有两处来源：现场量一次，量不到就用调用方给的 `fallback_caret`
     /// （首键前预取的那一个）。两个都没有才不显示——猜一个位置会盖住用户正在
     /// 看的那一行字，比没有窗口更糟。
+    ///
+    /// ## 量到的值也可能不对（D104）
+    ///
+    /// 这里是按键回调栈里，宿主的排版还没落定；Chromium 这类宿主此刻可能回
+    /// **上一处输入框**的坐标。所以摆完窗口后再投一条 [`notify::WM_APP_RECHECK_CARET`]
+    /// 给自己，下一轮消息里复量一遍对照着改——见 [`Self::on_recheck_caret`]。
+    ///
+    /// 哪几种情况才值得复量（其余一律不动，省掉一次只读会话）：
+    ///
+    /// | 情况 | 理由 |
+    /// |---|---|
+    /// | 首键（缓冲只有 1 个字母） | 刚点进某个输入框，缓存最容易还是上一个框的 |
+    /// | 来源不是选区（②③） | 它们本来就比 ① 粗：一个取组合串右下角，一个来自窗口 |
+    /// | 用了动手前预取的位置 | 它量得最早，最可能是旧值 |
+    /// | 同一段编码里横跳 > 200px 且还在同一行 | 编码长一个字，光标不可能挪那么远 |
     fn show_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
         let caret = match (self.caret_rect(context), fallback_caret) {
-            (Some(caret), _) => caret,
+            (Some((caret, source)), _) => {
+                if self.caret_is_suspect(caret, source) {
+                    self.request_caret_recheck();
+                }
+                caret
+            }
             (None, Some(caret)) => {
-                tsf_debug!("#{} 沿用动手前量到的光标 {caret:?}", self.seq);
+                tsf_debug!("#{} 沿用动手前量到的光标 {caret:?}，安排复量", self.seq);
+                self.request_caret_recheck();
                 caret
             }
             (None, None) => {
@@ -519,11 +553,80 @@ impl Core {
         self.cands.borrow_mut().show(caret);
     }
 
-    /// 问一次光标矩形（屏幕坐标）。
+    /// 这次的落点像不像「量错了地方」。判据见 [`Self::show_candidates`] 的表。
+    ///
+    /// 一律**只用于决定要不要多量一次**，不用于改位置——判错的代价必须是
+    /// 「白做一次只读会话」，不能是「把窗口按到错的地方」。
+    fn caret_is_suspect(&self, caret: Rect, source: Source) -> bool {
+        if source != Source::Selection || self.buffer_len() <= 1 {
+            return true;
+        }
+        let previous = self.cands.borrow().caret();
+        previous.is_some_and(|prev| {
+            (caret.x - prev.x).abs() > SUSPECT_JUMP_X
+                && (caret.y - prev.y).abs() < SUSPECT_SAME_LINE_Y
+        })
+    }
+
+    /// 投一条「下一轮消息里复量光标」给自己。投不出去就算了：这只是纠偏，
+    /// 用户下一个键本来也会再量一次。
+    fn request_caret_recheck(&self) {
+        let notify = self.notify.borrow();
+        let Some(win) = notify.as_ref() else {
+            return;
+        };
+        // 消息排进宿主的消息队列，由宿主的消息泵派发回本线程——**不等待**，
+        // 键路径仍然零等待（D18）。
+        if let Err(e) = unsafe {
+            PostMessageW(
+                Some(win.hwnd()),
+                notify::WM_APP_RECHECK_CARET,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            tsf_debug!("#{} 复量消息投递失败：{e}", self.seq);
+        }
+    }
+
+    /// D104：候选窗已经按「按键那一刻量到的光标」摆好了，这里在下一轮消息里
+    /// 再量一次。此刻宿主那一轮按键处理已经返回、排版落定，量到的值可信得多；
+    /// 两次不一致就**以后者为谁**，把窗口挪过去。
+    ///
+    /// 只在「有窗口、缓冲还在、拿得到 context」时动手：提交或取消之后到达的
+    /// 复量消息必须是个空操作，否则会对着已经不存在的编码挪一个空窗。
+    pub(crate) fn on_recheck_caret(&self) {
+        if self.buffer.borrow().is_empty() || self.cands.borrow().page_len() == 0 {
+            return;
+        }
+        let Some(previous) = self.cands.borrow().caret() else {
+            return;
+        };
+        let Some(context) = self.active_ctx.borrow().clone() else {
+            tsf_debug!("#{} 复量：拿不到 context，跳过", self.seq);
+            return;
+        };
+        let Some((now, source)) = self.caret_rect(&context) else {
+            return;
+        };
+        let dx = (now.x - previous.x).abs();
+        let dy = (now.y - previous.y).abs();
+        if dx <= RECHECK_TOLERANCE && dy <= RECHECK_TOLERANCE {
+            tsf_debug!("#{} 复量一致（Δ {dx:.0},{dy:.0}）", self.seq);
+            return;
+        }
+        tsf_info!(
+            "#{} 光标复量不一致：{previous:?} → {now:?}（{source:?}，Δ {dx:.0},{dy:.0}），候选窗跟着挪",
+            self.seq
+        );
+        self.cands.borrow_mut().show(now);
+    }
+
+    /// 问一次光标矩形（屏幕坐标）与它的来源。
     ///
     /// 开一次**只读**编辑会话：`GetTextExt` 要 cookie，cookie 只在会话里有效。
     /// 会话是 `TF_ES_SYNC`，返回时结果已经填好。
-    fn caret_rect(&self, context: &ITfContext) -> Option<Rect> {
+    fn caret_rect(&self, context: &ITfContext) -> Option<(Rect, Source)> {
         let (probe, slot) = CaretProbe::new(context.clone(), Rc::clone(&self.comp), self.tid.get());
         let iface = CaretProbe::into_session(probe);
         let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
@@ -531,10 +634,10 @@ impl Core {
             tsf_debug!("#{} 光标会话请求失败：{e}", self.seq);
             return None;
         }
-        // 先拷出来再返回：`Option<Rect>` 是 `Copy`，把它作为尾表达式会把
+        // 先拷出来再返回：`Option<(Rect, Source)>` 是 `Copy`，把它作为尾表达式会把
         // `Ref` 临时值的生命周期拉到函数末尾，而 `slot` 在那之前就 drop 了。
-        let rect = *slot.borrow();
-        rect
+        let picked = *slot.borrow();
+        picked
     }
 
     /// 按本页序号选词（数字键 1–9）。

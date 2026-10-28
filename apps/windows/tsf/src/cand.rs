@@ -194,6 +194,11 @@ impl Cands {
         self.flipped
     }
 
+    /// 上次显示用的光标矩形。D104 的「晚一轮消息复量」拿它当对照基准。
+    pub fn caret(&self) -> Option<Rect> {
+        self.caret
+    }
+
     /// 全部候选里第 `global` 条的文字。点选提交走这条——窗口给的就是全局序号。
     pub fn word_at(&self, global: usize) -> Option<String> {
         self.words.get(global).cloned()

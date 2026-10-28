@@ -1,10 +1,14 @@
-//! 重连通知窗口（D101）。
+//! TSF UI 线程的自投递通知窗口（D101 重连补弹、D104 光标复量）。
 //!
-//! 后台 IPC 线程在「重连成功」的那一刻是知情的，但它不能碰 UI——候选窗归
-//! TSF UI 线程（宿主回调按键的同一条线程）。本模块是一个挂在 `HWND_MESSAGE`
-//! 上的 message-only 窗口：后台线程 `PostMessageW` 一条 [`WM_APP_RECONNECTED`]，
-//! 宿主的消息泵把它派发回 UI 线程，`TextService` 在窗口过程里检查
-//! 「缓冲非空且当前没有候选窗」后对整个缓冲补一次查询、补弹候选窗。
+//! 有些动作不能当场做完，只能「等这一轮消息处理完再说」：
+//!
+//! | 消息 | 谁发起 | 为什么不能当场做 |
+//! |---|---|---|
+//! | [`WM_APP_RECONNECTED`] | 后台 IPC 线程 | 它不拥有 UI，不能碰候选窗 |
+//! | [`WM_APP_RECHECK_CARET`] | UI 线程自己 | 按键那一刻宿主的排版还没落定（D104） |
+//!
+//! 两条路都落在同一个 message-only 窗口上：`PostMessageW` 把消息排进宿主的消息
+//! 队列，宿主的消息泵派发回 UI 线程，窗口过程里再调 `TextService` 的对应入口。
 //!
 //! 为什么不用 `PostThreadMessageW`：线程消息虽然不需要窗口，但宿主的消息循环
 //! 千差万别（有的走 `IsDialogMessage`、有的过滤无窗口消息），丢在哪一环都无从
@@ -15,7 +19,8 @@
 //!
 //! D55 禁止「同一码的候选序列中途被替换」（连打顺序必须稳定）。补弹只发生在
 //! **当前没有任何候选窗**的时刻——是从无到有，不是替换；判定在
-//! `Core::on_reconnected`（text_service.rs）里做。
+//! `Core::on_reconnected`（text_service.rs）里做。复量只挪窗口、不换候选，
+//! 与 D55 不冲突。
 
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -32,14 +37,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// 后台线程 → TSF UI 线程：「重连成功，若缓冲非空且无候选窗，补弹」。
 pub const WM_APP_RECONNECTED: u32 = WM_APP + 1;
+/// UI 线程 → 自己：「候选窗已按老坐标摆好了，下一轮消息里复量一次光标」（D104）。
+pub const WM_APP_RECHECK_CARET: u32 = WM_APP + 2;
 
-const CLASS_NAME: PCWSTR = w!("HeinrichReconnectNotifyV1");
+const CLASS_NAME: PCWSTR = w!("HeinrichNotifyV1");
 
 static REGISTER_ONCE: Once = Once::new();
 static CLASS_ATOM: AtomicU16 = AtomicU16::new(0);
 
 /// message-only 通知窗。每个 `TextService` 活跃实例一个，`Activate` 建、
-/// `Deactivate` 销毁；`ipc.rs` 只拿它的 `HWND` 值去 `PostMessageW`。
+/// `Deactivate` 销毁；调用方只拿它的 `HWND` 值去 `PostMessageW`。
 pub struct NotifyWindow {
     hwnd: HWND,
     /// 与窗口共生命周期的 `Weak<Core>`（`WM_NCCREATE` 存进 `GWLP_USERDATA`）。
@@ -61,7 +68,7 @@ impl NotifyWindow {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 CLASS_NAME,
-                w!("亨利重连通知"),
+                w!("亨利通知窗"),
                 WINDOW_STYLE(0),
                 0,
                 0,
@@ -118,6 +125,20 @@ fn register_class() -> Result<()> {
     Ok(())
 }
 
+/// 把消息交给 `Core`。升级失败（实例已销毁）就当没发生——这是**唯一**
+/// 允许的失败方式：窗口过程跨 `extern "system"` 边界，任何 panic 都会带走宿主进程。
+fn with_core(hwnd: HWND, action: impl FnOnce(&Rc<crate::text_service::Core>)) {
+    let ptr =
+        unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut Weak<crate::text_service::Core>;
+    let Some(weak) = (unsafe { ptr.as_ref() }) else {
+        return;
+    };
+    let Some(core) = weak.upgrade() else {
+        return;
+    };
+    action(&core);
+}
+
 unsafe extern "system" fn notify_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -131,13 +152,11 @@ unsafe extern "system" fn notify_wndproc(
             LRESULT(1)
         }
         WM_APP_RECONNECTED => {
-            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) }
-                as *mut Weak<crate::text_service::Core>;
-            if let Some(weak) = unsafe { ptr.as_ref() } {
-                if let Some(core) = weak.upgrade() {
-                    core.on_reconnected();
-                }
-            }
+            with_core(hwnd, |core| core.on_reconnected());
+            LRESULT(0)
+        }
+        WM_APP_RECHECK_CARET => {
+            with_core(hwnd, |core| core.on_recheck_caret());
             LRESULT(0)
         }
         WM_NCDESTROY => {
