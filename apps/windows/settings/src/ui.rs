@@ -4421,10 +4421,14 @@ fn create_window(app: &App) -> Result<HWND, String> {
         let dpi = app.dpi;
         let w = (900.0 * dpi) as i32;
         let h = (600.0 * dpi) as i32;
+        // 标题带版本号：装着哪一个版本，一眼就能看出来。版本号只从 Cargo 取
+        // （`version.workspace = true`），不在这里写第二份——重装后想确认
+        // 「到底装上没」时，这个位置是最省事的一处（§10.1）。
+        let title = wide(&format!("亨利五笔 · 设置 · v{}", env!("CARGO_PKG_VERSION")));
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             PCWSTR(class.as_ptr()),
-            w!("亨利五笔 · 设置"),
+            PCWSTR(title.as_ptr()),
             // WS_CLIPCHILDREN：父窗口整窗铺底时会**跳过子控件占的矩形**。
             // 不设的话切页重绘会把 Edit / 列表白底刷成页面底色，控件看着「消失」，
             // 鼠标划过去才回来（子控件只在需要时自己重画）。

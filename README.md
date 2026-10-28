@@ -21,7 +21,7 @@ Windows 上的五笔 86 输入法。**候选顺序跟着你的手变**，**拼�
 
 ### 用安装包（推荐）
 
-1. 双击 `HeinrichSetup-1.0.0.exe`，默认装到 `C:\Program Files\HeinrichInput`。
+1. 双击 `HeinrichSetup-1.0.1.exe`，默认装到 `C:\Program Files\HeinrichInput`。
    安装器会放好文件、注册输入法、跑四项自检，并建好开始菜单里的「亨利五笔 设置」。
 2. **重启已经打开的记事本、浏览器、编辑器**：DLL 只会被新启动的进程加载。
 3. 在语言栏或 `Win+空格` 里切到「亨利五笔」。
@@ -29,7 +29,7 @@ Windows 上的五笔 86 输入法。**候选顺序跟着你的手变**，**拼�
 批量部署用静默安装：
 
 ```powershell
-.\HeinrichSetup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+.\HeinrichSetup-1.0.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 卸载走「设置 → 应用 → 亨利五笔 → 卸载」。**卸载默认保留你的词库、emoji 绑定与学习库**
@@ -61,6 +61,19 @@ heinrich-setup.exe shortcut     # 补开始菜单快捷方式（不需要管理�
 
 目录里另外几个 exe 是开发与验收工具（`heinrich-cli` 校验码表、`heinrich-cand-preview`
 预览窗口、`heinrich-gen` 装配数据），日常使用用不到，见 [`docs/dev-guide.md`](docs/dev-guide.md)。
+
+### 怎么确认装的是哪一版
+
+打开「亨利五笔 设置」，**标题栏就带着版本号**（例如 `亨利五笔 · 设置 · v1.0.1`）；
+命令行也能查：
+
+```powershell
+& "C:\Program Files\HeinrichInput\heinrich-setup.exe" status   # 看「版本」那一行
+```
+
+版本号三段 `主.次.补丁`：**补丁位**是修 bug / 调行为（覆盖安装即可，配置与词库照旧），
+**次位**是新增了你能看见的功能，**主位**变化才需要迁移旧配置。升级只认「装一次」——
+DLL 只被新启动的程序加载，装完记得重启正在用的记事本 / 浏览器 / 编辑器。
 
 ## 打字
 

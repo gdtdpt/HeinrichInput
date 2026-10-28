@@ -17,6 +17,7 @@ powershell -ExecutionPolicy Bypass -File tools\fetch-data.ps1   # 拉原始数�
 powershell -ExecutionPolicy Bypass -File tools\gen.ps1          # 装配 → data/wubi86/ + out/m0a-report.md
 powershell -ExecutionPolicy Bypass -File tools\check.ps1        # fmt + clippy + test + 数据校验
 powershell -ExecutionPolicy Bypass -File tools\build.ps1        # release → dist/
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch  # 发版（见 §4.30）
 powershell -ExecutionPolicy Bypass -File tools\accept-m2.4.ps1  # 学习库验收（只读，见 §4.9）
 ```
 
@@ -1990,6 +1991,51 @@ for (which, cx, cy) in [(ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
 
 **装完没变？** Windows 会缓存图标：改完 exe 重装后，「设置 → 应用」可能还显示旧色块。
 重启 `explorer.exe` 或注销重进一次即可，不是没生效。
+
+### 4.30 版本号与发版（§10.1–10.3 的操作面）
+
+**唯一的版本号在 `Cargo.toml` 的 `[workspace.package] version`**，所有 crate 用
+`version.workspace = true` 继承。派生链条：
+
+```
+Cargo.toml 的 version
+  ├── 各 crate 的 CARGO_PKG_VERSION → 设置窗口标题「亨利五笔 · 设置 · v1.0.1」、
+  │                                   heinrich-setup status 的版本行
+  ├── build.ps1 读出 → ISCC /DAppVersion → HeinrichSetup-1.0.1.exe、应用列表版本
+  └── release.ps1 改的就是这一行（只改 [workspace.package] 段，不动依赖里的 version）
+```
+
+三个编号别混：产品版本（`Cargo.toml`）/ 协议版本（`PROTO_VERSION`，只在改帧格式时动，
+是「旧 DLL 能否连新 server」的唯一判据）/ 变更记录首列（§12，自 1.0.1 起跟产品版本走）。
+
+**发版流程**（`tools/release.ps1`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.0.1 → 1.0.2
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor   # 1.0.2 → 1.1.0
+powershell -ExecutionPolicy Bypass -File tools\release.ps1               # 版本号已手改，只构建+打 tag
+```
+
+脚本做的事：工作区干净校验 → `git fetch --tags` → 改 `Cargo.toml` → `check.ps1` →
+`build.ps1 -Installer` → 用 `dist\HeinrichSetup-<版本>.exe` 回验一致 → 提交版本号 +
+打 annotated tag `v<版本>`；`-SkipCheck` 跳过校验，`-NoTag` 只构建不提交。
+
+**脚本到 tag 为止，不 push、不建 release。** 原因：本机 `credential.helper =
+helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环境里 `git push`
+直接报 `could not read Username for 'https://github.com': terminal prompts disabled`。
+所以末尾会打印三条要人手执行的命令：`git push origin main`、`git push origin v1.0.1`、
+网页建 release 的链接与附件路径（装了 `gh` 时多给一条 `gh release create`）。
+
+**几个易错点**：
+
+- 脚本不带 `-Bump` 时沿用现有版本号；若那个号的 tag 已存在（本地或远端）会直接失败，
+  不会覆盖已有 release。
+- tag 是 annotated（`git tag -a`），`git push origin <tag>` 才会把 tag 对象推上去；
+  只 `git push origin main` 不带 tag 的话，网页上「Choose a tag」里看不到它。
+- `Cargo.lock` 里记着各 workspace crate 的版本，改版本号后它会一起变——所以脚本
+  `git add Cargo.toml Cargo.lock`，别只提交 `Cargo.toml`。
+- **重装才能确认版本**：DLL / server 都装在 `C:\Program Files\HeinrichInput`，覆盖安装
+  后打开设置窗口，标题栏的 `v1.0.x` 就是实际在跑的那一版（比去应用列表翻更省事）。
 
 ## 5. 数据管线
 
