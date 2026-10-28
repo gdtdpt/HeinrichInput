@@ -143,7 +143,7 @@ Invoke-Step '通配 / 多段自测' {
 # 全程用临时文件，绝不碰 %APPDATA% 里的真词库——自测不许改用户的词。
 Invoke-Step '自定义词自测' {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-words-{0}.tsv" -f $PID)
-    Remove-Item $tmp -ErrorAction SilentlyContinue
+    if (Test-Path $tmp) { Remove-Item $tmp -Force }
     try {
         $add = & cargo run --release -q -p heinrich-cli -- word add 微信 --file $tmp --data $DataDir 2>&1
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -171,7 +171,7 @@ Invoke-Step '自定义词自测' {
         }
     }
     finally {
-        Remove-Item $tmp -ErrorAction SilentlyContinue
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 }
 
@@ -180,7 +180,9 @@ Invoke-Step '自定义词自测' {
 # 写的是**带 BOM** 的 UTF-8，解析层必须吃掉 BOM 才认第一行。
 Invoke-Step 'emoji 用户层自测' {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-emoji-{0}.toml" -f $PID)
-    Remove-Item "$tmp*" -ErrorAction SilentlyContinue
+    # 通配删要判「有没有匹配」：没有匹配项时某些安全钩子会直接抛错（fail-closed），
+    # 而这里本来只是「上次残留，先清掉」的顺手动作。
+    Get-ChildItem "$tmp*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     try {
         "[[emoji]]`nword = `"你好`"`nemoji = `"🙋`"" | Set-Content -Path $tmp -Encoding utf8
         $chk = & cargo run --release -q -p heinrich-cli -- emoji check --data $DataDir --file $tmp 2>&1
@@ -209,7 +211,7 @@ Invoke-Step 'emoji 用户层自测' {
         # 断言只看 ASCII（`[[emoji]]`）：样例是 UTF-8 无 BOM，5.1 的 Get-Content -Raw 会按
         # ANSI 解码，拿中文去 match 会因乱码假失败。
         $fresh = Join-Path ([System.IO.Path]::GetTempPath()) ("heinrich-check-emoji-fresh-{0}.toml" -f $PID)
-        Remove-Item $fresh -ErrorAction SilentlyContinue
+        if (Test-Path $fresh) { Remove-Item $fresh -Force }
         $init = & cargo run --release -q -p heinrich-cli -- emoji reset --file $fresh 2>&1
         if ($LASTEXITCODE -ne 0) { Write-Host "reset 生成样例失败：`n$init" -ForegroundColor Red; exit 1 }
         if (-not (Test-Path $fresh)) {
@@ -220,10 +222,10 @@ Invoke-Step 'emoji 用户层自测' {
             Write-Host "生成的样例里没有 [[emoji]] 段落：`n$init" -ForegroundColor Red
             exit 1
         }
-        Remove-Item $fresh -ErrorAction SilentlyContinue
+        if (Test-Path $fresh) { Remove-Item $fresh -Force }
     }
     finally {
-        Remove-Item "$tmp*" -ErrorAction SilentlyContinue
+        Get-ChildItem "$tmp*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -289,7 +291,7 @@ if ($isccPath) {
             }
         }
         finally {
-            Remove-Item $tmpOut -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path $tmpOut) { Remove-Item $tmpOut -Recurse -Force }
         }
     }
 }
