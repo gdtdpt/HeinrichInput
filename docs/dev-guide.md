@@ -1564,10 +1564,14 @@ powershell -ExecutionPolicy Bypass -File tools\tsf.ps1 log clean  # 删超 7 天
 
 - 装载期用 `heinrich_font::EmojiSupport::detect(码位集合)` 问一次本机字体，`EmojiMap::retain_supported`
   把装不出来的条目**连键一起丢掉**（只丢显示的话，用户选中它上屏仍是方块）；
+- **探测结果跨重载累积**（D99）：`EmojiState` 长期持有一份 `EmojiSupport`，重载时走
+  `EmojiSupport::extend(码位集合)`——只问「上次没问过的」那些。整份重探要 2400 次
+  `HasCharacter` ≈ 110ms，期间 `Host` 锁被独占、按键查询集体超时；而用户改一行绑定通常只多 0 枚新码位；
 - 探测一次就丢掉 COM 对象，只留 `HashSet<char>`——`IDWriteFont` 不是 `Send`，而 server 是按连接开线程的；
 - 判据**只能是 DWrite**：GDI 的 `GetGlyphIndicesW` 按 UTF-16 **码元**查，非 BMP 字符（也就是全部彩色
   emoji）一律报缺，实测 2395 条只剩 228 条——假阴性，会让人误以为字体缺得离谱；
 - 探测不到字体族时一律放行（`supports` 返回 `true`）：探测失败不该顺手把功能关掉。
+  同理 `extend` 探测失败时**不记 probed**——装上字体后下一次重载能自愈。
 
 **数据管线（CLDR `common/annotations/zh.xml`，292 KB，Unicode License）**：
 
@@ -2432,6 +2436,7 @@ data/wubi86/scheme.toml       清单 + lexicon.tsv 的 SHA-256
 71. **卸载时删用户数据必须用原始用户身份，静默模式还得自己判参数。** ① 卸载器跑在提权进程里，`%APPDATA%` / `%LOCALAPPDATA%` 展开的是**提权账户**的 profile：标准用户输管理员凭据卸载时，删的是管理员的目录，登录用户的数据一份没动。用 Inno 的 `ExecAsOriginalUser` 让 `purge` 回到登录用户上下文。② `SuppressibleMsgBox` 在 `/VERYSILENT` 下**直接返回你给的默认值**（`IDNO`），所以「静默卸载问一句要不要删数据」等于永远不删——必须先判 `ParamStr` 里有没有 `/PURGE`，再决定弹不弹。③ 同理，静默卸载不带 `/NOCLOSEAPPLICATIONS` 时 Inno 会**主动关掉**占用文件的程序（微信、浏览器都算），批量部署脚本里这是事故。
 72. **exe 没有图标资源时，「设置 → 应用」显示默认色块，且不报任何错。** `UninstallDisplayIcon` 指向的 exe 若资源段里只有 `RT_MANIFEST`，Windows 就画一块占位方块；开始菜单快捷方式、任务栏、Alt+Tab 同时失效（`[Icons]` 不写 `IconFilename` 时回退到目标 exe 的图标）。**链接器不接受裸 `.ico`**——PE 的图标必须是 `RT_ICON` + `RT_GROUP_ICON`，只能由 `rc.exe` 编成 `.res` 再当链接器输入（`cargo:rustc-link-arg-bins`）。判据：解析资源目录第一层类型，`3,14,24` 才算齐，只有 `24` 就是没图标（`check.ps1` 的 `Get-PeResourceTypeId`）。另两个坑：① `rc.exe` 无 BOM 时按 ANSI 解码 `.rc`，里面写中文注释会乱码——`.rc` 保持纯 ASCII，说明写进 `build.rs`；② 相对路径以**进程 cwd** 为准，`build.rs` 要 `current_dir(crate_dir)`，否则 `../../../data/icon/x.ico` 找不到。**还有一层更容易漏**：exe 有资源 ≠ 窗口有图标——标题栏 / 任务栏 / Alt+Tab 取的是**窗口图标**（类 `hIcon` 或 `WM_SETICON`），与 `UninstallDisplayIcon` 读的 exe 资源是两条路，只嵌资源的表现就是「应用列表好了、标题栏还是方块」。改完重装还显示旧色块是 Windows 图标缓存，重启 explorer 即可。
 73. **查询输入的大小写归一化是双刃剑：装载期宽容 ≠ 查询期宽容。** `heinrich_scheme::Code::parse` 会把大写降成小写——词库装载、自定义词、emoji 绑定靠它容错没问题；但**用户输入的缓冲串**也走同一条路，D98 之前「`gA` 被当 `ga` 匹配出候选」。大写的语义是「字面内容、不参与匹配」（组合态内 Shift 打字，D97/D98），所以查询入口（`query_with_limit`）必须先挡大写再分派，单段 / 多段 / 通配一并盖住——拼音侧二分比较原文天然区分大小写，五笔侧不挡就有假候选。教训：**同一个归一化函数被「可信数据」与「用户输入」共用时，宽容策略要在入口分流，不能共用到底**。
+74. **「stamp 只在 refresh 里记」的写法必然会空转一次。** `EmojiState` 的节流热检查分两半：`refresh()` 比 stamp，`reload()` 重建。旧写法只有 `refresh()` 写 `stamp`，而启动时 `configure()` 先把 `stamp = None` 再 `reload()`——于是 1 秒节流一过，**第一次查询必然判定「文件变了」再整份重载一遍**，内容与刚装载的完全一致。症状是「新开一个程序切到中文，头几个键没候选窗」：整份重载要 2400 次 `HasCharacter`（含 COM 初始化，实测 110ms），而键路径的 IPC 预算只有 50ms，那个键当场超时、原样漏给宿主。日志对照很直接——`已连上 server（2ms）` 紧跟 `IPC 往返失败（等待 server 超时）` + `server 不可用（q），原样上屏`，server 侧则在同一毫秒打了 emoji 重建日志。修法两条都要：① `reload()` 自己记 stamp（读文件前先记，读失败也记，否则坏文件让每次查询都重试）；② 昂贵的「字体探测」改成跨重载累积缓存（`EmojiSupport::extend` 只探新码位），否则每次真改设置仍会卡一次。教训：**节流用到的指纹，必须由「真正重载」的那个函数负责写入**，分开写就一定会漏一处。
 
 ## 7. 排序参数（`heinrich-core/src/rank.rs`）```
 total = w + g × ln(1 + max(0, n−1)) × 0.5^(Δt/H)

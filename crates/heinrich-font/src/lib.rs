@@ -35,18 +35,49 @@ const EMOJI_FAMILY: &str = "Segoe UI Emoji";
 #[derive(Debug, Clone, Default)]
 pub struct EmojiSupport {
     supported: Option<HashSet<char>>,
+    /// 已经问过字体的码位（含判为「没有字形」的），重载时不必再问。
+    ///
+    /// 与 `supported` 的不变式：`supported` 为 `Some` 时 `probed` 包含自己探过的
+    /// 全部码位；探测失败（`probe` 返回 `None`）时两者都不动，下次重载再试。
+    probed: HashSet<char>,
 }
 
 impl EmojiSupport {
     /// 探测一批码位在本机字体里有没有字形。
     ///
-    /// 只探测传进来的那些（去重后通常一千出头），一次几毫秒；不缓存跨进程，
+    /// 只探测传进来的那些（去重后通常一千出头）；不缓存跨进程，
     /// 因为装了新字体重启输入法就该生效。
     pub fn detect<I: IntoIterator<Item = char>>(candidates: I) -> Self {
-        let wanted: HashSet<char> = candidates.into_iter().collect();
-        Self {
-            supported: probe(&wanted),
+        let mut s = Self::default();
+        s.extend(candidates);
+        s
+    }
+
+    /// 补探一批码位，**只问上次没问过的那些**（D99）。
+    ///
+    /// 返回本次真正问过字体的码位数（0 = 全是老面孔，一次 COM 都没进）。
+    ///
+    /// 存在的理由：emoji 用户层是**每改一次设置就整份重建**的，而整份重建要问
+    /// 两千多个码位、每枚一次 `HasCharacter`，实测 110ms——期间宿主锁被独占，
+    /// 连着两三个键一起超时。用户改一行绑定实际只涉及 1 枚新码位，问它就够了。
+    pub fn extend<I: IntoIterator<Item = char>>(&mut self, candidates: I) -> usize {
+        let fresh: HashSet<char> = candidates
+            .into_iter()
+            .filter(|c| !self.probed.contains(c))
+            .collect();
+        if fresh.is_empty() {
+            return 0;
         }
+        // 判不出来时一律放行（见类型注释），且**不记 probed**：装上新字体后
+        // 下一次重载能自愈，而不是永久沿用「全部放行」。
+        let Some(found) = probe(&fresh) else {
+            return 0;
+        };
+        self.supported
+            .get_or_insert_with(HashSet::new)
+            .extend(found);
+        self.probed.extend(fresh.iter().copied());
+        fresh.len()
     }
 
     /// 一段 emoji（可能带变体选择符）**每个码位**都有字形才算可用。
@@ -177,9 +208,20 @@ mod tests {
     fn every_codepoint_must_be_covered() {
         let s = EmojiSupport {
             supported: Some(['\u{2764}'].into_iter().collect()),
+            probed: HashSet::new(),
         };
         assert!(s.supports("❤"));
         assert!(!s.supports("❤\u{FE0F}"));
         assert!(!s.supports("👍"));
+    }
+
+    /// 空批次不进 COM，也不能把「还没探过」翻成「全都不支持」——否则整批 emoji
+    /// 会被静默关掉。
+    #[test]
+    fn empty_batch_probes_nothing() {
+        let mut s = EmojiSupport::default();
+        assert_eq!(s.extend(std::iter::empty()), 0);
+        assert_eq!(s.known(), None);
+        assert!(s.supports("👍"));
     }
 }

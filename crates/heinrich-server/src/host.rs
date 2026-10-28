@@ -147,29 +147,32 @@ struct EmojiState {
     map: EmojiMap,
     /// 生效条目数（日志用）。
     count: usize,
+    /// 本机字体覆盖，**跨重载累积**（D99）：每次重载只补探新增码位，
+    /// 而不是对两千多个码位再走一遍 `HasCharacter`（实测 110ms，卡查询）。
+    support: EmojiSupport,
 }
 
 impl EmojiState {
     fn new(builtin: EmojiLayer) -> Self {
-        let (map, dropped) = merged_map(&builtin, &EmojiLayer::default());
-        if dropped > 0 {
-            srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过（候选里不会出现方块）");
-        }
-        let count = map.word_len() + map.code_len();
-        Self {
+        let mut this = Self {
             builtin,
             user_path: None,
             stamp: None,
             checked_at: Instant::now(),
             enabled: true,
-            map,
-            count,
+            map: EmojiMap::default(),
+            count: 0,
+            support: EmojiSupport::default(),
+        };
+        let dropped = this.rebuild(&EmojiLayer::default());
+        if dropped > 0 {
+            srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过（候选里不会出现方块）");
         }
+        this
     }
 
     fn configure(&mut self, path: Option<PathBuf>) {
         self.user_path = path;
-        self.stamp = None;
         self.reload();
     }
 
@@ -178,6 +181,11 @@ impl EmojiState {
         let Some(path) = self.user_path.clone() else {
             return;
         };
+        // D99：**先把 stamp 记上再读**。旧代码只在 `refresh()` 里记，`reload()`
+        // 自己不记——启动时 `configure()` 把 stamp 清空再 reload，于是 1 秒节流
+        // 一过，第一次查询必然再整份重载一遍（内容一模一样，白花 110ms，首个按键
+        // 就这么超时漏给了宿主）。读失败也照样记：否则坏文件会让每次查询都重试。
+        self.stamp = Some(file_stamp(&path));
         let (user, err) = EmojiLayer::load(&path);
         if let Some(e) = err {
             srv_error!("emoji 用户层：{e}；保留上一份");
@@ -186,8 +194,8 @@ impl EmojiState {
         for w in &user.warnings {
             srv_error!("emoji 用户层 {}：{w}", path.display());
         }
-        let (map, dropped) = merged_map(&self.builtin, &user);
-        let count = map.word_len() + map.code_len();
+        let dropped = self.rebuild(&user);
+        let count = self.map.word_len() + self.map.code_len();
         if dropped > 0 {
             srv_info!("emoji：{dropped} 条本机字体缺字形，已跳过");
         }
@@ -201,7 +209,28 @@ impl EmojiState {
             );
             self.count = count;
         }
+    }
+
+    /// 按「内置层 + 用户层」整份重建生效表，返回被字体挡掉的键数。
+    ///
+    /// 只重建映射，字体覆盖走累积缓存（`self.support`）——用户改一行绑定通常
+    /// 只涉及 0–1 枚新码位，探测从 110ms 降到微秒级。
+    fn rebuild(&mut self, user: &EmojiLayer) -> usize {
+        let mut map = EmojiMap::build(&[&self.builtin, user]);
+        // 只探测真正会用到的码位（一两千个），顺手把借来的 `&str` 变成拥有的
+        // `char`，后面才能改 `map`。
+        let chars: Vec<char> = map
+            .words()
+            .iter()
+            .map(|(_, e)| *e)
+            .chain(map.codes().iter().map(|(_, e)| *e))
+            .flat_map(str::chars)
+            .collect();
+        self.support.extend(chars);
+        let support = &self.support;
+        let dropped = map.retain_supported(|e| support.supports(e));
         self.map = map;
+        dropped
     }
 
     /// 节流热检查：用户层改了就重建映射（≤1 秒生效）。
@@ -213,15 +242,10 @@ impl EmojiState {
             return;
         }
         self.checked_at = Instant::now();
-        let meta = std::fs::metadata(path).ok();
-        let stamp = meta
-            .as_ref()
-            .map(|m| (m.len(), m.modified().ok()))
-            .unwrap_or((0, None));
+        let stamp = file_stamp(path);
         if self.stamp.as_ref() == Some(&stamp) {
             return;
         }
-        self.stamp = Some(stamp);
         self.reload();
     }
 
@@ -234,27 +258,15 @@ impl EmojiState {
     }
 }
 
-/// 把内置层与用户层合并，再**按本机字体过一遍**。
+/// 一眼认出「文件变没变」的指纹：`(长度, 修改时间)`，不存在时是 `(0, None)`。
 ///
-/// 字体这一关只能在装载期做（`D83`）：`emoji.toml` 是按 CLDR 全量生成的，里面
-/// 有 Emoji 13/14/15 才加的码位，而 Win10 的 `Segoe UI Emoji` 只到 Emoji 12——
-/// 不过滤的话候选窗和文档里都会出现方块（实测本机 377 条）。
-///
-/// 返回被丢掉的键数，供日志说明「为什么某些词后面没有 emoji」。
-fn merged_map(builtin: &EmojiLayer, user: &EmojiLayer) -> (EmojiMap, usize) {
-    let mut map = EmojiMap::build(&[builtin, user]);
-    // 只探测真正会用到的码位（一两千个），顺手把借来的 `&str` 变成拥有的 `char`，
-    // 后面才能改 `map`。
-    let chars: Vec<char> = map
-        .words()
-        .iter()
-        .map(|(_, e)| *e)
-        .chain(map.codes().iter().map(|(_, e)| *e))
-        .flat_map(str::chars)
-        .collect();
-    let support = EmojiSupport::detect(chars);
-    let dropped = map.retain_supported(|e| support.supports(e));
-    (map, dropped)
+/// 玄学一点说：mtime 精度够用（改一下绑定不可能在同一个 100ns 里完成），
+/// 配上长度能挡住「编辑器原地改写、时间戳被保留」的少数场景。
+fn file_stamp(path: &std::path::Path) -> (u64, Option<SystemTime>) {
+    std::fs::metadata(path)
+        .as_ref()
+        .map(|m| (m.len(), m.modified().ok()))
+        .unwrap_or((0, None))
 }
 
 /// 自定义词库的热更新状态（D65）。
@@ -1587,6 +1599,25 @@ mod tests {
         p.push(format!("heinrich-emoji-{}-{tag}.toml", std::process::id()));
         std::fs::write(&p, body).expect("写临时用户层失败");
         p
+    }
+
+    /// D99：重载后必须把文件指纹记上。旧代码只在 `refresh()` 里记，`reload()` 自己
+    /// 不记——启动时 `configure()` 清空 stamp 再重载，1 秒节流一过，**第一次查询**
+    /// 必然再整份重载一遍（内容一模一样，白花 110ms），真机上表现为「新进程里
+    /// 头几个键没有候选窗」。
+    #[test]
+    fn reload_records_stamp_so_first_query_does_not_reload_again() {
+        let path = temp_emoji_user("stamp", "[[emoji]]\nword = \"好好\"\nemoji = \"👏\"\n");
+        let mut st = EmojiState::new(EmojiLayer::default());
+        st.configure(Some(path.clone()));
+        assert_eq!(st.stamp, Some(file_stamp(&path)), "重载要留下指纹");
+
+        // 埋一个假计数：若 refresh 真重载了，会把 count 改回真实条目数。
+        st.count = 999_999;
+        st.checked_at = Instant::now() - EMOJI_RECHECK * 2;
+        st.refresh();
+        assert_eq!(st.count, 999_999, "文件没变就不该重载");
+        let _ = std::fs::remove_file(&path);
     }
 
     fn all_entries(h: &mut Host, code: &str, limit: u8) -> Vec<Entry> {
