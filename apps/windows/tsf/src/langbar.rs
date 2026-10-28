@@ -229,6 +229,44 @@ pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
     }
 }
 
+/// 语言栏巡检：枚举语言栏里的全部条目，回答两件事——**我们的条目还在不在**、
+/// **系统里一共几条**。
+///
+/// 为什么需要主动去问（D108）：语言栏条目是系统代显的跨进程对象，被摘掉时我们
+/// 这一侧**收不到任何回调**——没有 `RemoveItem`（不是我们摘的）、没有 `Show(false)`
+/// 之后的 `Show(true)`（系统只发前一半）、`GetIcon` / `GetStatus` 也一概不进来。
+/// 真机上「关闭设置窗口后两个『亨』剩一个」在日志里就是这么静默的：16:50:19 之后
+/// 系统再没碰过条目，我们无从知道它是被摘了还是只是没画。
+///
+/// 所以只能在「用户刚做完某事」的时刻主动采样一次（焦点变化是最便宜、最贴合
+/// 用户动作的采样点）。这一条只读，不改任何状态。
+pub fn probe_items(mgr: &ITfLangBarItemMgr) -> Result<(bool, u32)> {
+    use windows::Win32::UI::TextServices::ITfLangBarItem;
+
+    unsafe {
+        let enum_items = mgr.EnumItems()?;
+        let mut slot: [Option<ITfLangBarItem>; 1] = [None];
+        let mut ours = false;
+        let mut total = 0u32;
+        loop {
+            let mut fetched = 0u32;
+            if enum_items.Next(&mut slot, &mut fetched).is_err() || fetched == 0 {
+                break;
+            }
+            total += 1;
+            if let Some(item) = slot[0].take() {
+                let mut info: TF_LANGBARITEMINFO = std::mem::zeroed();
+                if item.GetInfo(&mut info).is_ok()
+                    && info.clsidService == GUID::from_u128(heinrich_tip_id::TIP_CLSID)
+                {
+                    ours = true;
+                }
+            }
+        }
+        Ok((ours, total))
+    }
+}
+
 fn icon_for(mode: Mode) -> Result<HICON> {
     let slot = match mode {
         Mode::Chinese => &ICON_ZH,

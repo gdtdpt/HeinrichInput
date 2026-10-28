@@ -309,6 +309,45 @@ impl Core {
         }
     }
 
+    /// 语言栏条目存活巡检（D108）。只读，不改状态。
+    ///
+    /// 语言栏条目被系统摘掉时我们收不到任何回调，日志会完全静默——真机上「两个
+    /// 『亨』剩一个」就是这么发生的：16:50:19 之后系统再没碰过条目，事后无从判断
+    /// 是「被摘」还是「只是没画」。所以挑用户动作的落点主动问一次系统：
+    ///
+    /// - `持有对象=true 条目还在` → 正常；
+    /// - `持有对象=true 条目没了` → **系统把它摘了**（这才是要修的那条），
+    ///   记 error 级别，一眼能在日志里搜到；
+    /// - `持有对象=false` → 本次激活没挂上（或已 Deactivate），条目在不在都正常。
+    ///
+    /// 焦点变化是最贴合的采样点：「打开设置 → 改配置 → 关掉设置」这条路径回来
+    /// 第一件事就是焦点变化。
+    fn probe_langbar(&self, why: &str) {
+        let Some(tim) = self.thread_mgr.borrow().clone() else {
+            return;
+        };
+        let Ok(mgr) = tim.cast::<ITfLangBarItemMgr>() else {
+            return;
+        };
+        let held = self.langbar.borrow().is_some();
+        match langbar::probe_items(&mgr) {
+            Ok((ours, total)) => {
+                if held && !ours {
+                    tsf_error!(
+                        "#{} 语言栏巡检（{why}）：**条目已不在系统列表里**（我们仍持有对象，系统共 {total} 条）",
+                        self.seq
+                    );
+                } else {
+                    tsf_info!(
+                        "#{} 语言栏巡检（{why}）：持有对象={held} 条目在系统里={ours} 系统共 {total} 条",
+                        self.seq
+                    );
+                }
+            }
+            Err(e) => tsf_error!("#{} 语言栏巡检（{why}）失败：{e}", self.seq),
+        }
+    }
+
     /// 每次按键回调的入口都调一次：采样物理 Shift 状态，推进「单击切中英」状态机。
     ///
     /// **四条回调路径全都要调**。M1.1 第一版只在 `OnKeyDown` 里置位，结果
@@ -1146,7 +1185,19 @@ impl TextService_Impl {
             }
 
             let item: ITfLangBarItemButton = obj.to_interface();
-            mgr.AddItem(&item)?;
+            // 失败时把 HRESULT 与「这一格现在归谁」一起记下来（D108）：只说「失败」
+            // 分不清是「系统拒绝」还是「已经有一条同 GUID 的条目、这次被合并/忽略」
+            // ——后者对排查「两个亨剩一个」是关键区别。
+            if let Err(e) = mgr.AddItem(&item) {
+                tsf_error!(
+                    "#{} 语言栏：AddItem 失败 hr={:#x}（{}）；该格当前持有者 {}",
+                    self.seq,
+                    e.code().0,
+                    e,
+                    langbar::describe_guid_owner(&mgr)
+                );
+                return Err(e);
+            }
             tsf_info!(
                 "#{} 语言栏：AddItem 成功；该格当前持有者 {}",
                 self.seq,
@@ -1164,6 +1215,19 @@ impl TextService_Impl {
     }
 
     fn deactivate_inner(&self) -> Result<()> {
+        // 入口日志（D108）：图标消失类问题的时间锚。此前这一段完全静默——语言栏
+        // 条目被摘、图标不再画出来，日志里连「Deactivate 发生过」都看不出来，
+        // 只能靠推断。同时记「有没有持条目、有没有 thread_mgr」：真实 Deactivate
+        // 与「没激活过也被调一次」在症状上一样，在这里才能分开。
+        let had_mgr = self.thread_mgr.borrow().is_some();
+        tsf_info!(
+            "#{} Deactivate 进入：pid={} tid={} 持语言栏条目={} 有 thread_mgr={}",
+            self.seq,
+            std::process::id(),
+            self.tid.get(),
+            self.langbar.borrow().is_some(),
+            had_mgr
+        );
         let Some(thread_mgr) = self.thread_mgr.borrow_mut().take() else {
             // 没激活过就 Deactivate：TSF 允许这么调。
             return Ok(());
@@ -1218,7 +1282,7 @@ impl TextService_Impl {
         *self.comp.borrow_mut() = None;
         self.active_ctx.borrow_mut().take();
         self.comp_sink.borrow_mut().take();
-        tsf_info!("#{} Deactivate pid={}", self.seq, std::process::id());
+        tsf_info!("#{} Deactivate 完成：pid={}", self.seq, std::process::id());
         Ok(())
     }
 }
@@ -1292,6 +1356,9 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         // 用户按空格时莫名其妙多出一个「好」；组合串模式下还会在 A 窗口留下一串
         // 「vbg」字母——那串字母是真实写进文档的，不撤就在那儿了。
         self.abort_input("焦点变化");
+        // 语言栏条目存活巡检（D108）：条目被系统摘掉时收不到回调，只能趁焦点
+        // 变化主动问一次。「打开设置 → 改配置 → 关掉设置」回来第一件事就是它。
+        self.probe_langbar("焦点变化");
         Ok(())
     }
 

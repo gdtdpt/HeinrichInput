@@ -19,13 +19,19 @@
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Installer
-    顺带用 Inno Setup 打出 dist\HeinrichSetup-<版本>.exe（需要构建机装 ISCC）。
+    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Installer -Suffix dev1
+    自测包（D107）：包名与显示版本带 -dev1 后缀，Cargo 版本保持不动。
+    这类包只用于装机复现，不打 tag、不写 release-notes。
 #>
 [CmdletBinding()]
 param(
     [string]$DistDir,
-    [switch]$Installer
+    [switch]$Installer,
+    # 预发布后缀（D107）。只影响安装包的 AppVersion / 包名 / 显示版本，
+    # 不动 Cargo.toml：内部 crate 之间用 `version = "1.0.0"` 的显式依赖，
+    # workspace 版本一旦变成 1.1.5-dev1 就不满足 `^1.0.0`（预发布不匹配普通范围），
+    # cargo 会直接拒绝解析——这条是踩过的。
+    [string]$Suffix
 )
 
 # 只对 PowerShell 自己的 cmdlet 用 Stop。原生程序写 stderr 时，Windows PowerShell 5.1
@@ -205,6 +211,14 @@ if (-not $verMatch.Success) {
     exit 1
 }
 $appVersion = $verMatch.Groups[1].Value
+if ($Suffix) {
+    # 自测包（D107）：显示与包名带后缀，VersionInfoVersion 由 iss 截成纯数字。
+    if ($Suffix -notmatch '^[0-9A-Za-z.]+$') {
+        Write-Host "  -Suffix 只能用字母数字（收到：$Suffix）" -ForegroundColor Red
+        exit 1
+    }
+    $appVersion = "$appVersion-$Suffix"
+}
 Write-Host "  ISCC     : $iscc"
 Write-Host "  版本     : $appVersion"
 

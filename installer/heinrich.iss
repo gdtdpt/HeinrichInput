@@ -22,6 +22,16 @@
   #define AppVersion "1.0.0"
 #endif
 
+; 预发布后缀（D107）：自测包写成 1.1.5-dev1，AppVersion / 包名 / 设置窗口里都保留
+; 完整值（一眼能看出装的是哪个自测包），但 VersionInfoVersion 只接受数字，所以
+; 把 "-" 之后截掉。截完为空（不该发生）时退回原值，让编译直接报错而不是静默出怪版本。
+#define VerDashPos Pos("-", AppVersion)
+#if VerDashPos > 0
+  #define VerNumeric Copy(AppVersion, 1, VerDashPos - 1)
+#else
+  #define VerNumeric AppVersion
+#endif
+
 #define AppName "亨利五笔"
 #define AppNameEn "HeinrichInput"
 #define AppPublisher "Heinrich"
@@ -35,7 +45,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VerNumeric}
 VersionInfoDescription={#AppNameEn} 安装程序
 DefaultDirName={autopf}\{#AppNameEn}
 DefaultGroupName={#AppName}
