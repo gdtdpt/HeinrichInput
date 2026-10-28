@@ -32,6 +32,19 @@ cargo run --release -p heinrich-cli -- check --data data/wubi86
 
 `tools/check.ps1` 全绿才算完成（`clippy -D warnings` 与 `fmt --check` 都是硬门槛）。
 
+**`cargo test --all` 在本机会偶发 `os error 5`**：报
+`failed to write …\.fingerprint\<crate>-<hash>\invoked.timestamp`，换一个 crate 重试
+又换一个目录报，看着像杀软锁文件，其实是**同一包的多个 target（lib / example / test）
+共享同一个 fingerprint 目录、并行构建时抢写同一个时间戳文件**。加 `-j 1` 就干净：
+
+```powershell
+cargo test --all -j 1
+```
+
+`check.ps1` 里那一步如果撞上，也是这个原因，不是代码问题——**别去改代码**，
+先单独 `cargo test -p <包名>` 确认，再 `-j 1` 跑全量。
+
+
 ## 3. crate 结构与依赖方向
 
 ```
