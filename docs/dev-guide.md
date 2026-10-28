@@ -2027,6 +2027,10 @@ helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环
 所以末尾会打印三条要人手执行的命令：`git push origin main`、`git push origin v1.0.1`、
 网页建 release 的链接与附件路径（装了 `gh` 时多给一条 `gh release create`）。
 
+**每个 release 必须有一份发布说明 `release-notes/v<版本>.md`**（写给用户看的变更摘要，
+与 §12 的工程视角变更记录并存，见 PROJECT.md §10.2）：脚本收尾的 `gh release create`
+直接用 `--notes-file` 吃它；缺文件时收尾打印红字提醒（不阻断）。
+
 **几个易错点**：
 
 - 脚本不带 `-Bump` 时沿用现有版本号；若那个号的 tag 已存在（本地或远端）会直接失败，

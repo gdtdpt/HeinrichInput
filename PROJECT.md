@@ -1112,6 +1112,11 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1
 **脚本不自动 push、不自动建 release**：本机 `credential.helper = helper-selector`
 是非交互的，这类动作必须由人亲手触发（见 dev-guide 发版一节）。
 
+**每个 release 配一份发布说明 `release-notes/v<版本>.md`**：内容是写给用户看的
+变更摘要（装了什么、修了什么、升级注意），与 §12 的工程视角变更记录并存、互不替代。
+脚本收尾的 `gh release create` 直接用 `--notes-file` 吃它，网页建 release 时把文件
+内容粘进描述框；文件缺失时收尾打印红字提醒（不阻断构建与 tag）。
+
 ### 10.3 三个编号各管什么
 
 | 编号 | 位置 | 什么时候变 |

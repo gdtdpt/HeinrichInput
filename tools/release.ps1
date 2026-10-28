@@ -242,6 +242,9 @@ $repoUrl = (& git remote get-url origin).Trim()
 $webUrl = $repoUrl -replace '\.git$', '' -replace '^git@github\.com:', 'https://github.com/'
 $relUrl = "$webUrl/releases/new?tag=$tag"
 $hasGh = [bool](Get-Command gh -ErrorAction SilentlyContinue)
+# 发布说明：每个 release 一份 release-notes\v<版本>.md（§10.2），gh 直接用 --notes-file 吃它。
+$notesPath = Join-Path $root "release-notes\$tag.md"
+$hasNotes = Test-Path $notesPath
 
 Write-Host ''
 Write-Host '----------------------------------------------------------------' -ForegroundColor Cyan
@@ -255,15 +258,27 @@ Write-Host ''
 Write-Host '  # 2. 建 release 并附安装包（网页）'
 Write-Host "  $relUrl"
 Write-Host "  标题：$tag    附件：$setupPath"
+if ($hasNotes) {
+    Write-Host "  描述：把 release-notes\$tag.md 的内容粘进去"
+}
+else {
+    Write-Host "  ⚠ 缺少 release-notes\$tag.md —— §10.2 约定每个 release 必须有一份发布说明，请先写再发" -ForegroundColor Red
+}
 Write-Host ''
 if ($hasGh) {
     Write-Host '  # 2-替代. 用 gh 一条命令完成（本机已装 gh）'
-    Write-Host "  gh release create $tag `"$setupPath`" --title `"$tag`" --generate-notes"
+    if ($hasNotes) {
+        Write-Host "  gh release create $tag `"$setupPath`" --title `"$tag`" --notes-file `"$notesPath`""
+    }
+    else {
+        Write-Host "  # 先写 release-notes\$tag.md，然后："
+        Write-Host "  gh release create $tag `"$setupPath`" --title `"$tag`" --notes-file `"$notesPath`""
+    }
 }
 else {
     Write-Host '  # 2-替代. 装了 GitHub CLI 之后可以一条命令完成：'
     Write-Host "  winget install --id GitHub.cli"
-    Write-Host "  gh release create $tag `"$setupPath`" --title `"$tag`" --generate-notes"
+    Write-Host "  gh release create $tag `"$setupPath`" --title `"$tag`" --notes-file `"$notesPath`""
 }
 Write-Host ''
 Write-Host "  发布后记得到 PROJECT.md §12 补一行 $newVer 的变更记录（若还没写）。" -ForegroundColor DarkGray
