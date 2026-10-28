@@ -164,6 +164,11 @@ pub struct Core {
     /// 已经投了一条复量消息还没处理（去重）。拒绝期间每个键都会想投一条，
     /// 但一轮消息循环只需要一次复量。
     recheck_pending: Cell<bool>,
+    /// 上一次语言栏巡检的读数 `(持有对象, 条目在系统里, 系统共几条)`。
+    ///
+    /// 定时巡检 20 秒一次，状态没变就不写日志（D109）——否则一天几千行噪音把
+    /// 真正的时间锚埋掉。`None` = 本次激活还没采过样，第一条必写。
+    last_probe: Cell<Option<(bool, bool, u32)>>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -203,6 +208,7 @@ impl Core {
             notify: RefCell::new(None),
             gate: RefCell::new(Gate::default()),
             recheck_pending: Cell::new(false),
+            last_probe: Cell::new(None),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -309,20 +315,31 @@ impl Core {
         }
     }
 
-    /// 语言栏条目存活巡检（D108）。只读，不改状态。
+    /// 焦点变化时的巡检：**永远写一条**（这是用户动作的落点，值得留痕）。
+    fn probe_langbar(&self, why: &str) {
+        self.probe_langbar_impl(why, false);
+    }
+
+    /// 定时巡检入口（`WM_TIMER`，D109）：状态没变就不写日志。
+    pub(crate) fn on_langbar_tick(&self) {
+        self.probe_langbar_impl("定时巡检", true);
+    }
+
+    /// 语言栏条目存活巡检（D108/D109）。只读，不改状态。
     ///
     /// 语言栏条目被系统摘掉时我们收不到任何回调，日志会完全静默——真机上「两个
     /// 『亨』剩一个」就是这么发生的：16:50:19 之后系统再没碰过条目，事后无从判断
-    /// 是「被摘」还是「只是没画」。所以挑用户动作的落点主动问一次系统：
+    /// 是「被摘」还是「只是没画」。
     ///
-    /// - `持有对象=true 条目还在` → 正常；
-    /// - `持有对象=true 条目没了` → **系统把它摘了**（这才是要修的那条），
-    ///   记 error 级别，一眼能在日志里搜到；
+    /// 三种读数分别对应三种结论：
+    ///
+    /// - `持有对象=true 条目还在` → 条目仍在系统列表里（**没画出来**是另一条路）；
+    /// - `持有对象=true 条目没了` → **系统把它摘了**，记 error 级别；
     /// - `持有对象=false` → 本次激活没挂上（或已 Deactivate），条目在不在都正常。
     ///
-    /// 焦点变化是最贴合的采样点：「打开设置 → 改配置 → 关掉设置」这条路径回来
-    /// 第一件事就是焦点变化。
-    fn probe_langbar(&self, why: &str) {
+    /// `only_on_change` 只影响写不写日志：定时巡检用 `true`（20 秒一次，状态不变
+    /// 就静默），焦点变化与激活用 `false`（用户动作的落点是时间锚，必须留痕）。
+    fn probe_langbar_impl(&self, why: &str, only_on_change: bool) {
         let Some(tim) = self.thread_mgr.borrow().clone() else {
             return;
         };
@@ -330,21 +347,38 @@ impl Core {
             return;
         };
         let held = self.langbar.borrow().is_some();
-        match langbar::probe_items(&mgr) {
-            Ok((ours, total)) => {
-                if held && !ours {
-                    tsf_error!(
-                        "#{} 语言栏巡检（{why}）：**条目已不在系统列表里**（我们仍持有对象，系统共 {total} 条）",
-                        self.seq
-                    );
-                } else {
-                    tsf_info!(
-                        "#{} 语言栏巡检（{why}）：持有对象={held} 条目在系统里={ours} 系统共 {total} 条",
-                        self.seq
-                    );
-                }
+        let snap = match langbar::probe_items(&mgr) {
+            Ok(s) => s,
+            Err(e) => {
+                tsf_error!("#{} 语言栏巡检（{why}）失败：{e}", self.seq);
+                return;
             }
-            Err(e) => tsf_error!("#{} 语言栏巡检（{why}）失败：{e}", self.seq),
+        };
+        let now = (held, snap.ours, snap.total);
+        let prev = self.last_probe.replace(Some(now));
+        if only_on_change && prev == Some(now) {
+            return;
+        }
+        // 条目数变了（或第一次采到）才把明细打出来：正常打字时明细一行都不写。
+        let detail_changed = prev.map(|p| p.2) != Some(snap.total);
+        if held && !snap.ours {
+            tsf_error!(
+                "#{} 语言栏巡检（{why}）：**条目已不在系统列表里**（我们仍持有对象，系统共 {} 条）",
+                self.seq,
+                snap.total
+            );
+        } else {
+            tsf_info!(
+                "#{} 语言栏巡检（{why}）：持有对象={held} 条目在系统里={} 系统共 {} 条",
+                self.seq,
+                snap.ours,
+                snap.total
+            );
+        }
+        if detail_changed {
+            for line in &snap.detail {
+                tsf_info!("#{} 语言栏条目 {line}", self.seq);
+            }
         }
     }
 
@@ -1042,6 +1076,8 @@ fn cursor_near(rect: Rect, tol: f32) -> bool {
 impl TextService_Impl {
     fn activate_inner(&self, ptim: Ref<ITfThreadMgr>, tid: u32) -> Result<()> {
         self.tid.set(tid);
+        // 新一次激活：上一轮的巡检读数作废，第一条必写（D109）。
+        self.last_probe.set(None);
 
         // 幂等：TSF 可能先走 `Activate` 再走 `ActivateEx`（后者转调前者）。
         // 重复初始化会重复挂 sink，并把语言栏条目 `AddItem` 两次——两个同 GUID
@@ -1095,6 +1131,8 @@ impl TextService_Impl {
             }
 
             *self.thread_mgr.borrow_mut() = Some(thread_mgr.clone());
+            // 基线读数（D109）：`AddItem` 刚成功那一刻系统列表里到底有没有我们。
+            self.probe_langbar("激活后");
         }
 
         // IPC：启动后台连接线程（幂等），并趁机把 server 上的全局模式取回来。
@@ -1108,6 +1146,12 @@ impl TextService_Impl {
         match notify::NotifyWindow::new(&self.core) {
             Ok(w) => {
                 ipc::set_notify_window(w.hwnd().0 as isize);
+                // D109：语言栏条目 20 秒巡检一次。条目被摘、被藏时我们收不到任何
+                // 回调，只有主动问系统才看得到——「两个亨剩一个」曾持续十几分钟
+                // 而期间没有任何焦点变化，事件驱动的采样完全够不着。
+                if !w.start_langbar_timer() {
+                    tsf_error!("#{} 语言栏巡检定时器启动失败，退回只在焦点变化时采样", self.seq);
+                }
                 *self.notify.borrow_mut() = Some(w);
             }
             Err(e) => tsf_error!("#{} 重连通知窗口创建失败：{e}", self.seq),
@@ -1282,6 +1326,8 @@ impl TextService_Impl {
         *self.comp.borrow_mut() = None;
         self.active_ctx.borrow_mut().take();
         self.comp_sink.borrow_mut().take();
+        // 条目已摘：巡检读数作废，下次激活重新采样（D109）。
+        self.last_probe.set(None);
         tsf_info!("#{} Deactivate 完成：pid={}", self.seq, std::process::id());
         Ok(())
     }

@@ -6,6 +6,7 @@
 //! |---|---|---|
 //! | [`WM_APP_RECONNECTED`] | 后台 IPC 线程 | 它不拥有 UI，不能碰候选窗 |
 //! | [`WM_APP_RECHECK_CARET`] | UI 线程自己 | 按键那一刻宿主的排版还没落定（D104） |
+//! | `WM_TIMER` | 系统定时器 | 语言栏条目 20 秒巡检一次（D109）：条目被摘时我们收不到任何回调 |
 //!
 //! 复量不再「量到不同的值就挪窗」（D105）：它也要过 `gate` 那道闸门，否则被拒的
 //! 错值会在下一轮消息里被原样捡回来——D105 的现场就是这样，复量两次数值一模一样。
@@ -33,15 +34,24 @@ use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassW, SetTimer,
     SetWindowLongPtrW, CREATESTRUCTW, GWLP_USERDATA, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
+    WM_APP, WM_NCCREATE, WM_NCDESTROY, WM_TIMER, WNDCLASSW,
 };
 
 /// 后台线程 → TSF UI 线程：「重连成功，若缓冲非空且无候选窗，补弹」。
 pub const WM_APP_RECONNECTED: u32 = WM_APP + 1;
 /// UI 线程 → 自己：「闸门没收下这次量到的位置，下一轮消息里再量一次」（D104/D105）。
 pub const WM_APP_RECHECK_CARET: u32 = WM_APP + 2;
+
+/// 语言栏巡检定时器的 id（`SetTimer` 的第二个参数）。
+///
+/// 为什么用定时器而不是只靠焦点变化（D109）：真机上「两个亨剩一个」的状态能
+/// **持续十几分钟**，而这段时间里用户不会再切焦点，事件驱动的采样完全看不到它。
+/// 20 秒一次 `EnumItems` 在 UI 线程上是微秒级开销，状态没变就不写日志。
+const TIMER_LANGBAR: usize = 1;
+/// 巡检间隔。太短会打断宿主的空闲消息处理，太长会漏掉短暂状态。
+const LANGBAR_TICK_MS: u32 = 20_000;
 
 const CLASS_NAME: PCWSTR = w!("HeinrichNotifyV1");
 
@@ -89,6 +99,14 @@ impl NotifyWindow {
 
     pub fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    /// 起语言栏巡检定时器（幂等：同 id 重复 `SetTimer` 只改间隔）。
+    ///
+    /// 失败只返回 `false`，调用方记一行日志即可——没有定时器就退回「只在焦点
+    /// 变化时采样」，功能不受影响。
+    pub fn start_langbar_timer(&self) -> bool {
+        unsafe { SetTimer(Some(self.hwnd), TIMER_LANGBAR, LANGBAR_TICK_MS, None) != 0 }
     }
 }
 
@@ -160,6 +178,11 @@ unsafe extern "system" fn notify_wndproc(
         }
         WM_APP_RECHECK_CARET => {
             with_core(hwnd, |core| core.on_recheck_caret());
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            // 定时巡检本身不写日志（状态没变就静默），只把读数交给 `Core` 判定。
+            with_core(hwnd, |core| core.on_langbar_tick());
             LRESULT(0)
         }
         WM_NCDESTROY => {

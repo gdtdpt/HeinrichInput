@@ -198,6 +198,7 @@ fn mode_name(mode: Mode) -> &'static str {
 /// 或者那一格被别的条目（系统的输入模式条目、我们上一次的残留对象）顶掉了。
 /// 只有这个查询能分辨，所以挂载时记一笔。
 pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
+    let _guard = ProbeGuard::enter();
     unsafe {
         let Ok(item) = mgr.GetItem(&GUID_LBI_INPUTMODE) else {
             return "GetItem 失败（该 GUID 当前无条目）".to_string();
@@ -229,6 +230,31 @@ pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
     }
 }
 
+// 巡检正在枚举时置位。
+//
+// `probe_items` 会对**我们自己的条目**调 `GetInfo`——那是同步回调，直接打到
+// 本模块的实现上。不置位的话，每次巡检都会多出一行「系统在重建这一条」，
+// 20 秒一次，把真正的重建时间锚淹没。
+thread_local! {
+    static PROBING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 置位 `PROBING`，作用域结束（含提前 return / panic）自动复位。
+struct ProbeGuard;
+
+impl ProbeGuard {
+    fn enter() -> Self {
+        PROBING.with(|p| p.set(true));
+        Self
+    }
+}
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        PROBING.with(|p| p.set(false));
+    }
+}
+
 /// 语言栏巡检：枚举语言栏里的全部条目，回答两件事——**我们的条目还在不在**、
 /// **系统里一共几条**。
 ///
@@ -238,33 +264,62 @@ pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
 /// 真机上「关闭设置窗口后两个『亨』剩一个」在日志里就是这么静默的：16:50:19 之后
 /// 系统再没碰过条目，我们无从知道它是被摘了还是只是没画。
 ///
-/// 所以只能在「用户刚做完某事」的时刻主动采样一次（焦点变化是最便宜、最贴合
-/// 用户动作的采样点）。这一条只读，不改任何状态。
-pub fn probe_items(mgr: &ITfLangBarItemMgr) -> Result<(bool, u32)> {
+/// 采样点（D109）：焦点变化 + 激活后各一次（用户动作的落点），外加 20 秒定时一次
+/// （那个「只剩一个」的状态能持续十几分钟，期间没有任何焦点变化）。这一条只读，
+/// 不改任何状态。
+pub fn probe_items(mgr: &ITfLangBarItemMgr) -> Result<ItemSnapshot> {
     use windows::Win32::UI::TextServices::ITfLangBarItem;
 
+    let _guard = ProbeGuard::enter();
     unsafe {
         let enum_items = mgr.EnumItems()?;
         let mut slot: [Option<ITfLangBarItem>; 1] = [None];
-        let mut ours = false;
-        let mut total = 0u32;
+        let mut snap = ItemSnapshot::default();
         loop {
             let mut fetched = 0u32;
             if enum_items.Next(&mut slot, &mut fetched).is_err() || fetched == 0 {
                 break;
             }
-            total += 1;
+            snap.total += 1;
             if let Some(item) = slot[0].take() {
                 let mut info: TF_LANGBARITEMINFO = std::mem::zeroed();
-                if item.GetInfo(&mut info).is_ok()
-                    && info.clsidService == GUID::from_u128(heinrich_tip_id::TIP_CLSID)
-                {
-                    ours = true;
+                if item.GetInfo(&mut info).is_err() {
+                    continue;
                 }
+                let ours = info.clsidService == GUID::from_u128(heinrich_tip_id::TIP_CLSID);
+                snap.ours |= ours;
+                // 描述对不上号时至少有 GUID 可查：同 GUID 条目并存（一次点击翻两次
+                // 模式）在真机上就是靠这两个字段分开的。
+                let desc: String = info
+                    .szDescription
+                    .iter()
+                    .take_while(|&&c| c != 0)
+                    .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
+                    .collect();
+                snap.detail.push(format!(
+                    "[{}] guid={:032x} clsid={:032x} desc={desc:?}{}",
+                    snap.total,
+                    info.guidItem.to_u128(),
+                    info.clsidService.to_u128(),
+                    if ours { " ←我们的" } else { "" }
+                ));
             }
         }
-        Ok((ours, total))
+        Ok(snap)
     }
+}
+
+/// [`probe_items`] 的读数。
+///
+/// `detail` 只在真机诊断日志里打（条目数变化或状态跳变时），平时不留。
+#[derive(Default, Debug)]
+pub struct ItemSnapshot {
+    /// 我们的条目还在系统列表里。
+    pub ours: bool,
+    /// 系统列表里条目总数。
+    pub total: u32,
+    /// 每项一行：`[序号] guid=… clsid=… desc="…"`。
+    pub detail: Vec<String>,
 }
 
 fn icon_for(mode: Mode) -> Result<HICON> {
@@ -596,7 +651,12 @@ fn draw_icon(mode: Mode, size: i32) -> Option<HICON> {
 
 impl ITfLangBarItem_Impl for LangBarButton_Impl {
     fn GetInfo(&self, pinfo: *mut TF_LANGBARITEMINFO) -> Result<()> {
-        tsf_debug!("语言栏：GetInfo（系统在重建这一条）");
+        // info 级（D109）：这一条出现就说明**系统正在重建/重画这一格**，是判断
+        // 「条目还在但没画出来」的时间锚。真机上它每次重建只来几行，不吵。
+        // 巡检自己枚举时也会打进来（`PROBING`），那种不算系统的动作。
+        if !PROBING.with(|p| p.get()) {
+            tsf_info!("语言栏：GetInfo（系统在重建这一条）");
+        }
         unsafe {
             *pinfo = item_info();
         }
@@ -684,7 +744,7 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
         let mode = self.mode.get();
         let icon = icon_for(mode);
         match &icon {
-            Ok(h) => tsf_debug!("语言栏：GetIcon({}) → {:#x}", mode_name(mode), h.0 as isize),
+            Ok(h) => tsf_info!("语言栏：GetIcon({}) → {:#x}", mode_name(mode), h.0 as isize),
             Err(e) => tsf_error!("语言栏：GetIcon({}) 失败：{e}", mode_name(mode)),
         }
         icon
