@@ -14,6 +14,9 @@
 ;   ③ 删用户数据那一步以**原始用户**身份跑（runasoriginaluser）：提权进程的
 ;      %APPDATA% 可能是管理员账户的 profile，标准用户输凭据安装时会删错地方。
 ;   ④ 版本号与 Cargo workspace 同源（build.ps1 传 /DAppVersion）。
+;   ⑤ 升级不再要求关掉宿主程序（D103）：Windows 只是禁止**删除/原地覆盖**被映射的
+;      文件，**改名是允许的**（实测：映射中 rename 成功、delete 被拒）。所以安装前
+;      把 heinrich_win.dll 等改名为 .old，新文件照常落到原路径；老进程跟着 .old 继续跑。
 
 #ifndef AppVersion
   #define AppVersion "1.0.0"
@@ -50,9 +53,12 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-; 装/卸时会替换 DLL——宿主程序（记事本、浏览器…）正加载着它就换不进去。
-; CloseApplications 会列出占用的程序并让用户关掉，比事后「重启才生效」清楚。
-CloseApplications=yes
+; 装/卸时会替换 DLL——宿主程序（浏览器、微信、编辑器…）正映射着它就换不进去。
+; D103：**不再**用 CloseApplications 逼用户关程序。Restart Manager 只认「文件被
+; 映射着」，不认「输入法是否还在用」，于是「用得越顺的程序越装不上」，还会陷入
+; 「关掉 → 为了看提示又打开 → 又被判定占用」的死循环。改为在 ssInstall 阶段把
+; 被映射的文件改名成 .old（见 [Code]），安装照常完成。
+CloseApplications=no
 RestartApplications=no
 AllowNoIcons=yes
 
@@ -137,4 +143,187 @@ begin
                             SW_HIDE, ewWaitUntilTerminated, ErrCode) then
     MsgBox('删除用户数据失败（无法启动 heinrich-setup purge）。' + #13#10 +
            '可以稍后手动执行：heinrich-setup.exe purge', mbError, MB_OK);
+end;
+
+{ ================= D103：不关宿主程序也能升级 =================
+
+  Windows 对「已被映射（mapped）的文件」只禁止两件事：删除、原地覆盖。
+  **改名是允许的**（安装包里实测：映射中的 DLL 改名成功、删除被拒绝）。
+  所以升级时先把 heinrich_win.dll 之类改名成 .old，新文件就能写回原路径；
+  老进程的映射跟着 .old 继续跑，不崩、不断输入。
+
+  为什么不继续用 CloseApplications：Restart Manager 只认「文件被谁映射着」，
+  不认「这个程序还在不在用输入法」。用户即便已经切走输入法、甚至已卸载注册，
+  只要有进程映射着 DLL，它照样拦——而关掉它再看提示又会把进程重新拉起来。 }
+
+{ 可能被宿主程序映射着的文件（DLL 首当其冲；exe 被直接运行时也会被占用）。 }
+function LockableName(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'heinrich_win.dll';
+    1: Result := 'heinrich-server.exe';
+    2: Result := 'heinrich-settings.exe';
+    3: Result := 'heinrich-setup.exe';
+    4: Result := 'heinrich-cli.exe';
+    5: Result := 'heinrich-gen.exe';
+  else
+    Result := '';
+  end;
+end;
+
+{ 把安装目录下的 Name 改名成 Name.old / Name.old1 / …。返回是否改名成功。 }
+function UnlockOne(const Dir, Name: String): Boolean;
+var
+  Src, Dst: String;
+  I: Integer;
+begin
+  Result := False;
+  Src := AddBackslash(Dir) + Name;
+  if not FileExists(Src) then
+    Exit;
+
+  for I := 0 to 9 do
+  begin
+    if I = 0 then
+      Dst := Src + '.old'
+    else
+      Dst := Src + '.old' + IntToStr(I);
+
+    { 上次升级留下的同名 .old：还删得掉就复用这个后缀，删不掉（仍被映射）换下一个。 }
+    if (not FileExists(Dst)) or DeleteFile(Dst) then
+    begin
+      if RenameFile(Src, Dst) then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+procedure UnlockInstalledFiles;
+var
+  Dir: String;
+  I: Integer;
+begin
+  Dir := ExpandConstant('{app}');
+  for I := 0 to 5 do
+    UnlockOne(Dir, LockableName(I));
+end;
+
+{ 装完清掉 .old；清不掉说明还有老进程映射着，留给下次升级或卸载。 }
+procedure CleanupOldFiles;
+var
+  Dir, Src, Dst: String;
+  I, J: Integer;
+begin
+  Dir := ExpandConstant('{app}');
+  for I := 0 to 5 do
+  begin
+    Src := AddBackslash(Dir) + LockableName(I);
+    for J := 0 to 9 do
+    begin
+      if J = 0 then
+        Dst := Src + '.old'
+      else
+        Dst := Src + '.old' + IntToStr(J);
+      if FileExists(Dst) then
+        DeleteFile(Dst);
+    end;
+  end;
+end;
+
+{ 列出仍映射着旧 DLL 的进程名（去重、用「、」连接）。空串 = 没有。 }
+function OldHostProcesses: String;
+var
+  Tmp, Cmd, Line, Name, Seen: String;
+  Code, I, P: Integer;
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  Tmp := ExpandConstant('{tmp}\heinrich-oldhosts.txt');
+  DeleteFile(Tmp);
+  Cmd := '/c ' + ExpandConstant('{sys}\tasklist.exe') +
+         ' /m heinrich_win.dll /fo csv /nh > "' + Tmp + '" 2>nul';
+  if not Exec(ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Exit;
+  if not LoadStringsFromFile(Tmp, Lines) then
+    Exit;
+  DeleteFile(Tmp);
+
+  Seen := '|';
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Trim(Lines[I]);
+    P := Pos(',', Line);
+    if P > 1 then
+    begin
+      Name := RemoveQuotes(Copy(Line, 1, P - 1));
+      if (Name <> '') and (Pos('|' + LowerCase(Name) + '|', Seen) = 0) then
+      begin
+        Seen := Seen + LowerCase(Name) + '|';
+        if Result <> '' then
+          Result := Result + '、';
+        Result := Result + Name;
+      end;
+    end;
+  end;
+end;
+
+{ 卸载时宿主还映射着 DLL 的话，卸载器会把删除登记成「下次重启执行」。
+  若用户没重启就重装，那条登记到重启时会把**新**装的文件删掉——查一下，
+  命中就提醒（reg query 把 MULTI_SZ 按行输出，一行一项）。 }
+function PendingDeleteWarning: String;
+var
+  Tmp, Cmd, Line: String;
+  Code, I: Integer;
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  Tmp := ExpandConstant('{tmp}\heinrich-pending.txt');
+  DeleteFile(Tmp);
+  Cmd := '/c ' + ExpandConstant('{sys}\reg.exe') +
+         ' query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager"' +
+         ' /v PendingFileRenameOperations > "' + Tmp + '" 2>nul';
+  if not Exec(ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Exit;
+  if not LoadStringsFromFile(Tmp, Lines) then
+    Exit;
+  DeleteFile(Tmp);
+
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Lines[I];
+    if Pos('{#AppNameEn}', Line) > 0 then
+    begin
+      Result := #13#10#13#10 +
+        '注意：系统里还留着上次卸载登记的「重启后删除」，' +
+        '下次重启可能把新版文件删掉。' + #13#10 +
+        '若重启后输入法失效，重新运行一次安装包即可复原。';
+      Exit;
+    end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Msg, Hosts: String;
+begin
+  if CurStep = ssInstall then
+    UnlockInstalledFiles
+  else if CurStep = ssPostInstall then
+    CleanupOldFiles
+  else if CurStep = ssDone then
+  begin
+    Hosts := OldHostProcesses;
+    Msg := PendingDeleteWarning;
+    if (Hosts = '') and (Msg = '') then
+      Exit;
+
+    if Hosts <> '' then
+      Msg := #13#10#13#10 + '这些程序还在用旧版输入法：' + Hosts + #13#10 +
+             '重启它们后才会用上新版；新打开的程序已经是新版，不用重启电脑。' + Msg;
+
+    SuppressibleMsgBox('安装完成。' + Msg, mbInformation, MB_OK, IDOK);
+  end;
 end;

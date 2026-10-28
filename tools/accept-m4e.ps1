@@ -160,9 +160,9 @@ Assert ($LASTEXITCODE -eq 0) '安装目录里的 server 自测通过（词库 / 
 # ---------------------------------------------------------------------------
 Write-Step '[4/7] 静默卸载（默认）'
 Stop-Server
-# /NOCLOSEAPPLICATIONS：静默模式下 Inno 默认会**直接关掉**占用文件的程序。
-# 这里不行——微信和 WorkBuddy 都加载着 heinrich_win.dll，关掉它们等于误伤。
-# 代价是删不掉那个 DLL（文件被映射时 Windows 不允许删），见下面的单独断言。
+# /NOCLOSEAPPLICATIONS：1.1.0 起安装包已写死 CloseApplications=no（D103），这里保留
+# 该开关只是为了兼容旧包（对 Inno 是空操作）。卸载侧仍受「文件被映射不能删」限制，
+# 见下面的单独断言。
 $proc = Start-Process -FilePath $uninst `
     -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS' `
     -Wait -PassThru

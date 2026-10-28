@@ -1921,10 +1921,11 @@ DLL 都靠「exe 同级的 `data\`」定位词库（`heinrich-server/src/main.rs
 用户的数据一份没动——「卸载干净了」和「数据还在」两边都成立。Inno 的
 `ExecAsOriginalUser` 让 purge 回到启动卸载器的那个人。
 
-**被占用的 DLL 删不掉。** 微信 / WorkBuddy / 浏览器都映射着 `heinrich_win.dll`，
-Windows 不允许删除正在映射的镜像，Inno 会把它登记到重启后删除。静默验收必须传
-`/NOCLOSEAPPLICATIONS`——否则 Inno 在无法交互时会**直接关掉**占用程序（等于把用户的
-微信关掉）。代价是那个 DLL 留在原地，下次重启才消失。
+**被占用的 DLL 删不掉，但可以改名。** 微信 / WorkBuddy / 浏览器都映射着 `heinrich_win.dll`，
+Windows 不允许删除或原地覆盖正在映射的镜像，但**允许改名**——所以 1.1.0 起安装阶段
+（`ssInstall`）先把被占用的文件改名成 `.old`，新文件照常写入，**不再要求关闭程序**、
+也不再需要 `/NOCLOSEAPPLICATIONS`（`CloseApplications=no`，机制见 §4.31）。**卸载**仍受
+这条限制：DLL 删不掉时 Inno 会登记「重启后删除」，此时别立刻重装（见 §4.31 最后一条）。
 
 **验收**：`tools\accept-m4e.ps1`（需管理员）。它先把用户数据备份到 `%TEMP%` 再跑，因为
 `/PURGE` 那一步是真删；跑完恢复数据，并把注册恢复成 dist 的开发态——否则验收结束后
@@ -2054,6 +2055,52 @@ helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环
 - `cargo` / `git` / `rc.exe` 都可能不在当前会话的 PATH 里：`release.ps1` 会按默认位置
   补 PATH（`~\.cargo\bin`、`Program Files\Git\cmd` 等）；`rc.exe` 缺了只会跳过图标，
   由 `check.ps1` 的「可执行文件图标」步兜底断言，装包前就能发现。
+
+### 4.31 升级不再要求关掉宿主程序（D103，1.1.0）
+
+**症状**：升级安装包弹「以下程序正在使用这些文件」，列出 WorkBuddy / 微信 / 浏览器；
+关掉再装，往往又因为要看提示把它们重新打开，再次被判定占用——最后只能重启电脑。
+用户即便已经切走输入法、甚至卸载后确认语言列表里没有「亨利五笔」，只要进程还映射着
+`heinrich_win.dll`，安装器照样拦。
+
+**根因有两层，别混**：
+
+1. **注册状态 ≠ 模块状态。** 卸载能清掉注册表里的 TSF 条目（语言列表里看不到了），
+   但 `msctf` 一旦把 `heinrich_win.dll` 映射进某个进程，**只有该进程退出才会卸载**。
+2. **Restart Manager 只看文件映射。** `CloseApplications=yes` 让 Inno 用 RM 列出「谁
+   打开着这些文件」，它不查「这个进程还在不在用这个输入法」。所以「切换了输入法」和
+   「没被 RM 拦」是两件无关的事——这是 RM 对输入法类产品的结构性缺陷，不是用户操作问题。
+
+**可利用的系统行为（实测）**：被映射的文件**不能删除、不能原地覆盖，但可以改名**。
+仓库里验证过：对一个真在执行、真映射着的 DLL 执行 rename → 成功；delete → 拒绝。
+
+**实现**（`installer/heinrich.iss`）：
+
+| 步骤 | 做什么 |
+|---|---|
+| `[Setup]` | `CloseApplications=no`、`RestartApplications=no`——彻底不用 RM |
+| `CurStepChanged(ssInstall)` | 把 `heinrich_win.dll` / `*.exe`（见 `LockableName`）改名成 `.old`、`.old1`…（同名 `.old` 已存在就先试删，删不掉换下一个后缀） |
+| `CurStepChanged(ssPostInstall)` | 清理 `.old*`；删不掉说明还有老进程映射着，留给下次升级或卸载 |
+| `CurStepChanged(ssDone)` | `tasklist /m heinrich_win.dll` 列出仍在用旧版的进程，一条提示告诉用户「重启它们才生效，新开的就是新版」 |
+
+改名后 `[Files]` 照常把新文件写回原路径，注册表里的 CLSID 路径没变，所以**不需要重新注册**。
+
+**代价必须说清**：装完那一刻版本不是全局一致的——老进程跑老代码、新进程跑新代码。
+`PROTO_VERSION` 仍是 v8，混跑无感；**将来若动了协议，完成页要改成「请重启或注销一次」**。
+选择这条而不是「版本化目录（`{app}\versions\1.2.3\`）」：后者要改注册/自检/卸载三处认
+版本目录，回归面远大于收益（见 PROJECT.md 决策 75）。
+
+**几个踩过的坑**：
+
+- **Pascal 注释 `{ }` 不能嵌套**：写 `{ 把 {app}\xxx 改名 }` 会在 `{app}` 的 `}` 处提前
+  结束注释，剩下的 `\xxx` 变成代码，ISCC 报 `Syntax error`。注释里写「安装目录」。
+- **`cmd /c` 的引号**：给 `tasklist` 加引号会撞上 cmd 的「首引号剥离」规则。`{sys}` 路径
+  没有空格，直接不加引号，只给重定向目标加。
+- **别让安装逻辑依赖跨步骤的全局标志**：这次特意没留「是否改名过」的状态，`ssDone`
+  直接看「现在还有谁映射着」，安装中途被打断也不会留下错判。
+- **卸载留下的「重启后删除」登记**：卸载时 DLL 被映射 ⇒ 卸载器把删除登记到
+  `PendingFileRenameOperations`。若用户**没重启就重装**，重启时那条登记会删掉**新**装的
+  文件。安装器用 `reg query` 查一次并提醒（查不到/被安全策略拦就静默跳过，不阻断安装）。
 
 ## 5. 数据管线
 
