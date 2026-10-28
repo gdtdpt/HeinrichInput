@@ -47,7 +47,7 @@ use heinrich_win_ui::{Event, Hit};
 use windows::core::{
     implement, ComObjectInterface, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID,
 };
-use windows::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE, WPARAM};
+use windows::Win32::Foundation::{FALSE, HWND, LPARAM, POINT, TRUE, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
@@ -60,10 +60,11 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ,
     TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, PostMessageW};
 
 use crate::cand;
-use crate::caret::{CaretProbe, Source};
+use crate::caret::{CaretProbe, Measured};
+use crate::gate::Gate;
 use crate::ipc;
 use crate::keycap;
 use crate::keys::{self, Action, Mode, Mods, ShiftTap};
@@ -78,13 +79,12 @@ static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
 /// 排版偶尔差一两个像素，那不算撒谎，不值得把窗口挪一下。
 const RECHECK_TOLERANCE: f32 = 4.0;
 
-/// 同一段编码里，横向跳这么远就当可疑（D104）。五笔一个词最多五码，
-/// 光标只会往右挪几个字宽；一跳两百像素必然是量错了地方。
-const SUSPECT_JUMP_X: f32 = 200.0;
-
-/// 「还在同一行」的纵向界限：跳变判据只在纵坐标几乎不变时成立——
-/// 换了行或者换了输入框本来就该横跳，那不是可疑，是正常。
-const SUSPECT_SAME_LINE_Y: f32 = 40.0;
+/// 鼠标离量到的位置多近才算「用户刚在这儿点过」（逻辑像素）。
+///
+/// TSF 不给我们鼠标事件，`GetCursorPos` 是唯一的线索。取 60：一大片文字的行高
+/// 也就二三十像素，60 已经足够宽容到「点在行内任意位置」，又不会把屏幕另一头的
+/// 指针算进来。
+const CLICK_NEAR: f32 = 60.0;
 
 /// 一个宿主进程里的一份文本服务实例。
 ///
@@ -157,6 +157,13 @@ pub struct Core {
     /// 重连成功时往它 `PostMessageW`，窗口过程调 [`Core::on_reconnected`]。
     /// `None` = 建窗失败（只记日志，退回「等下一个键重查」的老行为）。
     notify: RefCell<Option<notify::NotifyWindow>>,
+
+    /// 候选窗位置的闸门（D105）。见 [`crate::gate`]：只有它认为可信的值
+    /// 才能改变候选窗的位置，其余一律留在「锚 + 上屏字宽估算」处。
+    gate: RefCell<Gate>,
+    /// 已经投了一条复量消息还没处理（去重）。拒绝期间每个键都会想投一条，
+    /// 但一轮消息循环只需要一次复量。
+    recheck_pending: Cell<bool>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -194,6 +201,8 @@ impl Core {
             cands: Rc::new(RefCell::new(cand::Cands::new(seq))),
             keycaps: RefCell::new(keycap::KeycapPanel::new(seq)),
             notify: RefCell::new(None),
+            gate: RefCell::new(Gate::default()),
+            recheck_pending: Cell::new(false),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -244,6 +253,19 @@ impl Core {
             ctrl: key_down(VK_CONTROL.0),
             alt: key_down(VK_MENU.0),
             shift: key_down(VK_SHIFT.0),
+        }
+    }
+
+    /// 这个键会不会把光标带走（D105 的第一个重置信号）。
+    ///
+    /// 看得见的移动键按下之后，下一次测量**不再过闸门**——用户已经明确告诉我们
+    /// 「光标挪了」，闸门再拿旧锚去校验只会误判。看不见的那些（中文模式下 Vim 式
+    /// 字母移动压根进不了宿主，`j` 被我们吃进缓冲；程序自己 `setSelection`）
+    /// 交给闸门的逃生口兜住，最坏落后三个键。
+    fn note_caret_move(&self, vk: u16) {
+        if keys::is_caret_move(vk, self.mods().ctrl) {
+            self.gate.borrow_mut().mark_free();
+            tsf_debug!("#{} 移动键 vk={vk:#04x}，下次测量无条件采纳", self.seq);
         }
     }
 
@@ -403,7 +425,7 @@ impl Core {
         // 只在 `buffer_len() == 0`（一段新编码的第一个键）做，多花的那一次会话
         // 摊到每个词上只有一次。
         let pre_caret = if self.buffer_len() == 0 {
-            self.caret_rect(context).map(|(rect, _)| rect)
+            self.caret_rect(context).map(|m| m.rect)
         } else {
             None
         };
@@ -437,8 +459,9 @@ impl Core {
     /// | 问到了但没这个词 | 关掉 | 没有东西可显示，留一个空壳更奇怪 |
     /// | 超时 / server 挂了 | **保留上一帧** | 清空会让窗口一闪一闪；上屏时仍原样吐字母 |
     ///
-    /// `fallback_caret`：重画时如果问不到光标（宿主排版脏），用这个位置代替。
-    fn refresh_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
+    /// `prewarm`：重画时如果问不到光标（宿主排版脏），用这个位置代替；
+    /// 首键时它还兼作闸门的「首键仲裁」证据（见 [`Self::show_candidates`]）。
+    fn refresh_candidates(&self, context: &ITfContext, prewarm: Option<Rect>) {
         // 编码一变，上一张键位图就过期了（它画的是**上一个码**的字根）。
         // 放在最前面而不是跟着 `clear` 走：新码也查到候选时不会走 `clear`，
         // 但那张图同样不能留（§6.7 的「换码即关闭」）。
@@ -472,7 +495,7 @@ impl Core {
                     reply.kinds,
                     reply.primary_len,
                 );
-                self.show_candidates(context, fallback_caret);
+                self.show_candidates(context, prewarm);
             }
             None => {
                 // server 无应答（正在重连 / 挂了）——D18：键路径永不等待，
@@ -514,70 +537,81 @@ impl Core {
 
     /// 让候选窗贴着光标显示。
     ///
-    /// 光标有两处来源：现场量一次，量不到就用调用方给的 `fallback_caret`
-    /// （首键前预取的那一个）。两个都没有才不显示——猜一个位置会盖住用户正在
-    /// 看的那一行字，比没有窗口更糟。
+    /// ## 位置由闸门决定（D105）
     ///
-    /// ## 量到的值也可能不对（D104）
+    /// 量到的值**不再直接当位置用**：先过 [`Gate::decide`]，它拿「上一次可信的位置」
+    /// 与「编辑区矩形」做对照，只有对得上的才采纳。被拒时窗口留在
+    /// 「锚 + 已上屏字宽」处——慢跟随，而不是跟着一个可疑的值飞走，也不是冻住。
     ///
-    /// 这里是按键回调栈里，宿主的排版还没落定；Chromium 这类宿主此刻可能回
-    /// **上一处输入框**的坐标。所以摆完窗口后再投一条 [`notify::WM_APP_RECHECK_CARET`]
-    /// 给自己，下一轮消息里复量一遍对照着改——见 [`Self::on_recheck_caret`]。
+    /// 与 D104 的差别在**否决权**：那时「可疑」只决定要不要多量一次，判错的代价是
+    /// 白做一次只读会话；现在它会真的不让窗口跟过去，判错的代价是窗口落后几个像素。
+    /// 两种代价都不大，但必须有话说清是谁在付——见 `crate::gate` 的模块文档。
     ///
-    /// 哪几种情况才值得复量（其余一律不动，省掉一次只读会话）：
-    ///
-    /// | 情况 | 理由 |
-    /// |---|---|
-    /// | 首键（缓冲只有 1 个字母） | 刚点进某个输入框，缓存最容易还是上一个框的 |
-    /// | 来源不是选区（②③） | 它们本来就比 ① 粗：一个取组合串右下角，一个来自窗口 |
-    /// | 用了动手前预取的位置 | 它量得最早，最可能是旧值 |
-    /// | 同一段编码里横跳 > 200px 且还在同一行 | 编码长一个字，光标不可能挪那么远 |
-    fn show_candidates(&self, context: &ITfContext, fallback_caret: Option<Rect>) {
-        let caret = match (self.caret_rect(context), fallback_caret) {
-            (Some((caret, source)), _) => {
-                if self.caret_is_suspect(caret, source) {
-                    self.request_caret_recheck();
+    /// 量不到位置的兜底没变：用调用方给的 `prewarm`（首键写组合串之前量的那个）。
+    /// 它是在宿主排版还没被我们弄脏的时候取的，多数情况下比「写完之后」更干净。
+    fn show_candidates(&self, context: &ITfContext, prewarm: Option<Rect>) {
+        let (rect, accepted) = match self.caret_rect(context) {
+            Some(measured) => {
+                // 鼠标兜底（D105 的第四个重置信号）：TSF 看不到鼠标事件，但用户
+                // 用鼠标把插入符点到同一框内的别处时，指针一定停在量到的位置附近。
+                // 没有这一条，闸门会把「焦点没变、光标横跳几百像素」全判成可疑，
+                // 窗口就停在上次的地方不动了。
+                if cursor_near(measured.rect, CLICK_NEAR) {
+                    self.gate.borrow_mut().mark_free();
+                    tsf_debug!("#{} 鼠标就在量到的位置旁，闸门放行", self.seq);
                 }
-                caret
+                let decision = self
+                    .gate
+                    .borrow_mut()
+                    .decide(measured.rect, measured.view, prewarm);
+                if !decision.accepted {
+                    let anchor = self.gate.borrow().anchor();
+                    tsf_info!(
+                        "#{} 位置闸门：{}（量到 {:?}，锚 {:?}），候选窗留在 {:.0}",
+                        self.seq,
+                        decision.why,
+                        measured.rect,
+                        anchor.map(|a| a.rect),
+                        decision.rect.x
+                    );
+                }
+                (decision.rect, decision.accepted)
             }
-            (None, Some(caret)) => {
-                tsf_debug!("#{} 沿用动手前量到的光标 {caret:?}，安排复量", self.seq);
-                self.request_caret_recheck();
-                caret
-            }
-            (None, None) => {
-                tsf_debug!("#{} 拿不到光标位置，本次不显示候选窗", self.seq);
-                return;
-            }
+            None => match prewarm {
+                Some(pre) => {
+                    tsf_debug!("#{} 现场量不到光标，沿用动手前量到的 {pre:?}", self.seq);
+                    (pre, true)
+                }
+                None => {
+                    tsf_debug!("#{} 拿不到光标位置，本次不显示候选窗", self.seq);
+                    return;
+                }
+            },
         };
-        self.cands.borrow_mut().show(caret);
-    }
 
-    /// 这次的落点像不像「量错了地方」。判据见 [`Self::show_candidates`] 的表。
-    ///
-    /// 一律**只用于决定要不要多量一次**，不用于改位置——判错的代价必须是
-    /// 「白做一次只读会话」，不能是「把窗口按到错的地方」。
-    fn caret_is_suspect(&self, caret: Rect, source: Source) -> bool {
-        if source != Source::Selection || self.buffer_len() <= 1 {
-            return true;
+        // 被拒时安排一次复量：下一轮消息里宿主排版已落定，真值大概率落进可达范围。
+        // 采纳时不必——用户下一个键本来就会再量一次。
+        if !accepted {
+            self.request_caret_recheck();
         }
-        let previous = self.cands.borrow().caret();
-        previous.is_some_and(|prev| {
-            (caret.x - prev.x).abs() > SUSPECT_JUMP_X
-                && (caret.y - prev.y).abs() < SUSPECT_SAME_LINE_Y
-        })
+        self.cands.borrow_mut().show(rect);
     }
 
     /// 投一条「下一轮消息里复量光标」给自己。投不出去就算了：这只是纠偏，
     /// 用户下一个键本来也会再量一次。
+    ///
+    /// 去重：拒绝期间每个键都会走到这儿，但一轮消息循环只需要一次复量。
     fn request_caret_recheck(&self) {
+        if self.recheck_pending.get() {
+            return;
+        }
         let notify = self.notify.borrow();
         let Some(win) = notify.as_ref() else {
             return;
         };
         // 消息排进宿主的消息队列，由宿主的消息泵派发回本线程——**不等待**，
         // 键路径仍然零等待（D18）。
-        if let Err(e) = unsafe {
+        match unsafe {
             PostMessageW(
                 Some(win.hwnd()),
                 notify::WM_APP_RECHECK_CARET,
@@ -585,17 +619,21 @@ impl Core {
                 LPARAM(0),
             )
         } {
-            tsf_debug!("#{} 复量消息投递失败：{e}", self.seq);
+            Ok(()) => self.recheck_pending.set(true),
+            Err(e) => tsf_debug!("#{} 复量消息投递失败：{e}", self.seq),
         }
     }
 
-    /// D104：候选窗已经按「按键那一刻量到的光标」摆好了，这里在下一轮消息里
-    /// 再量一次。此刻宿主那一轮按键处理已经返回、排版落定，量到的值可信得多；
-    /// 两次不一致就**以后者为谁**，把窗口挪过去。
+    /// D104：候选窗已经摆好了，这里在下一轮消息里再量一次。此刻宿主那一轮按键
+    /// 处理已经返回、排版落定，量到的值可信得多。
+    ///
+    /// D105 起不再「不一致就无条件挪过去」：复量也要过闸门。否则被拒的错值会在
+    /// 这里被重新捡回来——D105 那次实测就是这样，复量两次拿到的全是同一个错值。
     ///
     /// 只在「有窗口、缓冲还在、拿得到 context」时动手：提交或取消之后到达的
     /// 复量消息必须是个空操作，否则会对着已经不存在的编码挪一个空窗。
     pub(crate) fn on_recheck_caret(&self) {
+        self.recheck_pending.set(false);
         if self.buffer.borrow().is_empty() || self.cands.borrow().page_len() == 0 {
             return;
         }
@@ -606,27 +644,39 @@ impl Core {
             tsf_debug!("#{} 复量：拿不到 context，跳过", self.seq);
             return;
         };
-        let Some((now, source)) = self.caret_rect(&context) else {
+        let Some(now) = self.caret_rect(&context) else {
             return;
         };
-        let dx = (now.x - previous.x).abs();
-        let dy = (now.y - previous.y).abs();
+        let decision = self.gate.borrow_mut().decide_recheck(now.rect, now.view);
+        if !decision.accepted {
+            tsf_debug!(
+                "#{} 复量：{}（{:?}），窗口不动",
+                self.seq,
+                decision.why,
+                now.rect
+            );
+            return;
+        }
+        let dx = (decision.rect.x - previous.x).abs();
+        let dy = (decision.rect.y - previous.y).abs();
         if dx <= RECHECK_TOLERANCE && dy <= RECHECK_TOLERANCE {
             tsf_debug!("#{} 复量一致（Δ {dx:.0},{dy:.0}）", self.seq);
             return;
         }
         tsf_info!(
-            "#{} 光标复量不一致：{previous:?} → {now:?}（{source:?}，Δ {dx:.0},{dy:.0}），候选窗跟着挪",
-            self.seq
+            "#{} 光标复量：{previous:?} → {:?}（{}），候选窗跟着挪",
+            self.seq,
+            decision.rect,
+            decision.why
         );
-        self.cands.borrow_mut().show(now);
+        self.cands.borrow_mut().show(decision.rect);
     }
 
-    /// 问一次光标矩形（屏幕坐标）与它的来源。
+    /// 问一次光标矩形（屏幕坐标）、来源与当时的视图矩形。
     ///
     /// 开一次**只读**编辑会话：`GetTextExt` 要 cookie，cookie 只在会话里有效。
     /// 会话是 `TF_ES_SYNC`，返回时结果已经填好。
-    fn caret_rect(&self, context: &ITfContext) -> Option<(Rect, Source)> {
+    fn caret_rect(&self, context: &ITfContext) -> Option<Measured> {
         let (probe, slot) = CaretProbe::new(context.clone(), Rc::clone(&self.comp), self.tid.get());
         let iface = CaretProbe::into_session(probe);
         let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
@@ -634,7 +684,7 @@ impl Core {
             tsf_debug!("#{} 光标会话请求失败：{e}", self.seq);
             return None;
         }
-        // 先拷出来再返回：`Option<(Rect, Source)>` 是 `Copy`，把它作为尾表达式会把
+        // 先拷出来再返回：`Option<Measured>` 是 `Copy`，把它作为尾表达式会把
         // `Ref` 临时值的生命周期拉到函数末尾，而 `slot` 在那之前就 drop 了。
         let picked = *slot.borrow();
         picked
@@ -772,7 +822,12 @@ impl Core {
     ///
     /// **所有**「上屏」路径都要走它（包括点选与数字键），这样「窗口什么时候消失」
     /// 只有一个答案，不会出现「字上去了、窗口还挂着」的残影。
+    ///
+    /// 顺带把这几个字的宽度记进闸门（D105）：闸门正在拒绝某个可疑坐标时，
+    /// 窗口靠这个量「慢跟随」着往前挪，而不是冻在原地。正常路径下这个量
+    /// 下一秒就被下一次通过的测量清零，不产生影响。
     fn finish(&self, context: &ITfContext, text: String) {
+        self.gate.borrow_mut().note_committed(&text);
         self.clear_popups();
         self.run_preedit(context, Goal::Finish(Some(text)));
     }
@@ -897,6 +952,25 @@ impl Default for TextService {
 /// 修饰键是否按下。`GetKeyState` 最高位为 1 表示当前按下。
 fn key_down(vk: u16) -> bool {
     unsafe { GetKeyState(vk as i32) < 0 }
+}
+
+/// 鼠标指针是不是就在这个矩形附近（[`CLICK_NEAR`] 之内）。
+///
+/// 这是 D105 的第四个重置信号，也是唯一一条「绕过闸门」的旁证：TSF 不给输入法
+/// 鼠标事件，但用户用鼠标把插入符点到同一框内的别处之后，指针一定就停在那儿。
+/// 没有它，闸门会把「焦点没变、光标横跳」一律判成可疑，窗口停在上次的位置不动。
+///
+/// 取不到指针位置就返回 `false`——这一关只用来**放行**，拿不到证据就按常规判。
+fn cursor_near(rect: Rect, tol: f32) -> bool {
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return false;
+    }
+    let (px, py) = (pt.x as f32, pt.y as f32);
+    // 指针到矩形的距离，落在矩形内部时为 0。
+    let dx = (rect.x - px).max(px - rect.right()).max(0.0);
+    let dy = (rect.y - py).max(py - rect.bottom()).max(0.0);
+    dx <= tol && dy <= tol
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,6 +1312,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         guarded("OnTestKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
             self.sync_shift(&pic, vk, true);
+            self.note_caret_move(vk);
             let action = self.decide(vk);
             debug_key(seq, "test-down", vk, lparam, action);
             Ok(bool_of(action))
@@ -1259,6 +1334,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         guarded("OnKeyDown", Ok(FALSE), || {
             let vk = wparam.0 as u16;
             self.sync_shift(&pic, vk, true);
+            self.note_caret_move(vk);
             let action = self.decide(vk);
             debug_key(seq, "down", vk, lparam, action);
             if action == Action::Pass {

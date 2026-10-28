@@ -7,6 +7,9 @@
 //! | [`WM_APP_RECONNECTED`] | 后台 IPC 线程 | 它不拥有 UI，不能碰候选窗 |
 //! | [`WM_APP_RECHECK_CARET`] | UI 线程自己 | 按键那一刻宿主的排版还没落定（D104） |
 //!
+//! 复量不再「量到不同的值就挪窗」（D105）：它也要过 `gate` 那道闸门，否则被拒的
+//! 错值会在下一轮消息里被原样捡回来——D105 的现场就是这样，复量两次数值一模一样。
+//!
 //! 两条路都落在同一个 message-only 窗口上：`PostMessageW` 把消息排进宿主的消息
 //! 队列，宿主的消息泵派发回 UI 线程，窗口过程里再调 `TextService` 的对应入口。
 //!
@@ -37,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// 后台线程 → TSF UI 线程：「重连成功，若缓冲非空且无候选窗，补弹」。
 pub const WM_APP_RECONNECTED: u32 = WM_APP + 1;
-/// UI 线程 → 自己：「候选窗已按老坐标摆好了，下一轮消息里复量一次光标」（D104）。
+/// UI 线程 → 自己：「闸门没收下这次量到的位置，下一轮消息里再量一次」（D104/D105）。
 pub const WM_APP_RECHECK_CARET: u32 = WM_APP + 2;
 
 const CLASS_NAME: PCWSTR = w!("HeinrichNotifyV1");

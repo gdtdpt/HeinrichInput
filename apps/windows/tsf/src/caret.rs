@@ -44,6 +44,17 @@
 //! [`plausible`]），越出编辑区的一律作废；② 把来源（[`Source`]）交回调用方，
 //! 由它在**下一轮消息里再量一次**做对照（`Core::on_recheck_caret`）。视口校验
 //! 拦不住「偏了但还在窗口里」这种，复量能——因为那时宿主的排版已经落定。
+//!
+//! ## 视口校验 + 复量都不够（D105）
+//!
+//! 真机上抓到一次反例：输入框被清空后立刻打字，宿主连续 9 秒、5 段编码给出的都是
+//! 15 分钟前的坐标（`1636`，真实光标在 `898`），复量两次数值完全一致——因为源头
+//! 是同一份缓存，量几次都一样。所以「多量一次」不是解药，**「和历史对得上」才是**：
+//! 现在量到的值要过 `crate::gate` 的闸门，只有从上次可信位置「走得到」才算数。
+//!
+//! 本模块的职责因此收缩成「把候选值尽量多地量出来、各自标注来源，并带上当时的
+//! 视图矩形」，采纳与否交给闸门。视图矩形是闸门判断「换了输入框」的唯一依据，
+//! 所以由 [`Measured`] 一并带出（它只在编辑会话里拿得到）。
 
 use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -72,8 +83,21 @@ pub enum Source {
     GuiCaret,
 }
 
+/// 一次测量的全部产物。
+///
+/// 除了位置与来源，还带上**当时的视图矩形**（D105）：闸门判「换了输入框」
+/// 只认它——换框时旧锚必须作废，否则用户点到另一个框里打字，第一下会被
+/// 「可达性」挡在门外。视图矩形只在探测会话里拿得到，所以在这里一并带出。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Measured {
+    pub rect: Rect,
+    pub source: Source,
+    /// `None` = 宿主没给出视图矩形（少数自绘控件）。闸门会退化成只看跳变。
+    pub view: Option<Rect>,
+}
+
 /// 探测结果放这里。会话同步执行，所以调用方拿回来时已经填好了。
-pub type CaretSlot = Rc<RefCell<Option<(Rect, Source)>>>;
+pub type CaretSlot = Rc<RefCell<Option<Measured>>>;
 
 /// 视口校验的容差（逻辑像素）。宿主的视图矩形本身可能不含边框内衬，
 /// 插入符又贴着边写，留一点余量免得把正常位置判成越界。
@@ -108,7 +132,7 @@ impl CaretProbe {
         probe.into()
     }
 
-    unsafe fn probe(&self, ec: u32) -> Result<Option<(Rect, Source)>> {
+    unsafe fn probe(&self, ec: u32) -> Result<Option<Measured>> {
         let view: ITfContextView = self.context.GetActiveView()?;
         // 视口矩形：三条来源都要过这一关（D104）。拿不到就不校验——
         // 宁可按老规矩来，也不能因为少一个矩形就一个窗口都不显示。
@@ -158,12 +182,21 @@ impl CaretProbe {
         };
 
         match picked {
-            Some((rect, source)) => tsf_debug!("# 光标采用 {source:?} {rect:?}"),
+            Some((rect, source)) => {
+                tsf_debug!("# 光标采用 {source:?} {rect:?}");
+                Ok(Some(Measured {
+                    rect,
+                    source,
+                    view: view_rect,
+                }))
+            }
             // 返回 `None` 不代表放弃：调用方手里通常还捏着「动手前」量到的那一个
             // 位置（见 `TextService::show_candidates`）。这里只如实说明本层没量到。
-            None => tsf_debug!("# 三级兜底都没量到光标"),
+            None => {
+                tsf_debug!("# 三级兜底都没量到光标");
+                Ok(None)
+            }
         }
-        Ok(picked)
     }
 }
 
