@@ -43,6 +43,7 @@ mod log;
 
 mod cand;
 mod caret;
+mod fallback;
 mod ipc;
 mod keycap;
 mod keys;

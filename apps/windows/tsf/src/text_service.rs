@@ -455,7 +455,25 @@ impl Core {
                 );
                 self.show_candidates(context, fallback_caret);
             }
-            None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),
+            None => {
+                // D100：server 无应答（正在重连 / 挂了）——应急简码兜底，1–2 码
+                // 仍出字、弹候选窗。查不到（三码以上）才退回「保留上一帧」。
+                // 注意与 `Some(空)` 的区别：那是「真无此字」，出简码字反而是错的。
+                match crate::fallback::lookup(&code) {
+                    Some(word) => {
+                        tsf_info!("#{} {code} 无应答，应急简码 → {word}", self.seq);
+                        self.cands.borrow_mut().update(
+                            vec![word.to_string()],
+                            vec![String::new()],
+                            vec![0],
+                            vec![0],
+                            1,
+                        );
+                        self.show_candidates(context, fallback_caret);
+                    }
+                    None => tsf_debug!("#{} {code} 候选查询无应答，保留上一帧", self.seq),
+                }
+            }
         }
     }
 
@@ -688,8 +706,21 @@ impl Core {
                 code.to_string()
             }
             None => {
-                tsf_info!("#{} server 不可用（{code}），原样上屏", self.seq);
-                code.to_string()
+                // D100：server 不可用时应急简码仍能上屏（1–2 码单字），其余
+                // 照旧原样上屏——「吃掉的键必须变成输出」（D27）不变，只是
+                // 能变成字的不必再变回字母。
+                match crate::fallback::lookup(code) {
+                    Some(word) => {
+                        tsf_info!("#{} 提交 {code} → {word}（应急简码）", self.seq);
+                        // 上报学习数据：与正常命中同一处理（server 回来后会补记）。
+                        ipc::record(code, word);
+                        word.to_string()
+                    }
+                    None => {
+                        tsf_info!("#{} server 不可用（{code}），原样上屏", self.seq);
+                        code.to_string()
+                    }
+                }
             }
         }
     }

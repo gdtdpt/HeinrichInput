@@ -6,7 +6,7 @@
 .DESCRIPTION
     两套词库，流程与校验项完全不同，用 -Kind 选择：
 
-      wubi   → data/wubi86/lexicon.tsv（码/词/权重/简码级别）+ scheme.toml
+      wubi   → data/wubi86/lexicon.tsv（码/词/权重/简码级别）+ fallback.tsv（应急简码）+ scheme.toml
                报告 out/m0a-report.md
                验收：① 常用字覆盖 ≥ 99%  ③ 2–3 级简码必须是全码前缀（例外 ≤ 1%）
                      ④ 一级简码 25 键、每键至多 1 条

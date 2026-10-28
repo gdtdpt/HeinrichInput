@@ -219,6 +219,41 @@ fn run_wubi(raw_dir: &Path, out_dir: &Path, report_path: &Path) -> Result<bool, 
     fs::write(&lexicon_path, &text).map_err(|e| format!("写入词库失败：{e}"))?;
     let digest = sha256_hex(text.as_bytes());
 
+    // ---- 写 fallback.tsv（D100：server 不可用时 TSF 内嵌应急的一级/二级简码）----
+    //
+    // 只收「单字 + 码长 ≤ 2」的简码条目，每码取权重最高的一条（lexicon 已按
+    // 「码升序 → 权重降序」排好，遇到重复码跳过即可）。这份表在构建期被 TSF
+    // `include_str!` 进 DLL：server 无应答时 1–2 码仍能出字，全码字照旧原样上屏。
+    let mut fallback = String::with_capacity(641 * 16);
+    fallback.push_str(
+        "# 亨利 / Heinrich —— 应急简码表（生成物，请勿手改；重新生成用 tools/gen.ps1）\n",
+    );
+    fallback.push_str(
+        "# 用途：server 无应答时 TSF 内嵌兜底（一级 + 二级简码单字）；format: code<TAB>word\n",
+    );
+    let mut fallback_count = 0usize;
+    let mut last_code = "";
+    for (code, word, _, level) in &lexicon {
+        if *level != 1 && *level != 2 {
+            continue;
+        }
+        if code.as_str() == last_code {
+            continue;
+        }
+        last_code = code.as_str();
+        fallback.push_str(code.as_str());
+        fallback.push('\t');
+        fallback.push_str(word);
+        fallback.push('\n');
+        fallback_count += 1;
+    }
+    let fallback_path = out_dir.join("fallback.tsv");
+    fs::write(&fallback_path, &fallback).map_err(|e| format!("写入应急简码表失败：{e}"))?;
+    println!(
+        "应急简码：{fallback_count} 条 → {}",
+        fallback_path.display()
+    );
+
     let manifest = format!(
         "# 亨利方案清单（由 heinrich-gen 生成，请勿手改）\n\
          id = \"wubi86\"\n\
