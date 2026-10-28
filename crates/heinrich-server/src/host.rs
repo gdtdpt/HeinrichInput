@@ -527,7 +527,6 @@ impl Host {
     /// 会意外吃到开发机上的 `words.tsv`。
     pub fn configure_words(&mut self, path: Option<PathBuf>) {
         self.words.path = path;
-        self.words.stamp = None;
         self.reload_user_words();
     }
 
@@ -539,6 +538,12 @@ impl Host {
         let Some(path) = self.words.path.clone() else {
             return self.words.count;
         };
+        // D99：**重载必须留下指纹**。旧代码只在 `changed()` 里记，`configure_words()`
+        // 把 stamp 清空后重载却不补记——于是 1 秒节流一过，**下一次查询必然整份重来**。
+        // 这一步不便宜：`apply_user_words` 要重建五笔与拼音两边的合并表，实测本机
+        // 约 110ms（哪怕只有 3 个自定义词），远超键路径 50ms 的 IPC 预算，那个键就
+        // 原样漏给了宿主。读失败也照样记：否则坏文件会让每次查询都重试。
+        self.words.stamp = Some(file_stamp(&path));
         let file = match user_words::load(&path) {
             Ok(f) => f,
             Err(e) => {
@@ -1523,6 +1528,24 @@ mod tests {
             Some(Frame::Result { entries, .. }) => entries.into_iter().map(|e| e.word).collect(),
             other => panic!("期望 Result，得到 {other:?}"),
         }
+    }
+
+    /// D99：`configure_words` 之后必须留下文件指纹，否则节流一过，下一次查询会
+    /// 整份重做 `apply_user_words`（实测约 110ms，键路径 50ms 预算当场超时）。
+    #[test]
+    fn configure_words_records_stamp_so_first_query_does_not_reload() {
+        let path = temp_words("stamp", "好吃\t\tvbkt\n");
+        let mut h = host();
+        h.configure_words(Some(path.clone()));
+        assert_eq!(
+            h.words.stamp,
+            Some(file_stamp(&path)),
+            "重载要留下指纹，否则第一次查询会再整份合并一遍"
+        );
+        // 节流时间到点后走查询路径：`changed()` 必须判「没变」。
+        h.words.checked_at = Instant::now() - WORDS_RECHECK * 2;
+        assert!(!h.words.changed(), "文件没变就不该重载");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
