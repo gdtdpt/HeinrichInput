@@ -1086,13 +1086,28 @@ ranking.half_life_days = 45
 ### 10.2 发版
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch
+# 常规：按 §10.1 的判据选一位进位（patch 最常用）
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch   # 1.0.1 → 1.0.2
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor   # 1.0.2 → 1.1.0
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump major   # 1.1.0 → 2.0.0
+
+# 版本号已手工改好，只构建 + 打 tag（不带 -Bump 即沿用 Cargo.toml 的现值）
+powershell -ExecutionPolicy Bypass -File tools\release.ps1
 ```
+
+| 开关 | 作用 | 什么时候用 |
+|---|---|---|
+| `-Bump patch\|minor\|major` | 算新版本号并改写 `Cargo.toml` 的 `[workspace.package]` 段 | 常规发版；省略则沿用现有版本号 |
+| `-SkipCheck` | 跳过 `check.ps1` 全量校验 | 刚跑过校验、只想重出安装包；其余情况别用 |
+| `-NoTag` | 只改版本号 + 构建，不提交、不打 tag | 预演 / 只想看产物 |
+
+不带 `-Bump` 时若目标版本的 tag 已存在（本地或远端），脚本直接失败，**不会覆盖已有 release**。
 
 脚本按序做：检查工作区干净 → `git fetch --tags` → 算新版本号并改 `Cargo.toml` →
 `check.ps1`（fmt / clippy / 单测 / 数据一致性）→ `build.ps1 -Installer` → 用产物名回验
-版本一致 → 本地 `git tag v<版本>` → 打印仍需**手工**执行的三条命令（push main /
-push tag / 网页建 release），有 `gh` 时额外给一条 `gh release create`。
+版本一致 → 提交版本号（`Cargo.toml` + `Cargo.lock`）+ 打 annotated tag `v<版本>` →
+打印仍需**手工**执行的三条命令（push main / push tag / 网页建 release），有 `gh` 时额外
+给一条 `gh release create`。操作面与易错点见 dev-guide §4.30。
 
 **脚本不自动 push、不自动建 release**：本机 `credential.helper = helper-selector`
 是非交互的，这类动作必须由人亲手触发（见 dev-guide 发版一节）。

@@ -35,6 +35,14 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump minor -SkipCheck
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File tools\release.ps1
+    版本号已手工改好，只构建 + 打 tag。
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Bump patch -NoTag
+    预演：改版本号并构建，不提交、不打 tag。
 #>
 [CmdletBinding()]
 param(

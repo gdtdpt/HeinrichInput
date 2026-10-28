@@ -2018,7 +2018,8 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1               # 版�
 
 脚本做的事：工作区干净校验 → `git fetch --tags` → 改 `Cargo.toml` → `check.ps1` →
 `build.ps1 -Installer` → 用 `dist\HeinrichSetup-<版本>.exe` 回验一致 → 提交版本号 +
-打 annotated tag `v<版本>`；`-SkipCheck` 跳过校验，`-NoTag` 只构建不提交。
+打 annotated tag `v<版本>`；`-SkipCheck` 跳过校验，`-NoTag` 只改版本号 + 构建、
+不提交、不打 tag（预演用）。三种调用形式与开关的完整说明见 PROJECT.md §10.2。
 
 **脚本到 tag 为止，不 push、不建 release。** 原因：本机 `credential.helper =
 helper-selector`（Git Credential Manager 的 GUI 选择器），在非交互环境里 `git push`
