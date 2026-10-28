@@ -67,6 +67,12 @@ function Invoke-Native([scriptblock]$Action, [string]$What) {
     if ($LASTEXITCODE -ne 0) { Fail "$What 失败（退出码 $LASTEXITCODE）" }
 }
 
+# 子脚本用**当前宿主的绝对路径**调起，不写 `powershell`：PATH 里缺
+# WindowsPowerShell\v1.0 时按名字查找会直接 CommandNotFound（某些精简 PATH /
+# 由别的程序派生的会话就是这样），而 Get-Process 拿到的路径一定可用。
+$psExe = (Get-Process -Id $PID).Path
+if (-not $psExe) { $psExe = 'powershell.exe' }
+
 # cargo 不一定在当前会话的 PATH 里（用户级 PATH 改过之后要重开终端才继承）。
 # 找不到就把默认安装位置补进去，后面的 check.ps1 / build.ps1 作为子进程一起受益。
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -78,6 +84,22 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     }
     $env:PATH = "$found;$env:PATH"
     Write-Host "  cargo    : 补进 PATH -> $found" -ForegroundColor DarkGray
+}
+
+# git 同理：从「别的程序派生的会话」里跑时，PATH 可能只有一小撮目录。
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    # 逐个拼路径并判空：45 位/32 位混合环境里 ${env:ProgramFiles(x86)} 可能是空串，
+    # 直接 Join-Path 会抛「参数 Path 是空值」而不是走进下面的兜底。
+    $gitDirs = @()
+    if ($env:ProgramFiles) { $gitDirs += (Join-Path $env:ProgramFiles 'Git\cmd') }
+    if (${env:ProgramFiles(x86)}) { $gitDirs += (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd') }
+    if ($env:LOCALAPPDATA) { $gitDirs += (Join-Path $env:LOCALAPPDATA 'Programs\Git\cmd') }
+    $found = $gitDirs | Where-Object { Test-Path (Join-Path $_ 'git.exe') } | Select-Object -First 1
+    if (-not $found) {
+        Fail '找不到 git ——先装 Git for Windows，或把 git.exe 所在目录加进 PATH'
+    }
+    $env:PATH = "$found;$env:PATH"
+    Write-Host "  git      : 补进 PATH -> $found" -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------- 1) 前置检查
@@ -171,12 +193,12 @@ if ($SkipCheck) {
 }
 else {
     Step '全量校验（fmt / clippy / 单测 / 数据一致性）'
-    Invoke-Native { & powershell -ExecutionPolicy Bypass -File (Join-Path $root 'tools\check.ps1') } '校验'
+    Invoke-Native { & $psExe -ExecutionPolicy Bypass -File (Join-Path $root 'tools\check.ps1') } '校验'
 }
 
 # ---------------------------------------------------------------- 6) 构建 + 安装包
 Step '构建 release 产物与安装包'
-Invoke-Native { & powershell -ExecutionPolicy Bypass -File (Join-Path $root 'tools\build.ps1') -Installer } '构建'
+Invoke-Native { & $psExe -ExecutionPolicy Bypass -File (Join-Path $root 'tools\build.ps1') -Installer } '构建'
 
 $setupPath = Join-Path $root "dist\HeinrichSetup-$newVer.exe"
 if (-not (Test-Path $setupPath)) {
