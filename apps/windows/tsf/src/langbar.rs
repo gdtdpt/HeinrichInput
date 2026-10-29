@@ -48,6 +48,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use windows::core::{implement, w, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID};
 use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
@@ -150,7 +151,11 @@ impl LangBarButton {
 // （正在显示的一定是其中最新那个），更早的才释放。16×16 图标一个约 1~2KB。
 
 /// 每种模式保留多少个历史句柄不销毁。
-const ICON_KEEP: usize = 16;
+///
+/// D110 从 16 提到 64：dev3 起「图标保单刷新」每次焦点变化都可能交一个新句柄，
+/// 交出去的频率高了几个量级。系统按句柄缓存位图，手里攥着哪个我们不知道，
+/// 保留池大一点（64 × 2KB ≈ 128KB）换「绝不销毁正在显示的那个」。
+const ICON_KEEP: usize = 64;
 
 /// 一种模式的图标槽：交出去过、还没释放的句柄（旧的在前）。
 struct IconSlot {
@@ -183,6 +188,21 @@ impl IconSlot {
 
 static ICON_ZH: IconSlot = IconSlot::new();
 static ICON_EN: IconSlot = IconSlot::new();
+
+/// 最近一次系统来要图标的时刻（D110）。
+///
+/// 「这一格画没画」没有任何 API 可问——条目还在枚举里、状态位可见、图标句柄
+/// 有效，任务栏上却可以没有它（真机 10-29 08:03 实证）。唯一的间接读数是：
+/// 系统要（重）画这一格时**一定会来 `GetIcon`**。多久没来过，就是它还认不认
+/// 这一格的旁证；巡检把它写进日志。
+static LAST_GETICON: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// 系统距上次来要图标多少秒；一次都没要过则 `None`。
+pub fn secs_since_last_geticon() -> Option<u64> {
+    let t = *LAST_GETICON.lock().unwrap_or_else(|e| e.into_inner());
+    let t = t?;
+    Some(Instant::now().duration_since(t).as_secs())
+}
 
 /// 日志友好名（`Mode` 本身不带 Display）。
 fn mode_name(mode: Mode) -> &'static str {
@@ -226,6 +246,32 @@ pub fn describe_guid_owner(mgr: &ITfLangBarItemMgr) -> String {
                 )
             }
             Err(e) => format!("GetInfo 失败：{e}"),
+        }
+    }
+}
+
+/// `describe_guid_owner` 的单行紧凑版，给巡检日志用（D110）。
+///
+/// 巡检关心的问题只有一个：**输入模式那一格现在归谁**。`EnumItems` 里我们的
+/// 条目可以在（`条目在系统里=true`），但 `GetItem(GUID_LBI_INPUTMODE)` 只认一条
+/// ——如果那一条不是我们，我们的条目就是「在册但没格子」。完整版（clsid、
+/// 描述、是不是我们）留给 `AddItem` 的成功/失败日志，这里只要一个词。
+pub fn cell_owner_flag(mgr: &ITfLangBarItemMgr) -> String {
+    let _guard = ProbeGuard::enter();
+    unsafe {
+        let Ok(item) = mgr.GetItem(&GUID_LBI_INPUTMODE) else {
+            return "无条目".to_string();
+        };
+        let mut info: TF_LANGBARITEMINFO = std::mem::zeroed();
+        match item.GetInfo(&mut info) {
+            Ok(()) => {
+                if info.clsidService == GUID::from_u128(heinrich_tip_id::TIP_CLSID) {
+                    "我们".to_string()
+                } else {
+                    format!("别人({:?})", info.clsidService)
+                }
+            }
+            Err(e) => format!("查询失败({e})"),
         }
     }
 }
@@ -741,6 +787,7 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
+        *LAST_GETICON.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         let mode = self.mode.get();
         let icon = icon_for(mode);
         match &icon {

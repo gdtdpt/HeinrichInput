@@ -41,6 +41,7 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use heinrich_ui::{Dir, Rect};
 use heinrich_win_ui::{Event, Hit};
@@ -111,6 +112,11 @@ pub struct TextService {
 
 /// 所有实例状态。见 [`TextService`] 的文档：它要被窗口过程的闭包共享，
 /// 所以不能直接长在 COM 对象上。
+/// 保单刷新的最小间隔：一次切窗口能连发好几条 `OnSetFocus`，不能每条都刷（D110）。
+const ICON_REFRESH_MIN: Duration = Duration::from_secs(30);
+/// 定时巡检心跳间隔：状态长期不变时也要证明定时器活着（D109 的教训）。
+const PROBE_HEARTBEAT: Duration = Duration::from_secs(600);
+
 pub struct Core {
     /// 本次激活的线程 id，撤按键 sink 时需要它。
     tid: Cell<u32>,
@@ -169,6 +175,10 @@ pub struct Core {
     /// 定时巡检 20 秒一次，状态没变就不写日志（D109）——否则一天几千行噪音把
     /// 真正的时间锚埋掉。`None` = 本次激活还没采过样，第一条必写。
     last_probe: Cell<Option<(bool, bool, u32)>>,
+    /// 上次「图标保单刷新」的时刻（D110）。
+    last_icon_refresh: Cell<Option<Instant>>,
+    /// 上次定时巡检心跳的时刻（D110）：状态长期不变时也要证明定时器活着。
+    last_heartbeat: Cell<Option<Instant>>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -209,6 +219,8 @@ impl Core {
             gate: RefCell::new(Gate::default()),
             recheck_pending: Cell::new(false),
             last_probe: Cell::new(None),
+            last_icon_refresh: Cell::new(None),
+            last_heartbeat: Cell::new(None),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -315,12 +327,41 @@ impl Core {
         }
     }
 
+    /// 焦点变化时限流刷新一次图标（D110，**保单**）。
+    ///
+    /// 真机实验（10-29 08:06）：条目被系统从任务栏布局里拿掉后（枚举里还在、
+    /// 状态位可见、图标句柄有效，唯独不画），一次 `OnUpdate(TF_LBI_ICON)` 强制
+    /// 重建就把格子救了回来——两次 Shift 切换即恢复。但「画没画」没有任何 API
+    /// 可问，没法只在坏的时候刷，只好在焦点变化时限流刷一次：最坏情况格子缺失
+    /// `ICON_REFRESH_MIN` 秒。只带 `TF_LBI_ICON`（与模式切换同一条安全路径），
+    /// 不带 `TF_LBI_STATUS`——那会整条重建，历史上「切窗口图标就没了」出过事。
+    fn maybe_icon_refresh(&self) {
+        if self.langbar.borrow().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(t) = self.last_icon_refresh.get() {
+            if now.duration_since(t) < ICON_REFRESH_MIN {
+                return;
+            }
+        }
+        self.last_icon_refresh.set(Some(now));
+        tsf_info!(
+            "#{} 语言栏：图标保单刷新（D110，距上次 ≥{}s）",
+            self.seq,
+            ICON_REFRESH_MIN.as_secs()
+        );
+        self.notify_langbar();
+    }
+
     /// 焦点变化时的巡检：**永远写一条**（这是用户动作的落点，值得留痕）。
     fn probe_langbar(&self, why: &str) {
         self.probe_langbar_impl(why, false);
     }
 
-    /// 定时巡检入口（`WM_TIMER`，D109）：状态没变就不写日志。
+    /// 定时巡检入口（`WM_TIMER`，D109）：状态没变就不写日志，但每
+    /// [`PROBE_HEARTBEAT`] 留一行心跳——D109 的教训：全静默就分不清
+    /// 「定时器活着但状态没变」和「定时器根本没跑」。
     pub(crate) fn on_langbar_tick(&self) {
         self.probe_langbar_impl("定时巡检", true);
     }
@@ -357,22 +398,37 @@ impl Core {
         let now = (held, snap.ours, snap.total);
         let prev = self.last_probe.replace(Some(now));
         if only_on_change && prev == Some(now) {
+            // 状态没变，默认静默；心跳到期则写一行，证明定时器活着（D110）。
+            let t = Instant::now();
+            let due = self
+                .last_heartbeat
+                .get()
+                .map(|h| t.duration_since(h) >= PROBE_HEARTBEAT)
+                .unwrap_or(true);
+            if due {
+                self.last_heartbeat.set(Some(t));
+                tsf_info!(
+                    "#{} 语言栏巡检（{why}·心跳）：{}",
+                    self.seq,
+                    self.probe_line(&mgr, held, &snap)
+                );
+            }
             return;
         }
+        self.last_heartbeat.set(Some(Instant::now()));
         // 条目数变了（或第一次采到）才把明细打出来：正常打字时明细一行都不写。
         let detail_changed = prev.map(|p| p.2) != Some(snap.total);
         if held && !snap.ours {
             tsf_error!(
-                "#{} 语言栏巡检（{why}）：**条目已不在系统列表里**（我们仍持有对象，系统共 {} 条）",
+                "#{} 语言栏巡检（{why}）：**条目已不在系统列表里**（{}）",
                 self.seq,
-                snap.total
+                self.probe_line(&mgr, held, &snap)
             );
         } else {
             tsf_info!(
-                "#{} 语言栏巡检（{why}）：持有对象={held} 条目在系统里={} 系统共 {} 条",
+                "#{} 语言栏巡检（{why}）：{}",
                 self.seq,
-                snap.ours,
-                snap.total
+                self.probe_line(&mgr, held, &snap)
             );
         }
         if detail_changed {
@@ -380,6 +436,30 @@ impl Core {
                 tsf_info!("#{} 语言栏条目 {line}", self.seq);
             }
         }
+    }
+
+    /// 巡检读数拼成一行（D110 起带「格主」与「上次要图标」两个新读数）。
+    ///
+    /// - **格主**：`GetItem(GUID_LBI_INPUTMODE)` 返回的是谁。`EnumItems` 里我们
+    ///   的条目可以在（`条目在系统里=true`），但那个 GUID 只认一条——如果那一条
+    ///   不是我们，我们的条目就是「在册但没格子」。
+    /// - **上次要图标**：系统多久没来 `GetIcon` 了。要重画这一格必来要图标；
+    ///   长时间不要，就是它放弃了这一格的旁证。
+    fn probe_line(
+        &self,
+        mgr: &ITfLangBarItemMgr,
+        held: bool,
+        snap: &langbar::ItemSnapshot,
+    ) -> String {
+        let icon_gap = langbar::secs_since_last_geticon()
+            .map(|s| format!("{s}s 前"))
+            .unwrap_or_else(|| "从未".to_string());
+        format!(
+            "持有对象={held} 条目在系统里={} 系统共 {} 条 格主={} 上次要图标={icon_gap}",
+            snap.ours,
+            snap.total,
+            langbar::cell_owner_flag(mgr)
+        )
     }
 
     /// 每次按键回调的入口都调一次：采样物理 Shift 状态，推进「单击切中英」状态机。
@@ -1254,6 +1334,10 @@ impl TextService_Impl {
             // 可能还留着上一个宿主的模式，这里显式同步一次。
             obj.notify();
             *self.langbar.borrow_mut() = Some(obj);
+            // 激活本身就是一次重建（系统刚来要过图标），保单计时从这儿起算，
+            // 免得第一条焦点变化消息就多刷一次。
+            self.last_icon_refresh.set(Some(Instant::now()));
+            self.last_heartbeat.set(Some(Instant::now()));
         }
         Ok(())
     }
@@ -1405,6 +1489,10 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         // 语言栏条目存活巡检（D108）：条目被系统摘掉时收不到回调，只能趁焦点
         // 变化主动问一次。「打开设置 → 改配置 → 关掉设置」回来第一件事就是它。
         self.probe_langbar("焦点变化");
+        // 图标保单（D110）：系统会把我们的条目从任务栏布局里悄悄拿掉且不发任何
+        // 回调（真机 10-29 08:03 实证），一次强制重建就能救回来——趁焦点变化
+        // 时限流刷一次。
+        self.maybe_icon_refresh();
         Ok(())
     }
 
