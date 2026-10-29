@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "heinrich-cand-preview"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-scheme",
  "heinrich-ui",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "heinrich-cli"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-core",
  "heinrich-font",
@@ -103,43 +103,43 @@ dependencies = [
 
 [[package]]
 name = "heinrich-core"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-scheme",
 ]
 
 [[package]]
 name = "heinrich-font"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "heinrich-gen"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-scheme",
 ]
 
 [[package]]
 name = "heinrich-log"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "heinrich-proto"
-version = "1.1.4"
+version = "1.1.5"
 
 [[package]]
 name = "heinrich-scheme"
-version = "1.1.4"
+version = "1.1.5"
 
 [[package]]
 name = "heinrich-server"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-core",
  "heinrich-font",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "heinrich-settings"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-core",
  "heinrich-font",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "heinrich-setup"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-tip-id",
  "windows",
@@ -172,15 +172,15 @@ dependencies = [
 
 [[package]]
 name = "heinrich-tip-id"
-version = "1.1.4"
+version = "1.1.5"
 
 [[package]]
 name = "heinrich-ui"
-version = "1.1.4"
+version = "1.1.5"
 
 [[package]]
 name = "heinrich-win"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-log",
  "heinrich-proto",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "heinrich-win-ui"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "heinrich-ui",
  "windows",
