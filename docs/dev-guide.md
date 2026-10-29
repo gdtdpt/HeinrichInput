@@ -2488,6 +2488,61 @@ I 语言栏：GetIcon(中文) → 0x...
 若只有「定时器已启动」而没有保单刷新 ⇒ **`SetTimer` 的 `WM_TIMER` 没到**，
 下一步改成后台线程 tick（复用 IPC 后台线程，`PostMessageW` 到同一个通知窗）。
 
+**→ dev4 真机验证通过**（10-29 08:30）：复现配方后图标确曾只剩一个，
+两分钟内由保单刷新自动恢复，全程无任何操作。但用户不接受定时器方案
+（原话「我不想要定时器来做这件事」），于是有了 dev5。
+
+### 4.39 dev5：保单改挂线程焦点 sink，摘掉定时器（D112，1.1.4-dev5）
+
+用户不想要定时器。四版踩下来（dev1~dev4），焦点类通道只剩一条没试过：
+**`ITfThreadFocusSink`**。注意它与 D108~D111 一直在用的 `ITfThreadMgrEventSink`
+不是一回事：
+
+| | `ITfThreadMgrEventSink` | `ITfThreadFocusSink` |
+|---|---|---|
+| 语义 | **文档管理器**焦点变化 | **线程整体**进出 TSF 前台 |
+| 挂载点 | `ITfSource::AdviseSink(IID_ITfThreadMgrEventSink)` | `ITfSource::AdviseSink(IID_ITfThreadFocusSink)` |
+| 复现路径上 | 一次不来（D111 实证：设置窗不加载 TSF，文档焦点没变） | **实验对象**——宿主重新成为前台时应当触发 |
+
+**dev5 的改动**：
+
+- `#[implement]` 清单加 `ITfThreadFocusSink`；`Activate` 里经同一个 `ITfSource`
+  以独立 IID 挂载（独立 cookie，`Deactivate` 单独撤）。挂载失败非致命，记 error。
+- `OnSetThreadFocus`：**每条必写 info**（`#1 OnSetThreadFocus（线程焦点回到本进程）`）
+  ——这是「通道到底通不通」的判决证据，不许静默；然后巡检 + 强制重建一次
+  （`maybe_icon_refresh(ZERO)`，线程焦点事件极低频，不设节流，节流会把
+  「快速切走再切回」时救命的刷新跳掉）。
+- `OnKillThreadFocus`：只留痕，不动作。
+- **定时器整条摘除**：`SetTimer` / `WM_TIMER` 分发 / `start_langbar_timer` /
+  `on_langbar_tick` / 心跳与 tick 计数字段全删。通知窗只服务重连补弹（D101）
+  与光标复量（D104）。巡检回归「只在用户动作落点采样」（激活、文档焦点、
+  线程焦点），每次必写日志——采样点少了但都是时间锚。
+
+**怎么验**：装 `HeinrichSetup-1.1.4-dev5.exe` → 重启宿主 → 激活日志应见
+`线程焦点 sink 已挂（cookie=…）` → 复现配方（开设置 → 切微软五笔 → 关设置 →
+回宿主）。预期：
+
+```
+I #1 OnKillThreadFocus（线程失去焦点）        ← 切去设置时（可能不来，看系统）
+I #1 OnSetThreadFocus（线程焦点回到本进程）    ← 回宿主时，必须来
+I #1 语言栏巡检（线程焦点）：持有对象=true …
+I #1 语言栏：图标保单刷新（线程焦点，D111，距上次 ≥0s）
+I 语言栏：GetInfo（系统在重建这一条）
+I 语言栏：GetIcon(中文) → 0x...
+```
+
+图标应在回到宿主的一瞬恢复；全程**不应再出现**任何「定时 tick」「保单刷新
+（定时…）」行。
+
+**若复现且日志无 `OnSetThreadFocus`** ⇒ 通道不通（四条事件通道全灭），
+转决策 B（去掉自定义托盘条目——搜狗式 `Shell_NotifyIcon` 独立托盘，托盘协议
+保证 explorer 重建后自动还原，这是唯一根治）或 C（回退 D108~D111，保留 D106）。
+
+**为什么别的输入法没这毛病**（背景）：系统自带输入法的任务栏图标是 explorer
+输入指示器自己画的，自管自愈；搜狗等第三方的图标是 `Shell_NotifyIcon` 挂的
+独立托盘，托盘协议保证 explorer 重建后自动还原。只有把图标做成 TSF 自定义
+语言栏条目、交给宿主代画的输入法才受此摆布。
+
 ## 5. 数据管线
 
 ```

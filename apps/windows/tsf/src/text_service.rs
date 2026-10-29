@@ -57,7 +57,8 @@ use windows::Win32::UI::TextServices::{
     ITfDocumentMgr, ITfEditSession, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl,
     ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItemButton,
     ITfLangBarItemMgr, ITfSource, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
-    ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    ITfTextInputProcessor_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr,
+    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ,
     TF_ES_READWRITE, TF_ES_SYNC, TF_INVALID_COOKIE, TS_S_ASYNC,
 };
@@ -103,6 +104,7 @@ const CLICK_NEAR: f32 = 60.0;
     ITfTextInputProcessorEx,
     ITfKeyEventSink,
     ITfThreadMgrEventSink,
+    ITfThreadFocusSink,
     ITfCompositionSink,
     ITfFnConfigure
 )]
@@ -114,13 +116,10 @@ pub struct TextService {
 /// 所以不能直接长在 COM 对象上。
 /// 保单刷新的最小间隔：一次切窗口能连发好几条 `OnSetFocus`，不能每条都刷（D110）。
 const ICON_REFRESH_MIN: Duration = Duration::from_secs(30);
-/// 定时器路径的保单刷新间隔（D111）。这是**真正生效**的那条：焦点事件在
-/// 「普通 Win32 设置窗口 → 回宿主」这条真机必现路径上一次都不来。取 120 秒是
-/// 折中——最坏情况图标缺失两分钟，代价是每两分钟一次 `OnUpdate(TF_LBI_ICON)`
-/// 重建（与 Shift 切模式同款，只重画那一格，不整条重建）。
-const ICON_REFRESH_TIMER: Duration = Duration::from_secs(120);
-/// 定时巡检心跳间隔：状态长期不变时也要证明定时器活着（D109 的教训）。
-const PROBE_HEARTBEAT: Duration = Duration::from_secs(600);
+/// 线程焦点事件的保单刷新间隔（D112）：取 0 = **每次 `OnSetThreadFocus` 都刷**。
+/// 线程焦点事件只在线程进出前台时发，频率极低，不值得为它设节流——节流反而
+/// 会在「快速切走再切回」的复现场景里把救命的刷新跳掉。
+const ICON_REFRESH_FOCUS: Duration = Duration::ZERO;
 
 pub struct Core {
     /// 本次激活的线程 id，撤按键 sink 时需要它。
@@ -129,6 +128,8 @@ pub struct Core {
     thread_mgr: RefCell<Option<ITfThreadMgr>>,
     /// `ITfSource::AdviseSink` 返回的 cookie。
     thread_mgr_cookie: Cell<u32>,
+    /// `ITfThreadFocusSink` 的 cookie（D112）。`TF_INVALID_COOKIE` = 未挂。
+    focus_cookie: Cell<u32>,
     /// 按键 sink 是否已挂上。
     keysink_advertised: Cell<bool>,
     /// 实例序号。
@@ -177,17 +178,12 @@ pub struct Core {
     recheck_pending: Cell<bool>,
     /// 上一次语言栏巡检的读数 `(持有对象, 条目在系统里, 系统共几条)`。
     ///
-    /// 定时巡检 20 秒一次，状态没变就不写日志（D109）——否则一天几千行噪音把
-    /// 真正的时间锚埋掉。`None` = 本次激活还没采过样，第一条必写。
+    /// 用于判断「系统总条目数」是否变化（变了才把明细打出来），以及激活后的
+    /// 首次采样。巡检只发生在用户动作的落点（激活、焦点变化、线程焦点），
+    /// 频率很低，每次都写日志。
     last_probe: Cell<Option<(bool, bool, u32)>>,
     /// 上次「图标保单刷新」的时刻（D110）。
     last_icon_refresh: Cell<Option<Instant>>,
-    /// 上次定时巡检心跳的时刻（D110）：状态长期不变时也要证明定时器活着。
-    last_heartbeat: Cell<Option<Instant>>,
-    /// 本次激活收到过多少次 `WM_TIMER`（D111）。前三次各记一行 info——**这是
-    /// 「定时器到底有没有在跑」唯一的直接证据**。前两版全靠巡检日志推断，而巡检
-    /// 状态不变就静默，等于没有证据，于是白花了两个装机往返。
-    tick_count: Cell<u32>,
 }
 
 /// 把 COM 对象上的字段访问与私有方法调用透到 [`Core`]：`self.buffer`、`self.apply(..)`
@@ -213,6 +209,7 @@ impl Core {
             tid: Cell::new(0),
             thread_mgr: RefCell::new(None),
             thread_mgr_cookie: Cell::new(TF_INVALID_COOKIE),
+            focus_cookie: Cell::new(TF_INVALID_COOKIE),
             keysink_advertised: Cell::new(false),
             seq,
             buffer: RefCell::new(String::new()),
@@ -229,8 +226,6 @@ impl Core {
             recheck_pending: Cell::new(false),
             last_probe: Cell::new(None),
             last_icon_refresh: Cell::new(None),
-            last_heartbeat: Cell::new(None),
-            tick_count: Cell::new(0),
         });
 
         // 候选窗的点击回调。只持有 `Weak` 有两个原因：
@@ -342,15 +337,14 @@ impl Core {
     /// 真机实验（10-29 08:06）：条目被系统从任务栏布局里拿掉后（枚举里还在、
     /// 状态位可见、图标句柄有效，唯独不画），一次 `OnUpdate(TF_LBI_ICON)` 强制
     /// 重建就把格子救了回来——两次 Shift 切换即恢复。但「画没画」没有任何 API
-    /// 可问，没法只在坏的时候刷，只好定期刷一次。只带 `TF_LBI_ICON`（与模式切换
-    /// 同一条安全路径），不带 `TF_LBI_STATUS`——那会整条重建，历史上「切窗口
-    /// 图标就没了」出过事。
+    /// 可问，没法只在坏的时候刷，只好在事件落点上刷。只带 `TF_LBI_ICON`（与
+    /// 模式切换同一条安全路径），不带 `TF_LBI_STATUS`——那会整条重建，历史上
+    /// 「切窗口图标就没了」出过事。
     ///
-    /// **不能只挂在焦点事件上**（D111 的教训）：设置窗口是普通 Win32 程序、不加载
-    /// TSF，焦点离开宿主时 TSF 文档管理器的焦点并没有变，`OnKillFocus` 与
-    /// `OnSetFocus` 一个都不来。真机 10-29 08:15「开设置 → 切到微软五笔 → 关设置
-    /// → 回宿主」全程 0 次焦点事件，挂在 `OnSetFocus` 上的保单一次都没跑。所以
-    /// 主路径是**定时器**（唯一不依赖 Windows 事件的通道），焦点变化只是顺带加速。
+    /// **触发点（D112 起）**：`OnSetThreadFocus`（线程焦点回到本进程）。文档焦点
+    /// 事件（`ITfThreadMgrEventSink`）在这条路径上一次都不来——D111 的教训；
+    /// 线程焦点是另一个 sink、另一条通道，宿主重新拿到前台时应该触发。若真机
+    /// 复现路径上它也不来，只能回退到方案 B/C（见 PROJECT.md 决策表）。
     fn maybe_icon_refresh(&self, min: Duration, why: &str) {
         if self.langbar.borrow().is_none() {
             return;
@@ -372,25 +366,7 @@ impl Core {
 
     /// 焦点变化时的巡检：**永远写一条**（这是用户动作的落点，值得留痕）。
     fn probe_langbar(&self, why: &str) {
-        self.probe_langbar_impl(why, false);
-    }
-
-    /// 定时巡检入口（`WM_TIMER`，D109）：状态没变就不写日志，但每
-    /// [`PROBE_HEARTBEAT`] 留一行心跳——D109 的教训：全静默就分不清
-    /// 「定时器活着但状态没变」和「定时器根本没跑」。
-    pub(crate) fn on_langbar_tick(&self) {
-        let n = self.tick_count.get() + 1;
-        self.tick_count.set(n);
-        if n <= 3 {
-            // 前三次各留一行：定时器活着本身就是结论，且能在装机后 20 秒内看到。
-            tsf_info!("#{} 语言栏定时 tick #{n}（WM_TIMER 到达）", self.seq);
-        }
-        self.probe_langbar_impl("定时巡检", true);
-        // D111：图标保单的主路径。定时器是唯一不依赖 Windows 事件的通道——
-        // 「开设置（普通 Win32，不加载 TSF）→ 改东西 → 关设置 → 回宿主」这条
-        // 真机必现路径上，`OnSetFocus` 一次都不会来。代价是每两分钟一次
-        // `OnUpdate(TF_LBI_ICON)` 重建（与模式切换同款，只重画那一格）。
-        self.maybe_icon_refresh(ICON_REFRESH_TIMER, "定时");
+        self.probe_langbar_impl(why);
     }
 
     /// 语言栏条目存活巡检（D108/D109）。只读，不改状态。
@@ -405,9 +381,9 @@ impl Core {
     /// - `持有对象=true 条目没了` → **系统把它摘了**，记 error 级别；
     /// - `持有对象=false` → 本次激活没挂上（或已 Deactivate），条目在不在都正常。
     ///
-    /// `only_on_change` 只影响写不写日志：定时巡检用 `true`（20 秒一次，状态不变
-    /// 就静默），焦点变化与激活用 `false`（用户动作的落点是时间锚，必须留痕）。
-    fn probe_langbar_impl(&self, why: &str, only_on_change: bool) {
+    /// 巡检只发生在用户动作的落点（激活、文档焦点、线程焦点），频率很低，
+    /// 每次都写日志——这些行就是时间锚。
+    fn probe_langbar_impl(&self, why: &str) {
         let Some(tim) = self.thread_mgr.borrow().clone() else {
             return;
         };
@@ -424,25 +400,6 @@ impl Core {
         };
         let now = (held, snap.ours, snap.total);
         let prev = self.last_probe.replace(Some(now));
-        if only_on_change && prev == Some(now) {
-            // 状态没变，默认静默；心跳到期则写一行，证明定时器活着（D110）。
-            let t = Instant::now();
-            let due = self
-                .last_heartbeat
-                .get()
-                .map(|h| t.duration_since(h) >= PROBE_HEARTBEAT)
-                .unwrap_or(true);
-            if due {
-                self.last_heartbeat.set(Some(t));
-                tsf_info!(
-                    "#{} 语言栏巡检（{why}·心跳）：{}",
-                    self.seq,
-                    self.probe_line(&mgr, held, &snap)
-                );
-            }
-            return;
-        }
-        self.last_heartbeat.set(Some(Instant::now()));
         // 条目数变了（或第一次采到）才把明细打出来：正常打字时明细一行都不写。
         let detail_changed = prev.map(|p| p.2) != Some(snap.total);
         if held && !snap.ours {
@@ -1185,8 +1142,6 @@ impl TextService_Impl {
         self.tid.set(tid);
         // 新一次激活：上一轮的巡检读数作废，第一条必写（D109）。
         self.last_probe.set(None);
-        // 定时 tick 计数归零：本次激活的头三次 tick 各记一行，证明 WM_TIMER 到得了（D111）。
-        self.tick_count.set(0);
 
         // 幂等：TSF 可能先走 `Activate` 再走 `ActivateEx`（后者转调前者）。
         // 重复初始化会重复挂 sink，并把语言栏条目 `AddItem` 两次——两个同 GUID
@@ -1215,6 +1170,18 @@ impl TextService_Impl {
                 .AdviseSink(&ITfThreadMgrEventSink::IID, self.as_interface_ref())
                 .map_err(|e| stage("挂焦点 sink", e))?;
             self.thread_mgr_cookie.set(cookie);
+
+            // 线程焦点 sink（D112）：文档焦点 sink 在「设置窗口（普通 Win32、
+            // 不加载 TSF）→ 回宿主」路径上一次都不来（D111 实证），线程焦点是
+            // 另一条通道——宿主进程整体进出前台时系统应触发它。挂失败不致命，
+            // 只记日志：这是实验性通道，成了就是图标保单的事件源。
+            match source.AdviseSink(&ITfThreadFocusSink::IID, self.as_interface_ref()) {
+                Ok(c) => {
+                    self.focus_cookie.set(c);
+                    tsf_info!("#{} 线程焦点 sink 已挂（cookie={c}）", self.seq);
+                }
+                Err(e) => tsf_error!("#{} 挂线程焦点 sink 失败（非致命）：{e}", self.seq),
+            }
 
             // 按键 sink：唯一真正关心按键的地方。
             let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
@@ -1255,16 +1222,8 @@ impl TextService_Impl {
         match notify::NotifyWindow::new(&self.core) {
             Ok(w) => {
                 ipc::set_notify_window(w.hwnd().0 as isize);
-                // D109：语言栏条目 20 秒巡检一次。条目被摘、被藏时我们收不到任何
-                // 回调，只有主动问系统才看得到——「两个亨剩一个」曾持续十几分钟
-                // 而期间没有任何焦点变化，事件驱动的采样完全够不着。
-                if !w.start_langbar_timer() {
-                    tsf_error!("#{} 语言栏巡检定时器启动失败，退回只在焦点变化时采样", self.seq);
-                } else {
-                    // D111：这条日志是「定时器到底有没有起来」的唯一凭据。之前两版
-                    // 全靠巡检日志推断，而巡检状态不变就静默，等于没有证据。
-                    tsf_info!("#{} 语言栏巡检定时器已启动（20s tick，图标保单 120s）", self.seq);
-                }
+                // 通知窗口现在只服务重连补弹与光标复量（D112 起语言栏定时巡检
+                // 已随 D111 一起摘除——用户不接受定时器方案，改走线程焦点 sink）。
                 *self.notify.borrow_mut() = Some(w);
             }
             Err(e) => tsf_error!("#{} 重连通知窗口创建失败：{e}", self.seq),
@@ -1370,7 +1329,6 @@ impl TextService_Impl {
             // 激活本身就是一次重建（系统刚来要过图标），保单计时从这儿起算，
             // 免得第一条焦点变化消息就多刷一次。
             self.last_icon_refresh.set(Some(Instant::now()));
-            self.last_heartbeat.set(Some(Instant::now()));
         }
         Ok(())
     }
@@ -1429,6 +1387,16 @@ impl TextService_Impl {
                     tsf_error!("#{} UnadviseSink 失败：{e}", self.seq);
                 }
                 self.thread_mgr_cookie.set(TF_INVALID_COOKIE);
+            }
+
+            let cookie = self.focus_cookie.get();
+            if cookie != TF_INVALID_COOKIE {
+                if let Ok(source) = thread_mgr.cast::<ITfSource>() {
+                    if let Err(e) = source.UnadviseSink(cookie) {
+                        tsf_error!("#{} UnadviseSink（线程焦点）失败：{e}", self.seq);
+                    }
+                }
+                self.focus_cookie.set(TF_INVALID_COOKIE);
             }
         }
 
@@ -1523,8 +1491,8 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         // 变化主动问一次。「打开设置 → 改配置 → 关掉设置」回来第一件事就是它。
         self.probe_langbar("焦点变化");
         // 图标保单（D110/D111）：系统会把我们的条目从任务栏布局里悄悄拿掉且不发
-        // 任何回调（真机 10-29 08:03 实证），一次强制重建就能救回来。焦点变化是
-        // 顺带加速，主路径在 20 秒定时器里（D111：这条路径上 OnSetFocus 根本不来）。
+        // 任何回调（真机 10-29 08:03 实证），一次强制重建就能救回来。D111 实证
+        // 这条路径在必现场景里不来，主保单在 OnSetThreadFocus（D112）。
         self.maybe_icon_refresh(ICON_REFRESH_MIN, "焦点变化");
         Ok(())
     }
@@ -1536,6 +1504,29 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
 
     fn OnPopContext(&self, _pic: Ref<ITfContext>) -> Result<()> {
         tsf_debug!("#{} OnPopContext", self.seq);
+        Ok(())
+    }
+}
+
+impl ITfThreadFocusSink_Impl for TextService_Impl {
+    /// 线程整体拿到 TSF 焦点（宿主重新成为前台）。**这是图标保单的主触发点**
+    /// （D112）：条目被系统拿掉的时机在「离开前台」前后，而文档焦点事件在这条
+    /// 路径上不来（D111 实证），线程焦点是唯一还没试过、语义上也对得上的通道。
+    ///
+    /// 每条都写 info——不管有没有复现，这些行都是「通道到底通不通」的判决证据。
+    fn OnSetThreadFocus(&self) -> Result<()> {
+        tsf_info!("#{} OnSetThreadFocus（线程焦点回到本进程）", self.seq);
+        // 巡检 + 强制重建一次：切走的那段时间里条目可能已被系统从布局拿掉，
+        // 回来这一刻是重建的最佳时机（与 Shift 切模式同一条 TF_LBI_ICON 安全路径）。
+        self.probe_langbar("线程焦点");
+        self.maybe_icon_refresh(ICON_REFRESH_FOCUS, "线程焦点");
+        Ok(())
+    }
+
+    /// 线程失去 TSF 焦点（宿主让出前台）。只留痕不动作：条目何时被拿掉我们
+    /// 说了不算，在这里刷图标多半白刷。
+    fn OnKillThreadFocus(&self) -> Result<()> {
+        tsf_info!("#{} OnKillThreadFocus（线程失去焦点）", self.seq);
         Ok(())
     }
 }
